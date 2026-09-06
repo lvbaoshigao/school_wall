@@ -1,0 +1,9 @@
+node_modules/
+data.db
+data.db.bak_*
+.jwt_secret
+server.log
+uploads/avatars/*
+uploads/images/*
+!uploads/avatars/.gitkeep
+!uploads/images/.gitkeep

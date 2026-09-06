@@ -1,0 +1,85 @@
+# 校园墙后端 —— systemd 服务单元
+# 安装到 /etc/systemd/system/school-wall.service
+#
+# 取代原来在 SSH 会话里裸跑 `node index.js` 的方式：
+# 断开 SSH 不会带走服务、崩溃自动拉起、开机自启，
+# 并且用 systemd 自带的沙箱把进程能碰到的东西缩到最小。
+
+[Unit]
+Description=School Wall backend (Node.js)
+Documentation=https://github.com/
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=server
+Group=server
+WorkingDirectory=/home/server/school_wall/server
+
+Environment=NODE_ENV=production
+Environment=PORT=3000
+# 只监听回环。对外由 nginx 在 11451 反代 ——
+# 后端不占公网端口，代理层的限流/体积上限/超时就没法被绕过。
+Environment=HOST=127.0.0.1
+# 允许从 X-Forwarded-For 取真实客户端 IP。
+# 只有确实在自己掌控的代理之后才能开：直连时开了等于让任何人自选 IP，按 IP 的限流失效。
+Environment=TRUST_PROXY=1
+# 不重建数据库（db.js 里 KEEP_DB=0 才重建，这里显式写上防手滑）
+Environment=KEEP_DB=1
+# 密钥等敏感配置放这个文件，前面的减号表示文件不存在也不报错
+EnvironmentFile=-/home/server/school_wall/server/.env
+
+ExecStart=/usr/bin/node index.js
+
+# 应用自己实现了 SIGTERM 优雅关闭（落盘数据库后退出），给它 15 秒
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+Restart=on-failure
+RestartSec=3
+# 5 分钟内重启超过 5 次就不再重试，避免配置错误时无限重启刷日志
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=school-wall
+
+# ===== 沙箱加固 =====
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+# strict 之后整个文件系统只读，只有这里列出的路径可写：
+# 数据库、上传目录、日志都在 server/ 下面
+ReadWritePaths=/home/server/school_wall/server
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# ===== 资源上限 =====
+# 整机只有 2GB。sql.js 把整个数据库读进内存，正常占用远低于此；
+# 设上限是为了让内存泄漏或超大请求打爆时死的是本服务，而不是把整机拖进 OOM。
+MemoryMax=768M
+MemoryHigh=640M
+TasksMax=256
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+# 校园墙部署机 —— fail2ban
+# 安装到 /etc/fail2ban/jail.d/school-wall.local
+
+[DEFAULT]
+# 开发机不要被自己关在门外。这里只放行回环和当前开发用的那台机器，
+# 不整段放行 192.168.31.0/24 —— 局域网内其它主机被攻陷后照样能暴力破解 SSH。
+ignoreip = 127.0.0.1/8 ::1 192.168.31.204
+
+bantime  = 1h
+findtime = 10m
+maxretry = 3
+# 重复触发的 IP 逐次延长封禁（1h → 2h → 4h …），上限 1 天
+bantime.increment = true
+bantime.maxtime = 1d
+
+[sshd]
+enabled = true
+mode    = aggressive
+maxretry = 3
+
+# 刻意不为 nginx 的 429 建 jail。
+# 校园网常常整栋楼共用一个出口 IP，按 IP 封禁会把一大批正常用户一起关在外面；
+# 触发限流时 nginx 已经返回 429，这就是正确的处理方式，不需要再升级成封禁。
