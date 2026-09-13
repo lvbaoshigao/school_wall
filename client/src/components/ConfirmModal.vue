@@ -1,5 +1,6 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
+import { useFocusTrap } from '../composables/useFocusTrap'
 
 defineOptions({ inheritAttrs: false })
 
@@ -20,11 +21,17 @@ const emit = defineEmits(['confirm', 'cancel', 'update:show', 'update:promptValu
 
 const inputRef = ref(null)
 const inputVal = ref(props.promptValue)
+const modalRef = ref(null)
+
+// 之前只有 role="dialog" 而没有真正的焦点管理：Esc 关不掉、Tab 会跑到弹层背后、
+// 打开时焦点停在触发按钮上。统一接到 useFocusTrap（与 Home 的话题抽屉同一套实现）。
+useFocusTrap(() => props.show, modalRef, () => onCancel())
 
 watch(() => props.show, (v) => {
   if (v) {
     inputVal.value = props.promptValue
-    nextTick(() => inputRef.value?.focus())
+    // prompt 模式优先聚焦输入框；非 prompt 模式由 focus trap 聚焦第一个按钮
+    if (props.prompt) nextTick(() => inputRef.value?.focus())
   }
 })
 
@@ -85,6 +92,7 @@ function onCancel() {
   border-radius: var(--radius-lg);
   width: 90%;
   max-width: 380px;
+  outline: none;
 }
 .confirm-title {
   font-size: 18px;

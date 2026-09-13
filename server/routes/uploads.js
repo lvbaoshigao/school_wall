@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { authRequired } = require('../middleware/auth');
-const { checkQuota } = require('../lib/uploads');
+const { checkQuota, verifyImageMagic } = require('../lib/uploads');
 
 // 图片上传。三个端点前缀不同（/avatar/... 与 /upload/...），
 // 所以整体挂在 /api 下，路径保持原样。
@@ -21,6 +21,8 @@ module.exports = (uploadLimiter, dirs) => {
     const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
     const buffer = Buffer.from(matches[2], 'base64');
     if (buffer.length > 500 * 1024) return res.status(400).json({ error: '头像不能超过500KB' });
+    // 声明是图片还不够，文件头必须真是图片，否则等于开放任意文件托管
+    if (!verifyImageMagic(buffer, ext)) return res.status(400).json({ error: '文件内容不是有效的图片' });
 
     const quota = checkQuota(req.user.id, buffer.length);
     if (!quota.ok) return res.status(quota.status).json({ error: quota.error });
@@ -53,6 +55,7 @@ module.exports = (uploadLimiter, dirs) => {
     const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
     const buffer = Buffer.from(matches[2], 'base64');
     if (buffer.length > 2 * 1024 * 1024) return res.status(400).json({ error: '图片不能超过2MB' });
+    if (!verifyImageMagic(buffer, ext)) return res.status(400).json({ error: '文件内容不是有效的图片' });
 
     const quota = checkQuota(req.user.id, buffer.length);
     if (!quota.ok) return res.status(quota.status).json({ error: quota.error });
@@ -78,6 +81,7 @@ module.exports = (uploadLimiter, dirs) => {
     const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
     const buffer = Buffer.from(matches[2], 'base64');
     if (buffer.length > 2 * 1024 * 1024) return res.status(400).json({ error: '图片不能超过2MB' });
+    if (!verifyImageMagic(buffer, ext)) return res.status(400).json({ error: '文件内容不是有效的图片' });
 
     const quota = checkQuota(req.user.id, buffer.length);
     if (!quota.ok) return res.status(quota.status).json({ error: quota.error });

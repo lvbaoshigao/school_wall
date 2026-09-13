@@ -299,7 +299,7 @@ async function doReportPost() {
 }
 
 .author-name.clickable:hover {
-  color: #c9b99a;
+  color: color-mix(in srgb, var(--accent-1) 70%, var(--text-primary));
   text-decoration: underline;
 }
 
@@ -318,15 +318,17 @@ async function doReportPost() {
 }
 
 .post-images {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  /* 原先 flex-wrap + 固定 120px：在 320px 屏上三图一行放不下就溢出，
+     也不响应 --density。改 grid 自适应列数，最小 84px 保证三图一行不爆。 */
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
   gap: 6px;
   margin-bottom: 12px;
 }
 
 .post-img {
-  width: 120px;
-  height: 120px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   border-radius: var(--radius-md);
   object-fit: cover;
   cursor: pointer;
@@ -378,7 +380,7 @@ async function doReportPost() {
 
 /* 已点赞/已收藏：图标填充为实心，不只靠颜色区分 */
 .action-btn.active {
-  color: #ff6b6b;
+  color: var(--danger);
 }
 
 .action-btn.active :deep(.icon) {
@@ -386,10 +388,10 @@ async function doReportPost() {
 }
 
 .action-btn.active:nth-child(3) {
-  color: #ffd700;
+  color: var(--warning);
 }
 
 .action-btn.danger:hover {
-  color: #ff6b6b;
+  color: var(--danger);
 }
 </style>

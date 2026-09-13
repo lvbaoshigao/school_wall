@@ -30,7 +30,7 @@ const currentWall = computed(() => wallStore.currentWall)
 const hasGlobalPanel = computed(() =>
   can('global.moderate') || can('global.user.manage') || can('global.report.handle') ||
   can('global.wall.approve') || can('global.wall.manage') || can('global.bug.handle') ||
-  can('global.permission.manage'))
+  can('global.permission.manage') || can('global.db.manage'))
 // 本墙管理区：在当前墙持有任一管理能力即可
 const hasWallContext = computed(() => !!wallStore.currentWallId && (
   canHere('wall.stats.view') || canHere('wall.member.view') || canHere('wall.announcement') ||
@@ -114,6 +114,141 @@ async function updateBugReportStatus(id, status, reply) {
 const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tree_hole: '树洞志愿者', member: '成员' })[r] || r
 const globalRoleLabel = (r) => ({ super_admin: '超级管理员', admin: '全局管理员', user: '普通用户' })[r] || r
 const reportStatusLabel = (s) => ({ pending: '待处理', processing: '处理中', resolved: '已处理', rejected: '已驳回' })[s] || s
+
+// ===== 数据库管理（仅 global.db.manage 权限可见） =====
+const dbStatus = ref(null)
+const dbBackups = ref([])
+const dbBackupsLoading = ref(false)
+
+// 删库三步闸：生成验证码 → 服务端强制 10 秒冷却 → 输码执行（执行前自动 pre-wipe 备份）
+const wipeStep = ref(0) // 0 未开始 / 1 已生成验证码
+const wipeCode = ref('')
+const wipeInput = ref('')
+const wipeCountdown = ref(0)
+let wipeTimer = null
+
+// IP 白名单
+const wlMode = ref('off')
+const wlEntries = ref([])
+const wlNewEntry = ref('')
+const wlEnvEntries = ref([])
+const wlMyIp = ref('')
+const showDeleteBackupConfirm = ref(false)
+const backupTarget = ref(null)
+
+function fmtSize(n) {
+  if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' GB'
+  if (n >= 1048576) return (n / 1048576).toFixed(2) + ' MB'
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB'
+  return n + ' B'
+}
+
+async function loadDbOps() {
+  loadDbStatus(); loadBackups(); loadWhitelist()
+}
+async function loadDbStatus() {
+  try { dbStatus.value = (await api.get('/admin/db/status')).data }
+  catch (e) { toast.error(e.response?.data?.error || '数据库状态加载失败') }
+}
+async function loadBackups() {
+  dbBackupsLoading.value = true
+  try { dbBackups.value = (await api.get('/admin/db/backups')).data.backups || [] }
+  catch (e) { toast.error(e.response?.data?.error || '备份列表加载失败') }
+  dbBackupsLoading.value = false
+}
+async function makeBackup() {
+  try {
+    const r = await api.post('/admin/db/backup')
+    toast.success(r.data.message || '备份完成')
+    loadBackups(); loadDbStatus()
+  } catch (e) { toast.error(e.response?.data?.error || '备份失败') }
+}
+function askDeleteBackup(name) {
+  backupTarget.value = name
+  showDeleteBackupConfirm.value = true
+}
+async function doDeleteBackup() {
+  try {
+    await api.delete(`/admin/db/backups/${encodeURIComponent(backupTarget.value)}`)
+    toast.success('备份已删除')
+    loadBackups(); loadDbStatus()
+  } catch (e) { toast.error(e.response?.data?.error || '删除失败') }
+}
+async function downloadBackup(name) {
+  try {
+    const res = await api.get(`/admin/db/backups/${encodeURIComponent(name)}/download`, { responseType: 'blob' })
+    const url = URL.createObjectURL(res.data)
+    const a = document.createElement('a')
+    a.href = url; a.download = name; a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) { toast.error('下载失败') }
+}
+
+async function wipePrepare() {
+  try {
+    const r = await api.post('/admin/db/wipe/prepare')
+    wipeCode.value = r.data.code
+    wipeStep.value = 1
+    wipeInput.value = ''
+    wipeCountdown.value = r.data.wait_seconds || 10
+    clearInterval(wipeTimer)
+    wipeTimer = setInterval(() => {
+      wipeCountdown.value--
+      if (wipeCountdown.value <= 0) clearInterval(wipeTimer)
+    }, 1000)
+    toast.success('验证码已生成，等待 10 秒冷却后可执行')
+  } catch (e) { toast.error(e.response?.data?.error || '生成验证码失败') }
+}
+async function wipeExecute() {
+  if (wipeInput.value.trim().toUpperCase() !== wipeCode.value) {
+    toast.error('验证码不正确')
+    return
+  }
+  try {
+    const r = await api.post('/admin/db/wipe/execute', { code: wipeInput.value.trim() })
+    clearInterval(wipeTimer)
+    toast.success(r.data.message || '数据库已清空')
+    wipeStep.value = 0; wipeCode.value = ''; wipeInput.value = ''
+    // 删库后当前账号已不存在，token 失效 —— 回到首页触发重新登录/初始化
+    setTimeout(() => { location.href = '/' }, 1500)
+  } catch (e) {
+    const remain = e.response?.data?.error?.match(/等待 (\d+) 秒/)
+    if (remain) {
+      wipeCountdown.value = parseInt(remain[1])
+      clearInterval(wipeTimer)
+      wipeTimer = setInterval(() => {
+        wipeCountdown.value--
+        if (wipeCountdown.value <= 0) clearInterval(wipeTimer)
+      }, 1000)
+    }
+    toast.error(e.response?.data?.error || '执行失败')
+  }
+}
+
+async function loadWhitelist() {
+  try {
+    const r = (await api.get('/admin/db/whitelist')).data
+    wlMode.value = r.mode || 'off'
+    wlEntries.value = r.entries || []
+    wlEnvEntries.value = r.env_entries || []
+    wlMyIp.value = r.current_ip || ''
+  } catch (e) { toast.error(e.response?.data?.error || '白名单加载失败') }
+}
+function addWlEntry() {
+  const v = wlNewEntry.value.trim()
+  if (!v) return
+  if (!/^[0-9a-fA-F.:*]{1,45}$/.test(v)) { toast.error('条目只能包含 IP 字符与 * 通配符'); return }
+  if (wlEntries.value.includes(v)) { toast.error('条目已存在'); return }
+  wlEntries.value.push(v)
+  wlNewEntry.value = ''
+}
+function removeWlEntry(i) { wlEntries.value.splice(i, 1) }
+async function saveWhitelist() {
+  try {
+    const r = await api.put('/admin/db/whitelist', { mode: wlMode.value, entries: wlEntries.value })
+    toast.success(r.data.message || '白名单已更新')
+  } catch (e) { toast.error(e.response?.data?.error || '保存失败') }
+}
 
 // ========== 墙后台 ==========
 async function loadWallStats() {
@@ -584,6 +719,7 @@ const PANEL_LOADERS = {
   userReports: loadUserReports,
   banLogs: loadBanLogs,
   bugReports: loadBugReports,
+  dbops: loadDbOps,
 }
 
 function switchPanel(panel) {
@@ -633,6 +769,7 @@ onMounted(() => {
             <button v-if="can('global.wall.approve')" class="side-item" :class="{ active: activePanel === 'wallApps' }" @click="switchPanel('wallApps')">建墙申请</button>
             <button v-if="can('global.bug.handle')" class="side-item" :class="{ active: activePanel === 'bugReports' }" @click="switchPanel('bugReports')">Bug 反馈</button>
             <button v-if="can('global.wall.manage')" class="side-item" :class="{ active: activePanel === 'allWalls' }" @click="switchPanel('allWalls')">校园墙管理</button>
+            <button v-if="can('global.db.manage')" class="side-item" :class="{ active: activePanel === 'dbops' }" @click="switchPanel('dbops')">数据库管理</button>
           </div>
         </template>
       </aside>
@@ -1098,6 +1235,114 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- 数据库管理面板（仅 global.db.manage） -->
+    <div v-if="activePanel === 'dbops'" class="section">
+      <h2>数据库管理</h2>
+      <p class="text-muted" style="font-size:13px;margin-bottom:14px">备份 / 访问白名单 / 一键删库。仅超级管理员可操作。</p>
+
+      <!-- 状态 -->
+      <div v-if="dbStatus" class="stats-grid">
+        <div class="stat-card glass stat-blue">
+          <div class="stat-value">{{ fmtSize(dbStatus.db_size) }}</div>
+          <div class="stat-label">数据库大小</div>
+        </div>
+        <div class="stat-card glass stat-purple">
+          <div class="stat-value">{{ dbStatus.total_rows }}</div>
+          <div class="stat-label">总行数 · {{ dbStatus.tables.length }} 张表</div>
+        </div>
+        <div class="stat-card glass stat-green">
+          <div class="stat-value">{{ dbStatus.backups }}</div>
+          <div class="stat-label">备份份数</div>
+        </div>
+        <div class="stat-card glass stat-blue">
+          <div class="stat-value">{{ fmtSize(dbStatus.upload_size || 0) }}</div>
+          <div class="stat-label">上传文件体积</div>
+        </div>
+      </div>
+
+      <!-- 备份 -->
+      <div class="db-sub-title">备份管理</div>
+      <div class="db-toolbar">
+        <button class="btn btn-primary btn-sm" @click="makeBackup">立即备份</button>
+        <button class="btn btn-secondary btn-sm" @click="loadBackups">刷新列表</button>
+      </div>
+      <div v-if="dbBackupsLoading" class="loading">加载中</div>
+      <div v-else-if="dbBackups.length === 0" class="empty-state" style="padding:20px">
+        <p>还没有备份，点击「立即备份」创建第一份</p>
+      </div>
+      <div v-else class="table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr v-for="b in dbBackups" :key="b.name">
+              <td class="mono">{{ b.name }}</td>
+              <td>{{ fmtSize(b.size) }}</td>
+              <td>{{ new Date(b.created_at).toLocaleString('zh-CN') }}</td>
+              <td>
+                <button class="btn btn-secondary btn-sm" @click="downloadBackup(b.name)">下载</button>
+                <button class="btn btn-danger btn-sm" @click="askDeleteBackup(b.name)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- IP 白名单 -->
+      <div class="db-sub-title">访问 IP 白名单</div>
+      <p class="text-muted" style="font-size:12px;margin-bottom:10px">
+        控制谁能访问管理后台（或整个 API）。环境变量 <code>ADMIN_IP_WHITELIST</code> 的条目始终生效 ——
+        即使数据库被清空也能进入管理面。
+        <template v-if="wlMyIp">　你的 IP：<code>{{ wlMyIp }}</code></template>
+      </p>
+      <div class="wl-mode-row">
+        <label class="text-muted" style="font-size:13px">保护范围</label>
+        <select v-model="wlMode" class="pref-select">
+          <option value="off">关闭（不限制）</option>
+          <option value="admin">仅管理后台 / Dashboard</option>
+          <option value="all">整个 API（内网部署模式）</option>
+        </select>
+      </div>
+      <div class="wl-tags">
+        <span v-for="(e, i) in wlEntries" :key="e" class="wl-tag mono">
+          {{ e }}
+          <button class="wl-tag-x" :aria-label="'移除 ' + e" @click="removeWlEntry(i)">×</button>
+        </span>
+        <span v-if="wlEntries.length === 0" class="text-muted" style="font-size:12px">（未配置条目）</span>
+      </div>
+      <div v-if="wlEnvEntries.length" class="text-muted" style="font-size:12px;margin-bottom:10px">
+        环境变量条目：{{ wlEnvEntries.join(', ') }}
+      </div>
+      <div class="wl-add-row">
+        <input v-model="wlNewEntry" class="wl-input mono" placeholder="如 10.8.0.5、192.168.*、::1"
+               @keydown.enter="addWlEntry" />
+        <button class="btn btn-secondary btn-sm" @click="addWlEntry">添加</button>
+        <button class="btn btn-primary btn-sm" @click="saveWhitelist">保存白名单</button>
+      </div>
+
+      <!-- 删库危险区 -->
+      <div class="danger-zone">
+        <div class="db-sub-title danger">危险区 · 一键删库</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:12px">
+          清空全部数据（保留表结构），settings 一并清除，之后前端会重新出现初始化向导。
+          执行前会自动生成 pre-wipe 备份；服务端强制 10 秒冷却，防止误触。
+        </p>
+        <template v-if="wipeStep === 0">
+          <button class="btn btn-danger" @click="wipePrepare">生成 6 位删库验证码</button>
+        </template>
+        <template v-else>
+          <div class="wipe-code mono">{{ wipeCode }}</div>
+          <div class="wipe-exec-row">
+            <input v-model="wipeInput" class="wipe-input mono" maxlength="6"
+                   placeholder="输入上方 6 位验证码" />
+            <button class="btn btn-danger" :disabled="wipeCountdown > 0" @click="wipeExecute">
+              {{ wipeCountdown > 0 ? `请等待 ${wipeCountdown} 秒…` : '确认删库' }}
+            </button>
+            <button class="btn btn-secondary" @click="wipeStep = 0; clearInterval(wipeTimer)">取消</button>
+          </div>
+        </template>
+      </div>
+    </div>
+
     </div>
     </div>
     <!-- /admin-layout -->
@@ -1222,6 +1467,15 @@ onMounted(() => {
       confirm-text="移除" cancel-text="取消" :danger="true"
       @confirm="doRemoveMember"
       @update:show="showRemoveConfirm = $event"
+    />
+
+    <!-- 删除备份 -->
+    <ConfirmModal
+      :show="showDeleteBackupConfirm" title="删除备份"
+      :message="`确定删除备份「${backupTarget}」？删除后不可恢复。`"
+      confirm-text="删除" cancel-text="取消" :danger="true"
+      @confirm="doDeleteBackup"
+      @update:show="showDeleteBackupConfirm = $event"
     />
 
     <!-- 转让墙主 -->
@@ -1809,4 +2063,33 @@ select option { background: #333; color: #fff; }
   .seg-btn { flex: 1; justify-content: center; }
   .perm-toolbar { gap: 8px; }
 }
+
+/* ===== 数据库管理面板 ===== */
+.mono { font-family: 'SF Mono', Consolas, monospace; }
+.db-sub-title { font-size: 14px; font-weight: 700; color: var(--text-primary); margin: 22px 0 10px; }
+.db-sub-title.danger { color: var(--danger-light, #ff8a8a); }
+.db-toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-md, 10px); }
+.admin-table { width: 100%; border-collapse: collapse; min-width: 480px; }
+.admin-table th, .admin-table td { padding: 9px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
+.admin-table th { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+.admin-table tbody tr:last-child td { border-bottom: none; }
+.admin-table tbody tr:hover { background: var(--bg-card-hover, rgba(255,255,255,0.04)); }
+
+.wl-mode-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.wl-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 12px; }
+.wl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px;
+  background: rgba(124, 140, 248, 0.14); border: 1px solid rgba(124, 140, 248, 0.3); font-size: 12px; }
+.wl-tag-x { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px;
+  padding: 0; line-height: 1; }
+.wl-tag-x:hover { color: var(--danger-light, #ff8a8a); }
+.wl-add-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.wl-input { flex: 1; min-width: 200px; }
+
+.danger-zone { margin-top: 26px; padding: 18px; border: 1px solid rgba(255, 107, 107, 0.4);
+  border-radius: var(--radius-lg, 14px); background: rgba(255, 107, 107, 0.08); }
+.wipe-code { font-size: 30px; letter-spacing: 10px; font-weight: 800; color: var(--warning, #ffd166);
+  text-align: center; padding: 10px 0 6px; user-select: all; }
+.wipe-exec-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.wipe-input { width: 200px; letter-spacing: 4px; text-transform: uppercase; }
 </style>

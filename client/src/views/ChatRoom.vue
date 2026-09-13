@@ -1,11 +1,12 @@
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useToast } from '../composables/useToast'
 import api from '../api'
 import Icon from '../components/Icon.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import SkeletonCard from '../components/SkeletonCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,39 +39,38 @@ const emojis = [
 ]
 
 let refreshTimer = null
+// 轮询间隔：会话已有专用接口，不必再像以前那样 5 秒搬一次全量收件箱
+const POLL_MS = 20000
 
-async function loadMessages() {
-  loading.value = true
+// 加载会话消息。
+// 原实现每轮都 GET /messages/inbox + /messages/sent 全量拉取再在前端 filter，
+// 并对每条未读消息串行 await PUT .../read（N+1）。这里改为：
+//   1. 只请求 /messages/conversation/:id（服务端按双方过滤 + 倒序截取最近 N 条）
+//   2. 已读由服务端在同一个请求里批量标记，前端不再逐条发请求
+// silent = true 用于轮询刷新：不置 loading，避免每次刷新都闪一次骨架屏
+async function loadMessages(silent = false) {
+  if (!silent) loading.value = true
   try {
     const userId = parseInt(route.params.id)
-    try {
-      const userRes = await api.get(`/auth/user/${userId}`)
-      chatUser.value = userRes.data
-    } catch (e) {}
-
-    const inboxRes = await api.get('/messages/inbox')
-    const sentRes = await api.get('/messages/sent')
-
-    const inboxMsgs = inboxRes.data.messages.filter(m =>
-      m.sender_id === userId && m.type === 'private'
-    )
-    const sentMsgs = sentRes.data.filter(m =>
-      m.receiver_id === userId && m.type === 'private'
-    )
-
-    messages.value = [...inboxMsgs, ...sentMsgs].sort((a, b) =>
-      new Date(a.created_at) - new Date(b.created_at)
-    )
-
-    for (const msg of inboxMsgs) {
-      if (!msg.is_read) {
-        try { await api.put(`/messages/${msg.id}/read`) } catch (e) {}
-      }
+    if (!chatUser.value) {
+      try {
+        const userRes = await api.get(`/auth/user/${userId}`)
+        chatUser.value = userRes.data
+      } catch (e) {}
     }
+
+    const res = await api.get(`/messages/conversation/${userId}`, { params: { limit: 100 } })
+    const next = res.data.messages || []
+
+    // 轮询时若消息条数与首尾 id 都没变，就不触发重渲染
+    const prev = messages.value
+    const same = prev.length === next.length
+      && (next.length === 0 || (prev[0]?.id === next[0]?.id && prev[prev.length - 1]?.id === next[next.length - 1]?.id))
+    if (!same) messages.value = next
   } catch (e) {
     console.error('加载消息失败', e)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -88,7 +88,7 @@ async function sendMessage() {
     newMessage.value = ''
     showEmoji.value = false
     replyTo.value = null
-    await loadMessages()
+    await loadMessages(true)
     await nextTick()
     scrollToBottom()
   } catch (e) {
@@ -97,6 +97,10 @@ async function sendMessage() {
     sending.value = false
   }
 }
+
+// 举报弹窗的证据列表：原先是模板内 messages.filter(...)，
+// 每次渲染（包括鼠标移动引起的重渲染）都会新建数组并全量过滤一遍。
+const reportableMessages = computed(() => messages.value.filter(m => !m.is_revoked))
 
 function addEmoji(emoji) { newMessage.value += emoji }
 
@@ -146,7 +150,7 @@ async function doRevokeMessage() {
   if (!msg) return
   try {
     await api.put(`/messages/${msg.id}/revoke`)
-    await loadMessages()
+    await loadMessages(true)
   } catch (e) {
     toast.error(e.response?.data?.error || '撤回失败')
   }
@@ -205,24 +209,47 @@ async function submitReport() {
   }
 }
 
-onMounted(async () => {
-  await loadMessages()
-  await nextTick()
-  scrollToBottom()
+// 轮询：页面切到后台时暂停，切回时立刻补一次。
+// 原实现不看 visibilityState，切到别的标签页后 5 秒一轮的请求照跑，
+// 手机端还会持续耗电。
+function startPolling() {
+  stopPolling()
   refreshTimer = setInterval(async () => {
+    if (document.visibilityState === 'hidden') return
     const prevCount = messages.value.length
-    await loadMessages()
+    await loadMessages(true)
     if (messages.value.length > prevCount) {
       await nextTick()
       scrollToBottom()
     }
-  }, 5000)
+  }, POLL_MS)
+}
+
+function stopPolling() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    loadMessages(true).then(() => {
+      nextTick(scrollToBottom)
+    })
+  }
+}
+
+onMounted(async () => {
+  await loadMessages()
+  await nextTick()
+  scrollToBottom()
+  startPolling()
   document.addEventListener('click', hideContextMenu)
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
-  clearInterval(refreshTimer)
+  stopPolling()
   document.removeEventListener('click', hideContextMenu)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 
@@ -238,7 +265,11 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="loading" class="loading">加载中</div>
+    <div v-if="loading" class="chat-loading">
+      <SkeletonCard :lines="2" />
+      <SkeletonCard :lines="2" />
+      <SkeletonCard :lines="3" />
+    </div>
 
     <template v-else>
       <div class="messages-area">
@@ -313,7 +344,7 @@ onUnmounted(() => {
             <label class="evidence-label">选择聊天记录作为证据 <span class="text-muted">(点击选择)</span></label>
             <div class="evidence-messages">
               <div
-                v-for="msg in messages.filter(m => !m.is_revoked)"
+                v-for="msg in reportableMessages"
                 :key="'sel-' + msg.id"
                 class="evidence-item"
                 :class="{ selected: selectedMsgIds.has(msg.id), mine: isMine(msg) }"
@@ -377,6 +408,7 @@ onUnmounted(() => {
 .header-actions { display: flex; gap: 6px; }
 
 .messages-area { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.chat-loading { flex: 1; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
 .message-item { display: flex; justify-content: flex-start; user-select: none; }
 .message-item.message-mine { justify-content: flex-end; }
 

@@ -13,14 +13,22 @@ const icons = { success: 'check-circle', error: 'x-circle', warning: 'alert', in
 
 <template>
   <Teleport to="body">
-    <div class="toast-container">
+    <!-- role="status" + aria-live="polite"：此前整块容器没有任何语义，
+         屏幕阅读器完全感知不到「已收藏 / 发送失败」这类操作反馈。
+         用 polite 而非 assertive，避免连续操作时把正在朗读的内容反复打断。 -->
+    <div class="toast-container" role="status" aria-live="polite" aria-atomic="false">
       <TransitionGroup name="toast">
         <div
           v-for="t in toasts"
           :key="t.id"
           class="toast-item"
           :class="'toast-' + t.type"
+          role="button"
+          tabindex="0"
+          :aria-label="t.message + '，点击关闭'"
           @click="removeToast(t.id)"
+          @keydown.enter="removeToast(t.id)"
+          @keydown.space.prevent="removeToast(t.id)"
         >
           <Icon class="toast-icon" :name="icons[t.type] || 'info'" :size="17" />
           <span class="toast-message">{{ t.message }}</span>

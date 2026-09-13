@@ -27,6 +27,7 @@ const PERMISSIONS = {
   'global.announcement':      { label: '发布全局公告',    scope: 'global', group: '全局' },
   'global.permission.manage': { label: '分配他人权限',    scope: 'global', group: '全局' },
   'global.dashboard':         { label: '运行看板',        scope: 'global', group: '全局' },
+  'global.db.manage':         { label: '数据库管理（备份/删库/白名单）', scope: 'global', group: '全局' },
 
   // ---- 墙级 ----
   'wall.edit':           { label: '编辑墙资料',      scope: 'wall', group: '校园墙' },

@@ -37,7 +37,16 @@ const bgGradient = computed(() =>
       background: bgGradient,
     }"
   >
-    <img v-if="src" :src="src" class="avatar-img" alt="" />
+    <img
+      v-if="src"
+      :src="src"
+      class="avatar-img"
+      alt=""
+      :width="avatarSize"
+      :height="avatarSize"
+      loading="lazy"
+      decoding="async"
+    />
     <span v-else class="avatar-text">{{ firstChar }}</span>
   </div>
 </template>

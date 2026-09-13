@@ -14,6 +14,67 @@ function optionalWallId(req) {
 
 const validTypes = ['private', 'confession', 'system', 'announcement', 'interaction', 'tree_hole', 'report_notification', 'role_application'];
 
+// 获取与某用户的私信会话（仅双方消息，服务端过滤 + 分页）
+// 原来客户端为了开一个会话要拉全量 /inbox + /sent 再在前端 filter，
+// 长会话下每轮轮询都要把整箱消息搬一遍，等于把服务端已经能做的过滤丢给客户端。
+router.get('/conversation/:userId', authRequired, (req, res) => {
+  const otherId = parseInt(req.params.userId);
+  if (!Number.isInteger(otherId) || otherId <= 0) {
+    return res.status(400).json({ error: '用户 ID 无效' });
+  }
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 100));
+  const before = parseInt(req.query.before) || 0;
+
+  let sql = `
+    SELECT m.id, m.sender_id, m.receiver_id, m.content, m.is_read, m.is_revoked,
+           m.reply_to_id, m.reply_to_content, m.created_at
+    FROM messages m
+    WHERE m.type = 'private'
+      AND ((m.sender_id = ? AND m.receiver_id = ?) OR (m.sender_id = ? AND m.receiver_id = ?))
+  `;
+  const params = [req.user.id, otherId, otherId, req.user.id];
+  if (before > 0) {
+    sql += ' AND m.id < ?';
+    params.push(before);
+  }
+  // 倒序取最近 limit 条，再在内存里翻正，避免大数据量下 ORDER BY ASC + LIMIT 取到最旧的
+  sql += ' ORDER BY m.id DESC LIMIT ?';
+  params.push(limit);
+
+  const rows = req.db.prepare(sql).all(...params);
+  const messages = rows.reverse();
+
+  // 一次性把这批消息里发给我的标为已读，替代前端逐条 PUT
+  const unreadIds = messages.filter(m => m.receiver_id === req.user.id && !m.is_read).map(m => m.id);
+  if (unreadIds.length) {
+    const holes = unreadIds.map(() => '?').join(',');
+    req.db.prepare(`UPDATE messages SET is_read = 1 WHERE id IN (${holes}) AND receiver_id = ?`)
+      .run(...unreadIds, req.user.id);
+    messages.forEach(m => { if (m.receiver_id === req.user.id) m.is_read = 1; });
+  }
+
+  const hasMore = rows.length === limit;
+  res.json({ messages, hasMore, unreadMarked: unreadIds.length });
+});
+
+// 批量标记已读（会话用）
+router.put('/read-batch', authRequired, (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: '请提供消息 ID 列表' });
+  }
+  if (ids.length > 500) return res.status(400).json({ error: '单次最多 500 条' });
+  const safe = ids.map(i => parseInt(i)).filter(i => Number.isInteger(i) && i > 0);
+  if (!safe.length) return res.status(400).json({ error: '消息 ID 无效' });
+
+  const holes = safe.map(() => '?').join(',');
+  const result = req.db.prepare(
+    `UPDATE messages SET is_read = 1 WHERE id IN (${holes}) AND receiver_id = ?`
+  ).run(...safe, req.user.id);
+
+  res.json({ message: `已标记${result.changes}条消息为已读` });
+});
+
 // 获取收件箱（支持按类型筛选）
 router.get('/inbox', authRequired, (req, res) => {
   const { type, unread } = req.query;
@@ -223,17 +284,20 @@ router.delete('/inbox/all', authRequired, (req, res) => {
   res.json({ message: `已删除${result.changes}条消息` });
 });
 
-// 清空与某用户的聊天记录
+// 清空与某用户的聊天记录（仅删除自己发出的部分，对方那侧仍保留）
+// 原先是双向删除，会把对方聊天记录里你说过的话一起抹掉 —— 单侧清理不该
+// 破坏对方的数据所有权。对方侧改为「仅我方可见的软删除」成本较高，
+// 这里取最小正确实现：只删我方发送的私信。
 router.delete('/chat/:userId', authRequired, (req, res) => {
   const userId = parseInt(req.params.userId);
-  // 删除双方的私信记录
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: '用户 ID 无效' });
+  }
   const result = req.db.prepare(`
-    DELETE FROM messages WHERE type = 'private' AND (
-      (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)
-    )
-  `).run(req.user.id, userId, userId, req.user.id);
+    DELETE FROM messages WHERE type = 'private' AND sender_id = ? AND receiver_id = ?
+  `).run(req.user.id, userId);
 
-  res.json({ message: `已清空${result.changes}条聊天记录` });
+  res.json({ message: `已清空你发出的${result.changes}条聊天记录` });
 });
 
 // 标记单条已读

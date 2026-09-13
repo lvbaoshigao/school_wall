@@ -28,8 +28,9 @@ onUnmounted(() => window.removeEventListener('scroll', onScroll))
 <style scoped>
 .back-to-top {
   position: fixed;
+  /* 挪到左侧：新增的全局发布 FAB 占用右下，两个浮钮不能叠在一起 */
   bottom: 28px;
-  right: 28px;
+  left: 28px;
   z-index: 900;
   width: 44px;
   height: 44px;

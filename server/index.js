@@ -146,6 +146,31 @@ async function main() {
     credentials: true,
   }));
   app.use(compression({ threshold: 1024 }));
+
+  // 安全响应头。原先全站一条都没有，浏览器只能靠 MIME 嗅探猜测类型 ——
+  // 配合「上传只校验 data URL 前缀、不校验魔数」的漏洞，伪装成 image/png 的
+  // HTML/脚本有被当作可执行内容渲染的风险。nosniff 直接掐断这条路径。
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    next();
+  });
+
+  // 健康检查：nginx/监控探活专用。此前只能探 `/`，而那是 SPA 静态首页 ——
+  // 后端进程挂掉后 nginx 依然返回 200，探活永远是假阳性。
+  // 注意：这条路由注册在下方 req.db 注入中间件之前，必须直接走 getWrapper()
+  // 而不是 req.db，否则永远 503「database unavailable」。
+  app.get('/api/health', (req, res) => {
+    try {
+      getWrapper().prepare('SELECT 1').get();
+      res.json({ ok: true, ts: Date.now() });
+    } catch (e) {
+      res.status(503).json({ ok: false, error: 'database unavailable' });
+    }
+  });
+
   // 只有上传接口需要大 body（2MB 图片经 base64 后约 2.7MB）。
   // 先给这两条路径挂大额度的解析器，body-parser 解析过后会置 req._body，
   // 后面的全局解析器会自动跳过，于是其余接口的上限收到 128KB ——
@@ -190,6 +215,11 @@ async function main() {
     };
     next();
   });
+
+  // 访问 IP 白名单守卫。必须在 req.db 注入之后（守卫要读 settings 表），
+  // 在所有 API 路由之前 —— 覆盖 /api/admin、/dashboard（admin 档）与全部 /api（all 档）。
+  const { whitelistGuard } = require('./lib/ipguard');
+  app.use(whitelistGuard);
 
   // 根路由 - 显示服务状态（仅在没有前端构建产物时；有 dist 时这条路径归 SPA）
   if (!hasDist) app.get('/', (req, res) => {
@@ -245,6 +275,10 @@ a:hover{text-decoration:underline}
   app.use('/api/walls', require('./routes/walls'));
   app.use('/api/posts', require('./routes/posts'));
   app.use('/api/messages', require('./routes/messages'));
+  // 数据库管理（备份/删库/白名单）：必须挂在 /api/admin 之前 ——
+  // admin.js 的 globalRouter 是 router.use('/', ...) 兜住所有剩余路径，
+  // 挂在后面会被它先截胡。
+  app.use('/api/admin/db', require('./routes/dbops').apiRouter);
   app.use('/api/admin', require('./routes/admin'));
   app.use('/api/votes', require('./routes/votes'));
   app.use('/api/friends', require('./routes/friends'));

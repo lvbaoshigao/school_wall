@@ -1,0 +1,5 @@
+?? .gitlog_tmp.txt
+?? .gitstatus_tmp.txt
+* main
+  remotes/origin/HEAD -> origin/main
+  remotes/origin/main

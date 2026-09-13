@@ -58,14 +58,40 @@ router.get('/discover', authRequired, wallContext, (req, res) => {
 });
 
 // 用户公开信息
-// 原为 authOptional —— 未登录也能按 id 遍历出真实姓名与班级，收紧为必须登录
+// 原为 authOptional —— 未登录也能按 id 遍历出真实姓名与班级，收紧为必须登录；
+// 再补上墙上下文校验：不带任何墙归属的登录用户此前也能遍历全站用户档案（IDOR）。
+// 当前墙成员、或与我存在好友关系的人，才可以查看。
 router.get('/:id', authRequired, (req, res) => {
+  const targetId = parseInt(req.params.id);
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    return res.status(400).json({ error: '用户 ID 无效' });
+  }
+
   const user = req.db.prepare(`
     SELECT id, username, nickname, real_name, show_real_name, avatar, class_number,
            is_graduate, graduation_year, created_at FROM users WHERE id = ?
-  `).get(parseInt(req.params.id));
+  `).get(targetId);
   if (!user) return res.status(404).json({ error: '用户不存在' });
   if (!user.show_real_name) user.real_name = '';
+
+  if (targetId === req.user.id) return res.json(user);
+
+  // 好友关系放行（不看墙，跨墙好友也应可见）
+  const isFriend = !!req.db.prepare(
+    "SELECT 1 AS ok FROM friends WHERE ((user_id=? AND friend_id=?) OR (user_id=? AND friend_id=?)) AND status='accepted' LIMIT 1"
+  ).get(req.user.id, targetId, targetId, req.user.id);
+  if (isFriend) return res.json(user);
+
+  // 否则要求与我共享至少一个 active 墙
+  const shared = req.db.prepare(`
+    SELECT 1 AS ok FROM wall_members a
+    JOIN wall_members b ON a.wall_id = b.wall_id
+    WHERE a.user_id = ? AND b.user_id = ? AND a.status = 'active' AND b.status = 'active'
+    LIMIT 1
+  `).get(req.user.id, targetId);
+  if (!shared) {
+    return res.status(403).json({ error: '无权查看该用户信息' });
+  }
   res.json(user);
 });
 

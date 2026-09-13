@@ -53,6 +53,27 @@
   --space-5: 24px;
   --space-6: 32px;
 
+  /* 字体阶梯。
+     原先全站字号靠手写 px（Admin 60 处、Inbox 17 处、Profile 19 处），
+     h2(20) 与 h3(18) 只差 2px、h3 与正文(15)只差 1px，层级只能靠字重硬撑。
+     这里定一套 7 档阶梯，正文 15、标题至少与正文差 3px，保证层级可读。 */
+  --font-xs: 12px;    /* 标签、时间戳 */
+  --font-sm: 13px;    /* 辅助说明 */
+  --font-base: 15px;  /* 正文 */
+  --font-md: 16px;    /* 强调正文 */
+  --font-lg: 18px;    /* 小标题 / 卡片标题 */
+  --font-xl: 22px;    /* 区块标题 */
+  --font-2xl: 28px;   /* 页面标题 */
+
+  --leading-tight: 1.35;
+  --leading-normal: 1.6;
+  --leading-loose: 1.75;
+
+  /* 容器宽度：App.vue 的 .main-content 与 Navbar 的 .nav-inner 共用，
+     避免两处各写一个数字、改一处忘一处 */
+  --container: 1000px;
+  --container-wide: 1280px;
+
   --transition: 0.2s ease;
   --transition-slow: 0.3s ease;
 
@@ -324,20 +345,28 @@ body.light-theme select option {
   transition-duration: 0.08s;
 }
 
+/* 按压扩散光晕。
+   原先用 width/height 从 0 插值到 300px —— 每次按下都要让浏览器重算该按钮的
+   布局盒，即便 overflow:hidden 裁剪掉了溢出部分，动画期间仍会逐帧触发 layout。
+   改成 transform: scale() + opacity：只走合成器，不参与布局计算。 */
 .btn::after {
   content: '';
   position: absolute;
   top: 50%; left: 50%;
-  width: 0; height: 0;
+  width: 300px; height: 300px;
+  margin: -150px 0 0 -150px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.2);
-  transform: translate(-50%, -50%);
-  transition: width 0.6s, height 0.6s;
+  transform: translateZ(0) scale(0);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.45s var(--ease), opacity 0.45s var(--ease);
 }
 
 .btn:active::after {
-  width: 300px;
-  height: 300px;
+  transform: translateZ(0) scale(1);
+  opacity: 1;
+  transition: transform 0.45s var(--ease), opacity 0.06s linear;
 }
 
 /* 有色填充的三个变体：基类不再给白字，这里必须自己声明，
@@ -419,17 +448,23 @@ a:not(.btn):hover {
   color: var(--accent-1);
 }
 
-/* ----- 通用间距 ----- */
-.mb-1 { margin-bottom: 8px; }
-.mb-2 { margin-bottom: 16px; }
-.mb-3 { margin-bottom: 24px; }
-.mt-2 { margin-top: 16px; }
-.mt-3 { margin-top: 24px; }
+/* ----- 标题阶梯（此前各页手写 18/19/20/22，同一级标题跨页不一致） ----- */
+h1 { font-size: var(--font-2xl); line-height: var(--leading-tight); font-weight: 700; }
+h2 { font-size: var(--font-xl); line-height: var(--leading-tight); font-weight: 700; }
+h3 { font-size: var(--font-lg); line-height: var(--leading-tight); font-weight: 600; }
+h4 { font-size: var(--font-md); line-height: var(--leading-normal); font-weight: 600; }
+
+/* ----- 通用间距（对齐 --space-* 刻度，替换原先的 8/16/24 魔法数） ----- */
+.mb-1 { margin-bottom: var(--space-2); }
+.mb-2 { margin-bottom: var(--space-4); }
+.mb-3 { margin-bottom: var(--space-5); }
+.mt-2 { margin-top: var(--space-4); }
+.mt-3 { margin-top: var(--space-5); }
 
 /* ----- 文本 ----- */
 .text-muted {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--font-sm);
 }
 
 .text-center { text-align: center; }
@@ -438,22 +473,25 @@ a:not(.btn):hover {
 .tag {
   display: inline-block;
   padding: 3px 10px;
-  border-radius: 20px;
-  font-size: 12px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-xs);
   background: var(--bg-input);
   border: 1px solid var(--border);
 }
 
+/* 分类 / 匿名标签原先写死 #d4c5b0、#c9b99a 这两个米色 —— 它们既不属于主题色
+   也不受高对比度与亮色主题控制，换主题色后与整页明显脱节。
+   改为从 --accent-1 派生，跟主题色一起变，亮色主题下也能保证对比度。 */
 .tag-category {
-  background: rgba(169, 155, 134, 0.15);
-  border: 1px solid rgba(201, 185, 154, 0.25);
-  color: #d4c5b0;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: color-mix(in srgb, var(--accent-1) 55%, var(--text-primary));
 }
 
 .tag-anonymous {
-  background: rgba(159, 147, 134, 0.15);
-  border: 1px solid rgba(159, 147, 134, 0.25);
-  color: #c9b99a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
 }
 
 /* ----- 表单组 ----- */
@@ -714,23 +752,74 @@ body.light-theme ::-webkit-scrollbar-thumb:hover {
 
 /* ----- 错误消息 ----- */
 .error-msg {
-  background: rgba(255, 107, 107, 0.15);
-  border: 1px solid rgba(255, 107, 107, 0.25);
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
   color: var(--danger-light);
   padding: 10px 14px;
   border-radius: var(--radius-sm);
-  font-size: 14px;
-  margin-bottom: 16px;
+  font-size: var(--font-sm);
+  margin-bottom: var(--space-4);
+}
+
+body.light-theme .error-msg {
+  color: #b5372f;
 }
 
 .ok-msg {
-  background: rgba(46, 213, 115, 0.15);
-  border: 1px solid rgba(46, 213, 115, 0.25);
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 28%, transparent);
   color: var(--success-light);
   padding: 10px 14px;
   border-radius: var(--radius-sm);
-  font-size: 14px;
-  margin-bottom: 16px;
+  font-size: var(--font-sm);
+  margin-bottom: var(--space-4);
+}
+
+body.light-theme .ok-msg {
+  color: #1d7a44;
+}
+
+/* ----- 三态（加载 / 空 / 错误）统一规范 -----
+   原先三种形态并存：Home/Votes 用 SkeletonCard、WallSelect/Profile 用裸文字
+   「加载中...」、Navbar 用转圈；空状态有 .empty-state / .empty / 内联 padding 三套。
+   这里把容器与文案层级固定下来，各页只传内容，不再各自发明样式。 */
+.state-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-base);
+  animation: riseIn 0.35s var(--ease) both;
+}
+
+.state-block .state-icon {
+  display: flex;
+  opacity: 0.45;
+}
+
+.state-block .state-title {
+  font-size: var(--font-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.state-block .state-desc {
+  font-size: var(--font-sm);
+  line-height: var(--leading-normal);
+  max-width: 42ch;
+}
+
+.state-block.state-error .state-icon { color: var(--danger); opacity: 0.7; }
+
+/* 骨架屏之间的间距，统一走这里 */
+.skeleton-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
 /* ----- 弹窗 ----- */
@@ -828,36 +917,69 @@ body.light-theme ::-webkit-scrollbar-thumb:hover {
 
 /* ==========================================
    响应式设计
+
+   断点收敛为 4 档（此前散落着 1080/880/768/640/600/560/500/480 共 8 个特例，
+   同一页面在不同宽度下的表现彼此打架）。这里定义全局基线，各页面
+   只允许使用这 4 档，需要微调时在页面内用同一组数值。
+     --bp-sm:  480px   小屏手机
+     --bp-md:  768px   平板竖屏 / 大屏手机（顶栏切汉堡、表单转单列）
+     --bp-lg:  1080px  小笔记本（Home 三栏换成两栏）
+     --bp-xl:  1280px  桌面宽屏
    ========================================== */
 
 @media (max-width: 768px) {
   .main-content {
-    padding: 70px 12px 24px;
+    padding: 70px var(--space-3) var(--space-5);
   }
 
   .form-row { flex-direction: column; }
 
   input, textarea, select {
     padding: 10px 14px;
+    /* 16px 是 iOS Safari 的临界值：小于它聚焦时会自动放大页面 */
     font-size: 16px;
   }
 
   .btn {
     padding: 9px 19px;
-    font-size: 14px;
+    font-size: var(--font-sm);
   }
 
   .glass, .glass-strong { border-radius: var(--radius-md); }
+
+  /* 移动端自动降级毛玻璃：同一屏可能叠 2~3 层 backdrop-filter
+     （navbar + dropdown + 卡片），低端安卓 GPU 会明显掉帧。
+     设置页仍可手动开关，这里只是给移动端一个更合理的默认。 */
+  .glass {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .glass-strong {
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+
+  /* 移动端卡片密度收紧，一屏能看到更多内容 */
+  .post-card { padding: var(--space-4); }
 }
 
 @media (max-width: 480px) {
   .main-content {
-    padding: 66px 8px 16px;
+    padding: 66px var(--space-2) var(--space-4);
   }
 
-  h2 { font-size: 20px; }
-  h3 { font-size: 16px; }
+  h1 { font-size: var(--font-xl); }
+  h2 { font-size: var(--font-lg); }
+  h3 { font-size: var(--font-md); }
 
-  .btn { padding: 7px 15px; font-size: 13px; }
-  .btn-sm { padding: 5px 11px; font-size: 12px; }
+  .btn { padding: 7px 15px; font-size: var(--font-sm); }
+  .btn-sm { padding: 5px 11px; font-size: var(--font-xs); }
+
+  .state-block { padding: var(--space-5) var(--space-3); }
+}
+
+/* 极窄屏（<=360px）：再压一档留白，避免内容被挤到只剩一两列 */
+@media (max-width: 360px) {
+  .main-content { padding: 64px 6px var(--space-3); }
+  .post-card { padding: var(--space-3); }
 }

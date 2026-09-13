@@ -7,6 +7,7 @@ import { useSettingsStore } from './stores/settings'
 import Navbar from './components/Navbar.vue'
 import ToastContainer from './components/ToastContainer.vue'
 import BackToTop from './components/BackToTop.vue'
+import PublishFab from './components/PublishFab.vue'
 import api from './api'
 
 const userStore = useUserStore()
@@ -41,19 +42,20 @@ provide('theme', { current: currentTheme, toggle: toggleTheme })
 
 async function getRandomWallpaper() {
   wallpaperLoaded.value = false
-  // 优先使用外部 Bing 壁纸 API
-  try {
-    const testUrl = 'https://bingw.jasonzeng.dev/?index=random&t=' + Date.now()
-    wallpaperUrl.value = testUrl
-    return
-  } catch (e) {}
-  // Fallback: 使用本地壁纸
+  // 先请求本地壁纸服务：本地图片可控、无第三方依赖、断网也能出图。
+  // 原实现把外部 Bing 接口写在一个 try{...return} 里 —— 该 try 永远不可能抛错，
+  // 于是 return 一定执行，下面的 api.get('/wallpaper') 属于永远跑不到的死代码，
+  // onWallpaperError 的兜底也被这条死路径架空。
   try {
     const res = await api.get('/wallpaper')
-    if (res.data.url) {
+    if (res.data?.url) {
       wallpaperUrl.value = res.data.url + '?t=' + Date.now()
+      return
     }
   } catch (e) {}
+  // 本地取不到再退回主题色渐变底（bg-gradient 常驻，视觉上不会空白）
+  wallpaperUrl.value = ''
+  wallpaperLoaded.value = true
 }
 
 function onWallpaperLoad() {
@@ -61,15 +63,9 @@ function onWallpaperLoad() {
 }
 
 function onWallpaperError() {
-  api.get('/wallpaper').then(res => {
-    if (res.data.url) {
-      wallpaperUrl.value = res.data.url + '?t=' + Date.now()
-    } else {
-      wallpaperLoaded.value = true
-    }
-  }).catch(() => {
-    wallpaperLoaded.value = true
-  })
+  // 本地壁纸文件缺失时不无限重试，直接回落到渐变底
+  wallpaperUrl.value = ''
+  wallpaperLoaded.value = true
 }
 
 onMounted(async () => {
@@ -87,6 +83,8 @@ onMounted(async () => {
 
 <template>
   <div class="app-container">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
     <div class="bg-wallpaper" :class="{ loaded: wallpaperLoaded }">
       <img
         v-if="wallpaperUrl"
@@ -106,16 +104,21 @@ onMounted(async () => {
       @toggle-theme="toggleTheme"
       :theme="currentTheme"
     />
-    <main class="main-content" :class="{ 'main-wide': isWideLayout }">
+    <main id="main-content" class="main-content" :class="{ 'main-wide': isWideLayout }">
       <router-view v-slot="{ Component, route }">
+        <!-- key 必须是 route.name 而不是 route.fullPath：
+             放在 keep-alive 内部的组件一旦 key 变化就会被视为不同组件而强制重建，
+             用 fullPath 会让带 query / 参数的同一页面（如 /post/1 -> /post/2）也重建，
+             更致命的是 Home 等页面每次路径变化都重建，keep-alive 等于完全失效。 -->
         <keep-alive :include="['Home', 'Votes', 'Chat', 'Inbox']" :max="5">
-          <component :is="Component" :key="route.fullPath" />
+          <component :is="Component" :key="route.name || route.path" />
         </keep-alive>
       </router-view>
     </main>
 
     <ToastContainer />
     <BackToTop />
+    <PublishFab />
   </div>
 </template>
 
@@ -123,6 +126,25 @@ onMounted(async () => {
 .app-container {
   min-height: 100vh;
   position: relative;
+}
+
+/* Skip link：键盘用户按下 Tab 的第一个落点，可跳过顶栏直达正文 */
+.skip-link {
+  position: absolute;
+  top: -60px;
+  left: 12px;
+  z-index: 10001;
+  padding: 10px 16px;
+  background: var(--btn-fill);
+  color: #fff;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: top 0.2s var(--ease);
+}
+.skip-link:focus {
+  top: 12px;
 }
 
 .bg-gradient {
@@ -176,15 +198,15 @@ body.light-theme .bg-gradient {
 }
 
 .main-content {
-  max-width: 1000px;
+  max-width: var(--container);
   margin: 0 auto;
-  padding: 80px 16px 32px;
+  padding: 80px var(--space-4) var(--space-6);
 }
 
 /* 主页专用：加宽到 1280px 好放下左右两栏。
    两侧栏（140 + 280 + 32 间距）全部来自原先浪费掉的留白，
    中间帖子列宽度与改动前基本一致（约 796px vs 812px），正文观感不变。 */
 .main-wide {
-  max-width: 1280px;
+  max-width: var(--container-wide);
 }
 </style>

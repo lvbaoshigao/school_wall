@@ -7,3 +7,6 @@ uploads/avatars/*
 uploads/images/*
 !uploads/avatars/.gitkeep
 !uploads/images/.gitkeep
+
+# 数据库备份目录
+backups/

@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import api from '../api'
 import PostCard from '../components/PostCard.vue'
 import SkeletonCard from '../components/SkeletonCard.vue'
+import EmptyState from '../components/EmptyState.vue'
+import TrendingBoard from '../components/TrendingBoard.vue'
 import { useToast } from '../composables/useToast'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { useTimeAgo } from '../composables/useTimeAgo'
@@ -189,10 +191,13 @@ onMounted(() => {
         </template>
 
         <template v-else>
-          <div v-if="posts.length === 0" class="empty-state">
-            <div class="icon"><Icon name="file" :size="34" /></div>
-            <p>{{ sortMode === 'hot' ? '暂无热门帖子' : (activeCategory !== '全部' ? `暂无${activeCategory}类帖子` : '还没有帖子，来发第一条吧！') }}</p>
-            <button class="btn btn-primary btn-sm mt-2" @click="router.push('/post/create')">去发帖</button>
+          <div v-if="posts.length === 0">
+            <EmptyState
+              icon="file"
+              :title="sortMode === 'hot' ? '暂无热门帖子' : (activeCategory !== '全部' ? `暂无${activeCategory}类帖子` : '还没有帖子，来发第一条吧！')"
+              action-text="去发帖"
+              @action="router.push('/post/create')"
+            />
           </div>
 
           <div class="posts-list">
@@ -213,51 +218,55 @@ onMounted(() => {
         </template>
       </div>
 
-      <!-- 右栏：校园墙介绍 -->
-      <aside v-if="wallInfo || wallInfoLoading" class="wall-sidebar glass" aria-label="校园墙介绍">
-        <div class="sidebar-title">校园墙</div>
+      <!-- 右栏：校园墙介绍 + 话题热榜 -->
+      <aside v-if="wallInfo || wallInfoLoading" class="wall-sidebar" aria-label="校园墙介绍">
+        <div class="glass wall-sidebar-card">
+          <div class="sidebar-title">校园墙</div>
 
-        <div v-if="wallInfoLoading" class="wall-loading">
-          <div class="wall-skel wall-skel-title"></div>
-          <div class="wall-skel"></div>
-          <div class="wall-skel wall-skel-short"></div>
-        </div>
-
-        <template v-else-if="wallInfo">
-          <div class="wall-name">{{ wallInfo.name }}</div>
-          <p class="wall-desc" :class="{ 'is-empty': !wallInfo.description }">
-            {{ wallInfo.description || '这个校园墙还没有填写简介' }}
-          </p>
-
-          <div class="wall-stats">
-            <div class="wall-stat">
-              <span class="num">{{ wallInfo.member_count ?? '—' }}</span>
-              <span class="label">成员</span>
-            </div>
-            <div v-if="myRoleLabel" class="wall-stat">
-              <span class="role-badge">{{ myRoleLabel }}</span>
-              <span class="label">我的身份</span>
-            </div>
+          <div v-if="wallInfoLoading" class="wall-loading">
+            <div class="wall-skel wall-skel-title"></div>
+            <div class="wall-skel"></div>
+            <div class="wall-skel wall-skel-short"></div>
           </div>
 
-          <div class="sidebar-divider"></div>
+          <template v-else-if="wallInfo">
+            <div class="wall-name">{{ wallInfo.name }}</div>
+            <p class="wall-desc" :class="{ 'is-empty': !wallInfo.description }">
+              {{ wallInfo.description || '这个校园墙还没有填写简介' }}
+            </p>
 
-          <dl class="wall-meta">
-            <div class="wall-meta-row">
-              <dt>墙主</dt><dd>{{ wallInfo.owner_name || '(无)' }}</dd>
+            <div class="wall-stats">
+              <div class="wall-stat">
+                <span class="num">{{ wallInfo.member_count ?? '—' }}</span>
+                <span class="label">成员</span>
+              </div>
+              <div v-if="myRoleLabel" class="wall-stat">
+                <span class="role-badge">{{ myRoleLabel }}</span>
+                <span class="label">我的身份</span>
+              </div>
             </div>
-            <div class="wall-meta-row">
-              <dt>创建于</dt><dd>{{ timeAgo(wallInfo.created_at) }}</dd>
-            </div>
-            <div class="wall-meta-row">
-              <dt>加入方式</dt><dd>{{ wallInfo.require_join_approval ? '需审核' : '自由加入' }}</dd>
-            </div>
-          </dl>
 
-          <button class="btn btn-secondary btn-sm wall-action" @click="router.push('/walls')">
-            切换 / 加入校园墙
-          </button>
-        </template>
+            <div class="sidebar-divider"></div>
+
+            <dl class="wall-meta">
+              <div class="wall-meta-row">
+                <dt>墙主</dt><dd>{{ wallInfo.owner_name || '(无)' }}</dd>
+              </div>
+              <div class="wall-meta-row">
+                <dt>创建于</dt><dd>{{ timeAgo(wallInfo.created_at) }}</dd>
+              </div>
+              <div class="wall-meta-row">
+                <dt>加入方式</dt><dd>{{ wallInfo.require_join_approval ? '需审核' : '自由加入' }}</dd>
+              </div>
+            </dl>
+
+            <button class="btn btn-secondary btn-sm wall-action" @click="router.push('/walls')">
+              切换 / 加入校园墙
+            </button>
+          </template>
+        </div>
+
+        <TrendingBoard @select-category="switchCategory" />
       </aside>
     </div>
   </div>
@@ -369,15 +378,24 @@ onMounted(() => {
   color: var(--text-secondary); font-size: 14px; cursor: pointer; transition: all 0.2s;
   text-align: left; white-space: nowrap;
 }
-.cat-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
-.cat-btn.active { background: rgba(169, 155, 134, 0.25); color: #d4c5b0; font-weight: 600; border-left: 3px solid #c9b99a; }
-.hot-btn.active { background: rgba(255, 107, 107, 0.15); border-left: 3px solid #ff6b6b; color: #ffb8b8; }
+.cat-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.cat-btn.active { background: var(--accent-soft); color: var(--text-primary); font-weight: 600; border-left: 3px solid var(--accent-1); }
+.hot-btn.active { background: color-mix(in srgb, var(--danger) 15%, transparent); border-left: 3px solid var(--danger); color: var(--danger-light); }
 .posts-area { flex: 1; min-width: 0; }
 
-/* 右栏：校园墙介绍。与左分类栏一样 sticky，跟随滚动停在顶栏下方 */
+/* 右栏：校园墙介绍 + 话题热榜。与左分类栏一样 sticky，跟随滚动停在顶栏下方 */
 .wall-sidebar {
-  width: 280px; flex-shrink: 0; padding: 16px; border-radius: var(--radius-lg);
-  position: sticky; top: 76px;
+  width: 280px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 76px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.wall-sidebar-card {
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
 }
 .wall-name { font-size: 17px; font-weight: 700; margin-bottom: 6px; word-break: break-word; }
 .wall-desc {
@@ -429,17 +447,25 @@ onMounted(() => {
    光有 flex-wrap 的话它会一路收缩把右栏挤在同一行里。 */
 @media (max-width: 1080px) {
   .main-layout { flex-wrap: wrap; }
-  .wall-sidebar { width: 100%; position: static; }
+  .wall-sidebar {
+    width: 100%;
+    position: static;
+    flex-direction: row;
+    align-items: flex-start;
+  }
+  .wall-sidebar-card { flex: 1; min-width: 260px; }
+  .wall-sidebar :deep(.trending-board) { flex: 1; min-width: 260px; }
   .wall-meta { max-width: 420px; }
 }
 
 @media (max-width: 600px) {
   .main-layout { flex-direction: column; }
+  .wall-sidebar { flex-direction: column; }
   .category-sidebar { width: 100%; position: static; padding: 12px; }
   .category-list { flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; }
   .cat-btn { padding: 8px 14px; white-space: nowrap; border-left: none; border-bottom: 3px solid transparent; }
-  .cat-btn.active { border-left: none; border-bottom: 3px solid #c9b99a; }
-  .hot-btn.active { border-left: none; border-bottom: 3px solid #ff6b6b; }
+  .cat-btn.active { border-left: none; border-bottom: 3px solid var(--accent-1); }
+  .hot-btn.active { border-left: none; border-bottom: 3px solid var(--danger); }
   .sidebar-divider { display: none; }
 }
 </style>

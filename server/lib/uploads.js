@@ -131,4 +131,33 @@ function sanitizeImageList(images, subdir) {
   return out.length ? JSON.stringify(out) : '';
 }
 
-module.exports = { checkQuota, getUploadsUsage, noteWritten, extractLocalImages, deletePostImages, sanitizeImageList };
+// 魔数校验。
+//
+// 三个上传端点原本只信 `data:image/(jpeg|png|gif|webp);base64,` 这个前缀，
+// 而前缀完全由客户端书写 —— 把任意 HTML/JS 以 base64 塞进去、前缀写成 image/png，
+// 服务端就会以 image/png 存下并原样回给浏览器。配合 MIME 嗅探即可变成托管脚本。
+// 这里核对真实文件头，并对 png/jpeg/gif/webp 额外做结构完整性检查。
+const SIGS = {
+  jpg:  (b) => b.length > 3 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF,
+  png:  (b) => b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47
+              && b[4] === 0x0D && b[5] === 0x0A && b[6] === 0x1A && b[7] === 0x0A,
+  gif:  (b) => b.length > 6 && b.toString('ascii', 0, 3) === 'GIF'
+              && (b.toString('ascii', 3, 6) === '87a' || b.toString('ascii', 3, 6) === '89a'),
+  // RIFF....WEBP
+  webp: (b) => b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF'
+              && b.toString('ascii', 8, 12) === 'WEBP',
+};
+
+/**
+ * 校验 base64 图片的真实格式是否与声明的扩展名一致
+ * @param {Buffer} buffer 解码后的字节
+ * @param {string} ext 声明的扩展名（jpg/png/gif/webp）
+ * @returns {boolean}
+ */
+function verifyImageMagic(buffer, ext) {
+  const check = SIGS[ext];
+  if (!check) return false;
+  return check(buffer);
+}
+
+module.exports = { checkQuota, getUploadsUsage, noteWritten, extractLocalImages, deletePostImages, sanitizeImageList, verifyImageMagic };

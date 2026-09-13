@@ -1,6 +1,10 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
 const { hashPassword } = require('../lib/password');
 const { getSetting, setSetting } = require('../db');
+// SECRET 必须从认证模块取同一份：原来这里既没 require jwt 也没 require SECRET，
+// 初始化成功路径走到 jwt.sign 必然抛 ReferenceError，首次部署永远 500。
+const { SECRET } = require('../middleware/auth');
 
 // 首次设置。挂载在 /api 全局限流之前 —— 它有自己更严的 setupLimiter，
 // 且系统未初始化时这是唯一可用的入口，不该和普通 API 共用额度。
@@ -44,6 +48,10 @@ module.exports = (setupLimiter) => {
       }
 
       const hash = await hashPassword(password);
+      // userId 必须提升到事务块之外：下方 jwt.sign 在事务 try 块外引用它，
+      // 原先 const 声明在事务块内部，初始化必在最后一步抛 ReferenceError 回滚成 500。
+      let userId = 0;
+      let wallId = 0; // 同 userId：res.json 在事务块外引用它，必须提升作用域
       req.db.db.run('BEGIN');
       try {
         // 事务内再检查一次（理论不需要，但防御性编程）
@@ -57,14 +65,14 @@ module.exports = (setupLimiter) => {
           INSERT INTO users (username, password_hash, nickname, role, status)
           VALUES (?, ?, ?, 'super_admin', 'active')
         `).run(username, hash, nickname || username);
-        const userId = userResult.lastInsertRowid;
+        userId = userResult.lastInsertRowid;
 
         // 创建第一个校园墙
         const wallResult = req.db.prepare(`
           INSERT INTO walls (name, description, owner_id, status, require_join_approval)
           VALUES (?, ?, ?, 'active', 1)
-        `).run(wallName, (wall_description || '').trim(), userId);
-        const wallId = wallResult.lastInsertRowid;
+        `        ).run(wallName, (wall_description || '').trim(), userId);
+        wallId = wallResult.lastInsertRowid;
 
         // 超级管理员同时成为该墙的墙主
         req.db.prepare(`
@@ -92,8 +100,9 @@ module.exports = (setupLimiter) => {
         wall: { id: wallId, name: wallName },
       });
     } catch (e) {
+      // 只把异常写日志，不回显 e.message —— 它可能包含 SQL 片段与磁盘路径
       console.error('[Setup] 初始化失败:', e.message);
-      res.status(500).json({ error: '初始化失败: ' + e.message });
+      res.status(500).json({ error: '初始化失败，请查看服务端日志' });
     }
   }).catch(e => {
     console.error('[Setup] 未捕获错误:', e.message);

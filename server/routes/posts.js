@@ -118,14 +118,55 @@ router.get('/', authRequired, wallContext, (req, res) => {
   res.json({ posts, total, page, limit, categories: allCategories });
 });
 
-// 热门帖子（本墙内，按点赞数排序，三天内的帖子）
+// 话题热榜：按分类聚合近 N 天的互动量，给出「现在大家在聊什么」
+// 原 Home 左栏只有分类列表，看不到热度分布；这里把互动量显性化。
+router.get('/trending', authRequired, wallContext, (req, res) => {
+  const days = Math.min(30, Math.max(1, parseInt(req.query.days) || 7));
+  const limit = Math.min(20, Math.max(1, parseInt(req.query.limit) || 8));
+
+  const rows = req.db.prepare(`
+    SELECT p.category,
+           COUNT(*) as post_count,
+           SUM(p.like_count) as like_sum,
+           SUM(p.comment_count) as comment_sum,
+           SUM(p.like_count * 1 + p.comment_count * 2) as heat
+    FROM posts p
+    WHERE p.wall_id = ?
+      AND p.category IS NOT NULL AND p.category != ''
+      AND p.created_at >= datetime('now', ? , 'localtime')
+    GROUP BY p.category
+    ORDER BY heat DESC, post_count DESC
+    LIMIT ?
+  `).all(req.wallId, `-${days} days`, limit);
+
+  const maxHeat = rows.reduce((m, r) => Math.max(m, r.heat || 0), 0) || 1;
+  res.json({
+    days,
+    trending: rows.map(r => ({
+      category: r.category,
+      post_count: r.post_count,
+      like_sum: r.like_sum || 0,
+      comment_sum: r.comment_sum || 0,
+      heat: r.heat || 0,
+      // 前端进度条用，避免把聚合逻辑再写一遍
+      ratio: Math.round(((r.heat || 0) / maxHeat) * 100),
+    })),
+  });
+});
+
+// 热门帖子（本墙内，三天内的帖子）。
+// 原实现只按 like_count 排，点赞数少但评论多的帖子永远上不来，
+// 且「3 小时前发的 3 赞」和「3 天前的 3 赞」同权 —— 时间衰减缺失。
+// 改为显式热度公式：likes*1 + comments*2 - 距今小时数*0.5。
 router.get('/hot', authRequired, wallContext, (req, res) => {
   const limit = Math.min(30, Math.max(1, parseInt(req.query.limit) || 10));
   const posts = req.db.prepare(`
-    SELECT ${POST_SELECT}
+    SELECT ${POST_SELECT},
+      (p.like_count * 1 + p.comment_count * 2
+        - (julianday('now','localtime') - julianday(p.created_at)) * 24 * 0.5) as heat
     FROM posts p LEFT JOIN users u ON p.author_id = u.id
     WHERE p.wall_id = ? AND p.created_at >= datetime('now', '-3 days', 'localtime')
-    ORDER BY p.like_count DESC, p.comment_count DESC
+    ORDER BY heat DESC, p.created_at DESC
     LIMIT ?
   `).all(req.wallId, limit);
 

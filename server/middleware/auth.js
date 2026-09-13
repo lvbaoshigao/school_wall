@@ -160,7 +160,9 @@ function authRequired(req, res, next) {
   }
   try {
     const token = header.slice(7);
-    req.user = jwt.verify(token, SECRET);
+    // 显式锁死算法：不给 alg 白名单时，verify 只依赖库内默认值（虽然 jsonwebtoken v9
+    // 已拒绝 none，但显式声明才不受后续升级/降级影响）。
+    req.user = jwt.verify(token, SECRET, { algorithms: ['HS256'] });
     // 从库实时读取全局角色与状态
     const user = req.db.prepare('SELECT id, status, ban_until, ban_reason, ban_level, role FROM users WHERE id = ?').get(req.user.id);
     if (!user) return res.status(401).json({ error: '用户不存在' });

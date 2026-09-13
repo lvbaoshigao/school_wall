@@ -84,6 +84,10 @@ class DatabaseWrapper {
 
   // 兼容旧调用点：语义已从「立刻落盘」改为「稍后落盘」
   save() { this.markDirty(); }
+
+  // 导出当前数据库的完整字节快照（备份用）。调用前应先 saveNow()，
+  // 否则导出的可能是尚未落盘的旧状态。
+  exportBytes() { return Buffer.from(this.db.export()); }
 }
 
 let wrapper = null;

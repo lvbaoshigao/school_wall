@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 构建产物压缩包（曾误提交 20 字节空归档）
+*.tgz

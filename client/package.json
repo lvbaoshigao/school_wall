@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@jridgewell/sourcemap-codec": "^1.5.5",
+    "@vue/compiler-core": "^3.5.35",
     "axios": "^1.17.0",
     "dompurify": "^3.4.11",
     "marked": "^18.0.5",

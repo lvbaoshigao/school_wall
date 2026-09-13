@@ -298,13 +298,20 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
     </div>
 
     <div class="action-bar glass">
-      <button class="btn btn-secondary" @click="startEdit">编辑资料</button>
-      <button class="btn btn-secondary" @click="togglePassword">修改密码</button>
-      <button class="btn btn-secondary" @click="toggleBlacklist">黑名单</button>
-      <button class="btn btn-secondary" @click="toggleRoleApply">角色申请</button>
-      <router-link to="/inbox" class="btn btn-secondary">收件箱</router-link>
-      <router-link to="/bookmarks" class="btn btn-secondary">我的收藏</router-link>
-      <button class="btn btn-danger" @click="openDeleteAccount">注销账号</button>
+      <!-- 主操作区：常用动作直接平铺 -->
+      <div class="action-main">
+        <button class="btn btn-secondary" @click="startEdit">编辑资料</button>
+        <button class="btn btn-secondary" @click="togglePassword">修改密码</button>
+        <button class="btn btn-secondary" @click="toggleBlacklist">黑名单</button>
+        <button class="btn btn-secondary" @click="toggleRoleApply">角色申请</button>
+        <router-link to="/inbox" class="btn btn-secondary">收件箱</router-link>
+        <router-link to="/bookmarks" class="btn btn-secondary">我的收藏</router-link>
+      </div>
+      <!-- 危险操作单独成区、拉开分隔。原先 7 个按钮等权平铺，
+           「注销账号」与「我的收藏」视觉层级相同，极易误点 -->
+      <div class="action-danger">
+        <button class="btn btn-danger" @click="openDeleteAccount">注销账号</button>
+      </div>
     </div>
 
     <div v-if="successMsg" class="toast toast-success">{{ successMsg }}</div>
@@ -515,20 +522,26 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
 .bio-section { padding: 14px 16px; margin-bottom: 16px; }
 .bio-section p { font-size: 14px; line-height: 1.6; color: var(--text-secondary); }
 
-.action-bar { display: flex; gap: 12px; padding: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.action-bar { display: flex; gap: var(--space-3); padding: var(--space-4); margin-bottom: var(--space-4); flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.action-main { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.action-danger { border-left: 1px solid var(--border-strong); padding-left: var(--space-3); }
 
-.section { padding: 24px; margin-bottom: 16px; }
-.section h3 { margin-bottom: 16px; font-size: 18px; }
+.section { padding: var(--space-5); margin-bottom: var(--space-4); }
+.section h3 { margin-bottom: var(--space-4); font-size: var(--font-lg); }
 
 /* 移动端两列排布 */
 .edit-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
+/* 600px 以下表单改单列 —— 原先这里仍保持 1fr 1fr，320px 屏输入框只剩 ~130px */
 @media (max-width: 600px) {
-  .edit-grid { grid-template-columns: 1fr 1fr; }
+  .edit-grid { grid-template-columns: 1fr; }
+  .action-bar { flex-direction: column; align-items: stretch; }
+  .action-danger { border-left: none; border-top: 1px solid var(--border-strong); padding-left: 0; padding-top: var(--space-3); }
+  .action-danger .btn { width: 100%; }
 }
 
 select { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 12px 16px; border-radius: var(--radius-md); font-size: 14px; width: 100%; }
