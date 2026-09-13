@@ -88,7 +88,14 @@ export const useUserStore = defineStore('user', () => {
   }
 
   async function changePassword(oldPassword, newPassword) {
-    return await api.put('/auth/password', { oldPassword, newPassword })
+    const res = await api.put('/auth/password', { oldPassword, newPassword })
+    // 服务端在改密时会吊销旧会话（token_version +1）并换发新 token ——
+    // 不保存的话当前会话会被自己的改密操作踢下线
+    if (res.data?.token) {
+      token.value = res.data.token
+      localStorage.setItem('token', res.data.token)
+    }
+    return res
   }
 
   function logout() {

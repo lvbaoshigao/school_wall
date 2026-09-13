@@ -7,7 +7,7 @@ const zlib = require('zlib');
 const { authRequired, settleBan, SECRET } = require('../middleware/auth');
 const { getSetting } = require('../db');
 const { hashPassword, verifyPassword } = require('../lib/password');
-const { checkQuota } = require('../lib/uploads');
+const { checkQuota, verifyImageMagic } = require('../lib/uploads');
 
 const AVATAR_DIR = path.join(__dirname, '..', 'uploads', 'avatars');
 
@@ -90,7 +90,7 @@ router.post('/register', wrap(async (req, res) => {
     throw e;
   }
 
-  const token = jwt.sign({ id: result.lastInsertRowid, username, role: 'user' }, SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ id: result.lastInsertRowid, username, role: 'user', tv: 0 }, SECRET, { expiresIn: '7d' });
   res.json({ token, user: { id: result.lastInsertRowid, username, nickname: nickname || username, role: 'user' } });
 }));
 
@@ -139,7 +139,7 @@ router.post('/login', wrap(async (req, res) => {
     });
   }
 
-  const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ id: user.id, username: user.username, role: user.role, tv: user.token_version || 0 }, SECRET, { expiresIn: '7d' });
   res.json({
     token,
     user: {
@@ -183,8 +183,17 @@ router.put('/password', authRequired, wrap(async (req, res) => {
   if (!ok) return res.status(400).json({ error: '旧密码错误' });
 
   const newHash = await hashPassword(newPassword);
-  req.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, req.user.id);
-  res.json({ message: '密码修改成功' });
+  // 令牌版本 +1：JWT 固定 7 天有效期且无服务端会话表，改密码若不吊销，
+  // 已泄露的旧 token 在有效期内照常可用。旧会话立即失效，当前会话
+  // 用响应里的新 token 无缝续期（前端需保存返回的 token）。
+  req.db.prepare('UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?')
+    .run(newHash, req.user.id);
+  const fresh = req.db.prepare('SELECT username, role, token_version FROM users WHERE id = ?').get(req.user.id);
+  const token = jwt.sign(
+    { id: req.user.id, username: fresh.username, role: fresh.role, tv: fresh.token_version || 0 },
+    SECRET, { expiresIn: '7d' }
+  );
+  res.json({ message: '密码修改成功', token });
 }));
 
 // 更新个人资料
@@ -194,6 +203,26 @@ router.put('/profile', authRequired, (req, res) => {
           class_number, is_graduate, graduation_year,
           allow_search_by_id, allow_search_by_username, allow_search_by_nickname,
           allow_search_by_real_name, allow_discover } = req.body;
+
+  // 长度与类型校验：此前所有字段无上限，128KB 的请求体几乎可以全塞进 bio/昵称。
+  const FIELD_LIMITS = {
+    nickname: 30, real_name: 20, bio: 200, gender: 10,
+    contact_qq: 50, contact_wechat: 50, contact_weibo: 50, contact_bilibili: 50,
+  };
+  const FIELD_LABELS = {
+    nickname: '昵称', real_name: '真实姓名', bio: '自我介绍', gender: '性别',
+    contact_qq: 'QQ', contact_wechat: '微信', contact_weibo: '微博', contact_bilibili: 'B站',
+  };
+  for (const [field, max] of Object.entries(FIELD_LIMITS)) {
+    const v = req.body?.[field];
+    if (typeof v === 'string' && v.length > max) {
+      return res.status(400).json({ error: `${FIELD_LABELS[field]}不能超过${max}个字符` });
+    }
+  }
+  if (class_number !== undefined && class_number !== null && class_number !== '' &&
+      !Number.isInteger(Number(class_number))) {
+    return res.status(400).json({ error: '班级编号必须是数字' });
+  }
 
   req.db.prepare(`
     UPDATE users SET
@@ -252,6 +281,9 @@ router.put('/avatar', authRequired, (req, res) => {
     const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
     const buffer = Buffer.from(matches[2], 'base64');
     if (buffer.length > 500 * 1024) return res.status(400).json({ error: '头像不能超过500KB' });
+    // 安全修复：这条接口此前漏了魔数校验（uploads.js 的两个头像接口都有），
+    // 声明 image/png 实际塞什么都照存。补上真实文件头检查，三处行为对齐。
+    if (!verifyImageMagic(buffer, ext)) return res.status(400).json({ error: '文件内容不是有效的图片' });
 
     const quota = checkQuota(req.user.id, buffer.length);
     if (!quota.ok) return res.status(quota.status).json({ error: quota.error });
@@ -282,18 +314,55 @@ router.put('/avatar', authRequired, (req, res) => {
   return res.status(400).json({ error: '无效的头像数据' });
 });
 
-// 获取用户公开信息
 // 获取用户公开信息。
 // 这里返回真实姓名、班级和 QQ/微信等联系方式（受用户自己的隐私开关约束），
 // 原先没挂任何中间件 —— 未登录也能按 id 顺序遍历，等于把全校通讯录敞开。
+//
+// 二次修复（IDOR）：只挡未登录还不够。登录后按 id 顺序遍历，仍能读到
+// 与自己毫无交集（不同墙、非好友）的用户档案。这里对齐 users.js 的严格版：
+// 本人 / 已接受好友 / 至少共享一个 active 墙 / 有过私信往来，四者其一才放行；
+// 无权查看统一回 404，与「用户不存在」同响应，避免探测某个 id 是否存在。
 router.get('/user/:id', authRequired, (req, res) => {
+  const targetId = parseInt(req.params.id);
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    return res.status(404).json({ error: '用户不存在' });
+  }
   const user = req.db.prepare(`
     SELECT id, username, nickname, real_name, show_real_name, avatar, bio, gender,
            contact_qq, contact_wechat, contact_weibo, contact_bilibili, show_contact,
            class_number, is_graduate, graduation_year, created_at
     FROM users WHERE id = ?
-  `).get(parseInt(req.params.id));
+  `).get(targetId);
   if (!user) return res.status(404).json({ error: '用户不存在' });
+
+  if (targetId !== req.user.id) {
+    const isFriend = !!req.db.prepare(`
+      SELECT 1 AS ok FROM friends
+      WHERE ((user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?))
+        AND status = 'accepted' LIMIT 1
+    `).get(req.user.id, targetId, targetId, req.user.id);
+    if (!isFriend) {
+      const shared = req.db.prepare(`
+        SELECT 1 AS ok FROM wall_members a
+        JOIN wall_members b ON a.wall_id = b.wall_id
+        WHERE a.user_id = ? AND b.user_id = ? AND a.status = 'active' AND b.status = 'active'
+        LIMIT 1
+      `).get(req.user.id, targetId);
+      if (!shared) {
+        // 有过私信/表白往来的对象也放行 —— ChatRoom 打开聊天会拉对方资料，
+        // 只挡「墙 + 好友」会把聊天列表里的资料卡打成 404（回归）。
+        // 放行依据是真实存在的消息记录，而非 id 枚举，探测面不变。
+        const chatted = !!req.db.prepare(`
+          SELECT 1 AS ok FROM messages
+          WHERE type IN ('private', 'confession')
+            AND ((sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?))
+          LIMIT 1
+        `).get(req.user.id, targetId, targetId, req.user.id);
+        // 与「用户不存在」同一响应，不泄露该 id 是否存在
+        if (!chatted) return res.status(404).json({ error: '用户不存在' });
+      }
+    }
+  }
 
   // 隐私设置
   if (!user.show_real_name) user.real_name = '';
@@ -311,12 +380,19 @@ router.get('/user/:id', authRequired, (req, res) => {
 });
 
 // 注销账号（永久删除）
-router.delete('/account', authRequired, (req, res) => {
+// 安全修复：这是全站破坏性最强的操作，服务端必须验证密码 ——
+// 前端的「勾选须知 + 10 秒倒计时 + confirm()」都是客户端表演，
+// 偷到 token 的人可以绕过一切直接删号毁数据。
+router.delete('/account', authRequired, wrap(async (req, res) => {
   const userId = req.user.id;
-  const user = req.db.prepare('SELECT role FROM users WHERE id = ?').get(userId);
+  const { password } = req.body || {};
+  if (!password) return res.status(400).json({ error: '请输入密码以确认注销' });
+  const user = req.db.prepare('SELECT role, password_hash FROM users WHERE id = ?').get(userId);
   if (user.role === 'super_admin') {
     return res.status(403).json({ error: '超级管理员不能注销账号' });
   }
+  const { ok } = await verifyPassword(password, user.password_hash);
+  if (!ok) return res.status(400).json({ error: '密码验证失败，请确认是你本人操作' });
 
   // 若为任何墙的墙主，需先转让/停用（避免墙无主）
   const ownedWall = req.db.prepare("SELECT id, name FROM walls WHERE owner_id = ? AND status='active'").get(userId);
@@ -327,6 +403,11 @@ router.delete('/account', authRequired, (req, res) => {
   // 删除所有相关数据（含多校园墙相关表，避免孤儿数据）
   req.db.prepare('DELETE FROM comments WHERE author_id = ?').run(userId);
   req.db.prepare('DELETE FROM likes WHERE user_id = ?').run(userId);
+  // 回减投票计数：直接删记录会让 vote_options.vote_count 与真实票数永久漂移，
+  // 用户看到超过 100% 的百分比。先按记录逐项扣减再删除。
+  const voteRecs = req.db.prepare('SELECT option_id FROM vote_records WHERE user_id = ?').all(userId);
+  const decVote = req.db.prepare('UPDATE vote_options SET vote_count = MAX(0, vote_count - 1) WHERE id = ?');
+  voteRecs.forEach(r => decVote.run(r.option_id));
   req.db.prepare('DELETE FROM vote_records WHERE user_id = ?').run(userId);
   req.db.prepare('DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?').run(userId, userId);
   req.db.prepare('DELETE FROM friends WHERE user_id = ? OR friend_id = ?').run(userId, userId);
@@ -342,7 +423,7 @@ router.delete('/account', authRequired, (req, res) => {
   req.db.prepare('DELETE FROM users WHERE id = ?').run(userId);
 
   res.json({ message: '账号已注销，所有数据已删除' });
-});
+}));
 
 // ===== 导出我的数据 =====
 // 以 gzip 压缩的 .json.gz 附件返回。刻意不用 Content-Encoding: gzip ——

@@ -105,6 +105,9 @@ router.get('/inbox', authRequired, (req, res) => {
     LEFT JOIN users u ON m.sender_id = u.id
     ${where}
     ORDER BY m.created_at DESC
+    -- 安全上限：此前无 LIMIT，收件箱随时间无限膨胀，查询线性变慢。
+    -- 前端目前没有翻页，500 条对收件箱是安全的展示上限。
+    LIMIT 500
   `).all(...params);
 
   // 各类型未读数
@@ -184,6 +187,7 @@ router.get('/sent', authRequired, (req, res) => {
     JOIN users u ON m.receiver_id = u.id
     WHERE m.sender_id = ? AND m.type IN ('private', 'confession')
     ORDER BY m.created_at DESC
+    LIMIT 500
   `).all(req.user.id);
 
   res.json(messages);
@@ -338,14 +342,25 @@ router.post('/report-user', authRequired, (req, res) => {
 
   let evidenceText = '';
   if (Array.isArray(selected_message_ids) && selected_message_ids.length > 0) {
-    const placeholders = selected_message_ids.map(() => '?').join(',');
-    const evidenceMsgs = req.db.prepare(
-      `SELECT content, sender_id, created_at FROM messages WHERE id IN (${placeholders}) ORDER BY created_at ASC`
-    ).all(...selected_message_ids.map(id => parseInt(id)));
-    evidenceText = evidenceMsgs.map(m => {
-      const who = m.sender_id === req.user.id ? '我' : '对方';
-      return `[${who} ${m.created_at}] ${m.content}`;
-    }).join('\n');
+    // 安全修复：此前只按 id IN (...) 取消息，不校验举报人是否为当事人 ——
+    // 消息 ID 是自增整数，任何人都能把两个陌生人之间的私信塞进举报证据
+    // （随举报进入管理员面板），也能拿别人的聊天记录伪造证据构陷他人。
+    // 必须限定为本人发送或接收的消息，非当事人的一律丢弃；顺带限流条数。
+    const safeIds = [...new Set(
+      selected_message_ids.map(id => parseInt(id)).filter(i => Number.isInteger(i) && i > 0)
+    )].slice(0, 50);
+    if (safeIds.length > 0) {
+      const placeholders = safeIds.map(() => '?').join(',');
+      const evidenceMsgs = req.db.prepare(
+        `SELECT content, sender_id, created_at FROM messages
+         WHERE id IN (${placeholders}) AND (sender_id = ? OR receiver_id = ?)
+         ORDER BY created_at ASC`
+      ).all(...safeIds, req.user.id, req.user.id);
+      evidenceText = evidenceMsgs.map(m => {
+        const who = m.sender_id === req.user.id ? '我' : '对方';
+        return `[${who} ${m.created_at}] ${m.content}`;
+      }).join('\n');
+    }
   }
 
   req.db.prepare(`

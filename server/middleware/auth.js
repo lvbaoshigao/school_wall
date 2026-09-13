@@ -164,8 +164,15 @@ function authRequired(req, res, next) {
     // 已拒绝 none，但显式声明才不受后续升级/降级影响）。
     req.user = jwt.verify(token, SECRET, { algorithms: ['HS256'] });
     // 从库实时读取全局角色与状态
-    const user = req.db.prepare('SELECT id, status, ban_until, ban_reason, ban_level, role FROM users WHERE id = ?').get(req.user.id);
+    const user = req.db.prepare('SELECT id, status, ban_until, ban_reason, ban_level, role, token_version FROM users WHERE id = ?').get(req.user.id);
     if (!user) return res.status(401).json({ error: '用户不存在' });
+
+    // 令牌版本校验：改密码会令 token_version +1，旧 token 即使在 7 天有效期内也立即作废。
+    // payload 缺 tv 视为 0，兼容本次升级前签发的存量 token（用户无感，下次改密后生效）。
+    const tokenTv = req.user.tv ?? 0;
+    if (tokenTv !== (user.token_version || 0)) {
+      return res.status(401).json({ error: '登录状态已失效，请重新登录' });
+    }
 
     const state = settleBan(req.db, user);
     if (state.banned) {

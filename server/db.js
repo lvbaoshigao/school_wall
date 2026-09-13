@@ -184,6 +184,8 @@ async function initDB() {
       ban_until TEXT DEFAULT '',
       ban_reason TEXT DEFAULT '',
       ban_level TEXT DEFAULT 'login',
+      -- 令牌版本：改密码时 +1，使已签发的 JWT 全部失效
+      token_version INTEGER DEFAULT 0,
       -- 搜索与发现隐私开关（1=允许）
       allow_search_by_id INTEGER DEFAULT 1,
       allow_search_by_username INTEGER DEFAULT 1,
@@ -486,6 +488,7 @@ async function initDB() {
     addCol('users', 'ban_until', "TEXT DEFAULT ''");
     addCol('users', 'ban_reason', "TEXT DEFAULT ''");
     addCol('users', 'ban_level', "TEXT DEFAULT 'login'");
+    addCol('users', 'token_version', 'INTEGER DEFAULT 0');
     addCol('users', 'allow_search_by_id', "INTEGER DEFAULT 1");
     addCol('users', 'allow_search_by_username', "INTEGER DEFAULT 1");
     addCol('users', 'allow_search_by_nickname', "INTEGER DEFAULT 1");

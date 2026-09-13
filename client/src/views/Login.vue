@@ -83,9 +83,9 @@ onMounted(checkSetup)
 
       <div class="setup-section">
         <h3>超级管理员账号</h3>
-        <div class="form-group"><label>用户名</label><input v-model="setupForm.username" placeholder="3-20个字符" /></div>
-        <div class="form-group"><label>昵称</label><input v-model="setupForm.nickname" placeholder="显示名称（可选）" /></div>
-        <div class="form-group"><label>密码</label><input v-model="setupForm.password" type="password" placeholder="至少6个字符" /></div>
+        <div class="form-group"><label>用户名</label><input v-model="setupForm.username" placeholder="3-20个字符" autocomplete="username" maxlength="20" /></div>
+        <div class="form-group"><label>昵称</label><input v-model="setupForm.nickname" placeholder="显示名称（可选）" maxlength="30" /></div>
+        <div class="form-group"><label>密码</label><input v-model="setupForm.password" type="password" placeholder="至少6个字符" autocomplete="new-password" maxlength="72" /></div>
       </div>
 
       <div class="setup-divider"></div>
@@ -106,8 +106,8 @@ onMounted(checkSetup)
       <h2>登录</h2>
       <p class="text-muted mb-3">欢迎回来</p>
 
-      <div class="form-group"><label>用户名</label><input v-model="username" placeholder="请输入用户名" @keyup.enter="handleLogin" /></div>
-      <div class="form-group"><label>密码</label><input v-model="password" type="password" placeholder="请输入密码" @keyup.enter="handleLogin" /></div>
+      <div class="form-group"><label>用户名</label><input v-model="username" placeholder="请输入用户名" autocomplete="username" maxlength="20" @keyup.enter="handleLogin" /></div>
+      <div class="form-group"><label>密码</label><input v-model="password" type="password" placeholder="请输入密码" autocomplete="current-password" maxlength="72" @keyup.enter="handleLogin" /></div>
 
       <button class="btn btn-primary" style="width:100%" :disabled="loading" @click="handleLogin">
         {{ loading ? '登录中...' : '登录' }}

@@ -91,7 +91,7 @@ module.exports = (setupLimiter) => {
       req.db.saveNow();
 
       // 签发 token 自动登录
-      const token = jwt.sign({ id: userId, username, role: 'super_admin' }, SECRET, { expiresIn: '7d' });
+      const token = jwt.sign({ id: userId, username, role: 'super_admin', tv: 0 }, SECRET, { expiresIn: '7d' });
 
       res.json({
         message: '初始化完成！',

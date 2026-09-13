@@ -72,7 +72,10 @@ function dashboardAuth(req, res, next) {
 // 这里补一条用 Cookie 换短期 token 的通道：token 只存在于页面 JS 内存，
 // 不进 URL、不进 localStorage、不进服务器日志，10 分钟自动过期。
 router.post('/dashboard/api/token', dashboardAuth, (req, res) => {
-  const token = jwt.sign({ id: req.user.id }, SECRET, { expiresIn: '10m' });
+  // 该 token 会被页面 JS 用来调 /api/admin/*（走 authRequired），必须带上
+  // token_version —— 否则令牌版本比对会把管理后台的全部请求打回 401。
+  const u = req.db.prepare('SELECT username, role, token_version FROM users WHERE id = ?').get(req.user.id);
+  const token = jwt.sign({ id: req.user.id, username: u?.username || '', role: u?.role || 'user', tv: u?.token_version || 0 }, SECRET, { expiresIn: '10m' });
   res.json({ token });
 });
 

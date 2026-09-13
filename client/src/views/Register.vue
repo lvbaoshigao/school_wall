@@ -52,11 +52,11 @@ async function handleRegister() {
       <h2>注册</h2>
       <p class="text-muted mb-3">加入校园墙</p>
 
-      <div class="form-group"><label>用户名</label><input v-model="username" placeholder="3-20个字符" @keyup.enter="handleRegister" /></div>
-      <div class="form-group"><label>昵称</label><input v-model="nickname" placeholder="你的昵称" /></div>
-      <div class="form-group"><label>真实姓名 <span class="text-muted">(用于表白信搜索)</span></label><input v-model="realName" placeholder="你的真实姓名" /></div>
-      <div class="form-group"><label>密码</label><input v-model="password" type="password" placeholder="至少6个字符" /></div>
-      <div class="form-group"><label>确认密码</label><input v-model="confirmPassword" type="password" placeholder="再次输入密码" @keyup.enter="handleRegister" /></div>
+      <div class="form-group"><label>用户名</label><input v-model="username" placeholder="3-20个字符" autocomplete="username" maxlength="20" @keyup.enter="handleRegister" /></div>
+      <div class="form-group"><label>昵称</label><input v-model="nickname" placeholder="你的昵称" maxlength="30" /></div>
+      <div class="form-group"><label>真实姓名 <span class="text-muted">(用于表白信搜索)</span></label><input v-model="realName" placeholder="你的真实姓名" maxlength="20" /></div>
+      <div class="form-group"><label>密码</label><input v-model="password" type="password" placeholder="至少6个字符" autocomplete="new-password" maxlength="72" /></div>
+      <div class="form-group"><label>确认密码</label><input v-model="confirmPassword" type="password" placeholder="再次输入密码" autocomplete="new-password" maxlength="72" @keyup.enter="handleRegister" /></div>
 
       <button class="btn btn-primary" style="width:100%" :disabled="loading" @click="handleRegister">
         {{ loading ? '注册中...' : '注册' }}

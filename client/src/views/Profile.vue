@@ -46,6 +46,8 @@ const blacklist = ref([])
 const showDeleteAccount = ref(false)
 const deleteCountdown = ref(10)
 const deleteReadTerms = ref(false)
+// 注销必须输入密码：服务端会验证，防止偷到会话的人直接毁号
+const deletePassword = ref('')
 let deleteTimer = null
 
 const successMsg = ref('')
@@ -204,6 +206,7 @@ function toggleBlacklist() {
 function openDeleteAccount() {
   showDeleteAccount.value = true
   deleteReadTerms.value = false
+  deletePassword.value = ''
   deleteCountdown.value = 10
   clearInterval(deleteTimer)
   deleteTimer = setInterval(() => {
@@ -223,10 +226,14 @@ async function deleteAccount() {
     toast.error(`请等待 ${deleteCountdown.value} 秒后再确认`)
     return
   }
+  if (!deletePassword.value) {
+    toast.error('请输入密码以确认是本人操作')
+    return
+  }
   if (!confirm('最终确认：确定注销账号？此操作不可恢复！')) return
 
   try {
-    await api.delete('/auth/account')
+    await api.delete('/auth/account', { data: { password: deletePassword.value } })
     toast.success('账号已注销')
     userStore.logout()
     window.location.href = '/login'
@@ -476,6 +483,16 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
         <input type="checkbox" v-model="deleteReadTerms" />
         我已阅读并同意注销须知
       </label>
+      <div class="form-group">
+        <label>确认密码</label>
+        <input
+          type="password"
+          v-model="deletePassword"
+          placeholder="输入登录密码以确认本人操作"
+          autocomplete="current-password"
+          style="width: 100%;"
+        />
+      </div>
       <div class="modal-actions">
         <button
           class="btn btn-danger"

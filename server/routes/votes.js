@@ -49,6 +49,24 @@ router.post('/', authRequired, wallContext, (req, res) => {
     return res.status(400).json({ error: '选项最多10个' });
   }
 
+  // 长度与格式校验：此前 title/description/选项文本/end_at 一概不查，
+  // 128KB 请求体可以把字段撑满；非法截止时间字符串会让结束判断永远为假
+  const cleanTitle = String(title).trim();
+  if (!cleanTitle) return res.status(400).json({ error: '标题不能为空' });
+  if (cleanTitle.length > 100) return res.status(400).json({ error: '标题不能超过100字' });
+  const cleanDesc = String(description || '').trim();
+  if (cleanDesc.length > 500) return res.status(400).json({ error: '描述不能超过500字' });
+  const cleanOptions = options.map(o => String(o || '').trim()).filter(Boolean);
+  if (cleanOptions.length < 2) return res.status(400).json({ error: '至少需要2个非空选项' });
+  if (cleanOptions.some(o => o.length > 50)) return res.status(400).json({ error: '单个选项不能超过50字' });
+  let cleanEndAt = '';
+  if (end_at !== undefined && end_at !== null && String(end_at).trim() !== '') {
+    if (Number.isNaN(new Date(end_at).getTime())) {
+      return res.status(400).json({ error: '截止时间格式无效' });
+    }
+    cleanEndAt = String(end_at);
+  }
+
   const ip = req.ip || req.connection.remoteAddress;
   const ipHash = require('crypto').createHash('sha256').update(ip || '').digest('hex').substring(0, 16);
   const authorId = is_anonymous ? null : req.user.id;
@@ -56,14 +74,12 @@ router.post('/', authRequired, wallContext, (req, res) => {
   const result = req.db.prepare(`
     INSERT INTO votes (wall_id, title, description, author_id, is_anonymous, author_ip, end_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(req.wallId, title, description || '', authorId, is_anonymous ? 1 : 0, ipHash, end_at || '');
+  `).run(req.wallId, cleanTitle, cleanDesc, authorId, is_anonymous ? 1 : 0, ipHash, cleanEndAt);
 
   const voteId = result.lastInsertRowid;
 
   const ins = req.db.prepare('INSERT INTO vote_options (vote_id, option_text) VALUES (?, ?)');
-  options.forEach(opt => {
-    if (opt && opt.trim()) ins.run(voteId, opt.trim());
-  });
+  cleanOptions.forEach(opt => ins.run(voteId, opt));
 
   res.json({ id: voteId, message: '投票已创建' });
 });

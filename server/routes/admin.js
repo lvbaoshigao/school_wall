@@ -179,6 +179,10 @@ globalRouter.delete('/users/:id', requirePerm('global.user.delete'), (req, res) 
 
   req.db.prepare('DELETE FROM comments WHERE author_id=?').run(userId);
   req.db.prepare('DELETE FROM likes WHERE user_id=?').run(userId);
+  // 回减投票计数，与注销账号（auth.js）保持一致，避免 vote_count 永久漂移
+  const voteRecs = req.db.prepare('SELECT option_id FROM vote_records WHERE user_id=?').all(userId);
+  const decVote = req.db.prepare('UPDATE vote_options SET vote_count = MAX(0, vote_count - 1) WHERE id=?');
+  voteRecs.forEach(r => decVote.run(r.option_id));
   req.db.prepare('DELETE FROM vote_records WHERE user_id=?').run(userId);
   req.db.prepare('DELETE FROM friends WHERE user_id=? OR friend_id=?').run(userId, userId);
   req.db.prepare('DELETE FROM messages WHERE sender_id=? OR receiver_id=?').run(userId, userId);

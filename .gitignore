@@ -1,0 +1,13 @@
+# 审查/审计报告（含漏洞细节，勿入库）
+安全审计报告-*.md
+docs/REVIEW-*.md
+
+# 会话临时文件
+*_tmp.txt
+.env_check.txt
+
+# 打包产物
+*.tgz
+
+# WorkBuddy 会话数据
+.workbuddy/

@@ -269,6 +269,11 @@ router.post('/:id/comments', authRequired, wallContext, (req, res) => {
   if (!content || content.trim().length === 0) {
     return res.status(400).json({ error: '评论不能为空' });
   }
+  // 与前端 CommentBox 的 maxlength=500 对齐：此前评论无长度限制，
+  // 128KB 的请求体几乎可以全部塞进一条评论里
+  if (content.length > 500) {
+    return res.status(400).json({ error: '评论不能超过500字' });
+  }
 
   const post = req.db.prepare('SELECT id, author_id, content FROM posts WHERE id = ? AND wall_id = ?').get(parseInt(req.params.id), req.wallId);
   if (!post) return res.status(404).json({ error: '帖子不存在' });
@@ -346,7 +351,12 @@ router.post('/:id/like', authRequired, wallContext, (req, res) => {
 
     res.json({ liked: true });
   } catch (e) {
-    res.status(400).json({ error: '已经点赞过了' });
+    // 只有唯一约束冲突才是「已点赞」；其它数据库错误如实上抛交给 500 处理，
+    // 不然真实故障会被一句「已经点赞过了」掩盖
+    if (/UNIQUE/i.test(e?.message || '')) {
+      return res.status(400).json({ error: '已经点赞过了' });
+    }
+    throw e;
   }
 });
 
@@ -440,7 +450,10 @@ router.post('/:id/bookmark', authRequired, wallContext, (req, res) => {
     req.db.prepare('INSERT INTO bookmarks (user_id, post_id) VALUES (?, ?)').run(req.user.id, postId);
     res.json({ bookmarked: true });
   } catch (e) {
-    res.status(400).json({ error: '已收藏' });
+    if (/UNIQUE/i.test(e?.message || '')) {
+      return res.status(400).json({ error: '已收藏' });
+    }
+    throw e;
   }
 });
 
