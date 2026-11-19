@@ -10,6 +10,9 @@ set -euo pipefail
 
 DEPLOY_DIR="/home/server/school_wall/deploy"
 HARDEN_DIR="$DEPLOY_DIR/hardening"
+node "$DEPLOY_DIR/check-runtime.cjs"
+DATA_ROOT="$(node "$DEPLOY_DIR/service-data-dir.cjs")"
+[ -d "$DATA_ROOT" ] || { echo "先安装服务并创建数据目录，再运行加固脚本" >&2; exit 1; }
 
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
@@ -37,15 +40,29 @@ say "2/5 sshd"
 if [ ! -s ~/.ssh/authorized_keys ]; then
     echo "  ✗ ~/.ssh/authorized_keys 为空，先装公钥再来（本步骤已跳过）"
 else
-    sudo install -m 644 -D "$HARDEN_DIR/99-school-wall-sshd.conf" \
-        /etc/ssh/sshd_config.d/99-school-wall-hardening.conf
-    # 配置有语法错误时 reload 会让 sshd 直接退出，先验后加载
-    if sudo sshd -t; then
-        sudo systemctl reload ssh
+    # 保留现有有效认证策略，避免重装模板把旧版脚本关掉的密码登录重新打开。
+    SSHD_BEFORE="$(sudo /usr/sbin/sshd -T)"
+    AUTH_BEFORE="$(awk '$1 ~ /^(passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication)$/ {print}' <<<"$SSHD_BEFORE")"
+    SSH_CONF=/etc/ssh/sshd_config.d/99-school-wall-hardening.conf
+    SSH_BACKUP="$SSH_CONF.bak.$(date +%s)"
+    HAD_SSH_CONF=0
+    if sudo test -f "$SSH_CONF"; then
+        sudo cp -a "$SSH_CONF" "$SSH_BACKUP"
+        HAD_SSH_CONF=1
+    fi
+    sudo install -m 644 -D "$HARDEN_DIR/99-school-wall-sshd.conf" "$SSH_CONF"
+    printf '\n# Preserve the existing effective authentication policy.\n%s\n' "$AUTH_BEFORE" | sudo tee -a "$SSH_CONF" >/dev/null
+    AUTH_AFTER=''
+    if sudo /usr/sbin/sshd -t && SSHD_AFTER="$(sudo /usr/sbin/sshd -T)"; then
+        AUTH_AFTER="$(awk '$1 ~ /^(passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication)$/ {print}' <<<"$SSHD_AFTER")"
+    fi
+    # 先验语法与认证策略再 reload；失败恢复之前的文件。
+    if [ -n "$AUTH_AFTER" ] && [ "$AUTH_AFTER" = "$AUTH_BEFORE" ] && sudo systemctl reload ssh; then
         echo "  已应用（现有连接不受影响）"
     else
-        sudo rm -f /etc/ssh/sshd_config.d/99-school-wall-hardening.conf
-        echo "  ✗ 配置校验失败，已回滚"; exit 1
+        if [ "$HAD_SSH_CONF" = 1 ]; then sudo cp -a "$SSH_BACKUP" "$SSH_CONF"
+        else sudo rm -f -- /etc/ssh/sshd_config.d/99-school-wall-hardening.conf; fi
+        echo "  ✗ 配置校验或加载失败，已恢复原配置"; exit 1
     fi
 fi
 
@@ -71,11 +88,16 @@ echo "  journal 上限 200M"
 say "5/5 敏感文件权限"
 # 数据库里是口令哈希。/home/server 放开到 711 是为了让 nginx 能读到前端静态文件，
 # 同机的 www-data 因此能穿过目录 —— 这几个文件必须确保它读不到。
-chmod 600 /home/server/school_wall/server/data.db* 2>/dev/null || true
-chmod 600 /home/server/school_wall/server/.jwt_secret 2>/dev/null || true
-[ -f /home/server/school_wall/server/.env ] && chmod 600 /home/server/school_wall/server/.env
-chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys
-ls -l /home/server/school_wall/server/data.db /home/server/school_wall/server/.jwt_secret 2>/dev/null | sed 's/^/  /'
+chmod 700 /home/server/school_wall/server "$DATA_ROOT"
+for private_file in "$DATA_ROOT"/data.db* "$DATA_ROOT/.jwt_secret" /home/server/school_wall/server/.env; do
+    if [ -f "$private_file" ]; then chmod 600 "$private_file"; fi
+done
+for private_directory in "$DATA_ROOT/uploads" "$DATA_ROOT/backups"; do
+    [ ! -L "$private_directory" ] || { echo "数据目录不能是符号链接：$private_directory"; exit 1; }
+    if [ -d "$private_directory" ]; then chmod -R u+rwX,go-rwx "$private_directory"; fi
+done
+if [ -d ~/.ssh ]; then chmod 700 ~/.ssh; fi
+if [ -f ~/.ssh/authorized_keys ]; then chmod 600 ~/.ssh/authorized_keys; fi
 
 # ---------------------------------------------------------------
 say "自检"
@@ -107,8 +129,9 @@ chk "LoginGraceTime=30"          "sshd_is 'logingracetime 30'"
 chk "X11 转发已关"                "sshd_is 'x11forwarding no'"
 chk "只允许 server 登录"          "sshd_is 'allowusers server'"
 chk "fail2ban sshd jail 运行中"   "sudo fail2ban-client status sshd"
-chk "data.db 权限 600"            "[ \"\$(stat -c %a /home/server/school_wall/server/data.db)\" = 600 ]"
-chk ".jwt_secret 权限 600"        "[ \"\$(stat -c %a /home/server/school_wall/server/.jwt_secret)\" = 600 ]"
+private_mode() { [ ! -e "$1" ] || [ "$(stat -c %a "$1")" = 600 ]; }
+chk "data.db 权限 600（如存在）" 'private_mode "$DATA_ROOT/data.db"'
+chk ".jwt_secret 权限 600（如存在）" 'private_mode "$DATA_ROOT/.jwt_secret"'
 chk "服务仍在运行"                "systemctl is-active --quiet school-wall && systemctl is-active --quiet nginx"
 
 # 密码登录是否已关只做提示，不计入失败 —— 它由 disable-ssh-password.sh 单独负责

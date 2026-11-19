@@ -3,13 +3,20 @@ const { authRequired } = require('../middleware/auth');
 
 const router = express.Router();
 
+function positiveId(raw) {
+  if (typeof raw !== 'string' && typeof raw !== 'number') return 0;
+  if (!/^[1-9]\d*$/.test(String(raw))) return 0;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : 0;
+}
+
 // 发送好友请求
 router.post('/add', authRequired, (req, res) => {
-  const { friend_id } = req.body;
-  if (!friend_id) return res.status(400).json({ error: '参数不完整' });
-  if (parseInt(friend_id) === req.user.id) return res.status(400).json({ error: '不能添加自己为好友' });
+  const friend_id = positiveId(req.body.friend_id);
+  if (!friend_id) return res.status(400).json({ error: '用户 ID 无效' });
+  if (friend_id === req.user.id) return res.status(400).json({ error: '不能添加自己为好友' });
 
-  const friend = req.db.prepare('SELECT id, nickname FROM users WHERE id = ?').get(parseInt(friend_id));
+  const friend = req.db.prepare("SELECT id, nickname FROM users WHERE id = ? AND status = 'active'").get(parseInt(friend_id));
   if (!friend) return res.status(404).json({ error: '用户不存在' });
 
   // 检查是否被拉黑
@@ -23,7 +30,14 @@ router.post('/add', authRequired, (req, res) => {
     return res.status(400).json({ error: '已发送过好友请求' });
   }
 
-  req.db.prepare('INSERT INTO friends (user_id, friend_id, status) VALUES (?, ?, ?)').run(req.user.id, parseInt(friend_id), 'pending');
+  const reverse = req.db.prepare('SELECT status FROM friends WHERE user_id=? AND friend_id=?').get(friend_id, req.user.id);
+  if (reverse) return res.status(400).json({ error: reverse.status === 'accepted' ? '已经是好友了' : '请先处理对方的好友请求' });
+  const sharedWall = req.db.prepare(
+    "SELECT 1 FROM wall_members a JOIN wall_members b ON a.wall_id=b.wall_id JOIN walls w ON w.id=a.wall_id WHERE a.user_id=? AND b.user_id=? AND a.status='active' AND b.status='active' AND w.status='active' LIMIT 1"
+  ).get(req.user.id, friend_id);
+  if (!sharedWall) return res.status(403).json({ error: '只能添加同一校园墙的成员' });
+
+  req.db.prepare('INSERT INTO friends (user_id, friend_id, status) VALUES (?, ?, ?)').run(req.user.id, friend_id, 'pending');
 
   const sender = req.db.prepare('SELECT nickname FROM users WHERE id = ?').get(req.user.id);
   req.db.prepare('INSERT INTO messages (sender_id, receiver_id, type, title, content, link) VALUES (?, ?, ?, ?, ?, ?)')
@@ -78,11 +92,17 @@ router.get('/pending', authRequired, (req, res) => {
 // 接受/拒绝好友请求
 router.put('/:id/respond', authRequired, (req, res) => {
   const { action } = req.body;
-  const friendRecord = req.db.prepare('SELECT * FROM friends WHERE id = ? AND friend_id = ?').get(parseInt(req.params.id), req.user.id);
+  const id = positiveId(req.params.id);
+  if (!id || !['accept', 'reject'].includes(action)) return res.status(400).json({ error: '无效操作' });
+  const friendRecord = req.db.prepare("SELECT * FROM friends WHERE id = ? AND friend_id = ? AND status = 'pending'").get(id, req.user.id);
 
   if (!friendRecord) return res.status(404).json({ error: '请求不存在' });
 
   if (action === 'accept') {
+    const blocked = req.db.prepare("SELECT 1 FROM friends WHERE status='blocked' AND ((user_id=? AND friend_id=?) OR (user_id=? AND friend_id=?))").get(req.user.id, friendRecord.user_id, friendRecord.user_id, req.user.id);
+    if (blocked) return res.status(403).json({ error: '无法添加该用户' });
+    const sender = req.db.prepare("SELECT id FROM users WHERE id=? AND status='active'").get(friendRecord.user_id);
+    if (!sender) return res.status(400).json({ error: '对方账号不可用' });
     req.db.prepare("UPDATE friends SET status = 'accepted' WHERE id = ?").run(friendRecord.id);
     req.db.prepare('INSERT INTO messages (sender_id, receiver_id, type, title, content, link) VALUES (?, ?, ?, ?, ?, ?)')
       .run(req.user.id, friendRecord.user_id, 'system', '好友已添加', '对方接受了你的好友请求', `/chat/${req.user.id}`);
@@ -97,24 +117,25 @@ router.put('/:id/respond', authRequired, (req, res) => {
 
 // 拉黑用户
 router.post('/block', authRequired, (req, res) => {
-  const { user_id } = req.body;
-  if (!user_id) return res.status(400).json({ error: '参数不完整' });
-  if (parseInt(user_id) === req.user.id) return res.status(400).json({ error: '不能拉黑自己' });
+  const user_id = positiveId(req.body.user_id);
+  if (!user_id) return res.status(400).json({ error: '用户 ID 无效' });
+  if (user_id === req.user.id) return res.status(400).json({ error: '不能拉黑自己' });
+  if (!req.db.prepare('SELECT id FROM users WHERE id=?').get(user_id)) return res.status(404).json({ error: '用户不存在' });
 
   // 删除现有好友关系
-  req.db.prepare('DELETE FROM friends WHERE (user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)')
+  req.db.prepare("DELETE FROM friends WHERE status != 'blocked' AND ((user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?))")
     .run(req.user.id, parseInt(user_id), parseInt(user_id), req.user.id);
 
   // 添加拉黑记录
-  req.db.prepare("INSERT INTO friends (user_id, friend_id, status) VALUES (?, ?, 'blocked')").run(req.user.id, parseInt(user_id));
+  req.db.prepare("INSERT OR IGNORE INTO friends (user_id, friend_id, status) VALUES (?, ?, 'blocked')").run(req.user.id, parseInt(user_id));
 
   res.json({ message: '已拉黑该用户' });
 });
 
 // 取消拉黑
 router.post('/unblock', authRequired, (req, res) => {
-  const { user_id } = req.body;
-  if (!user_id) return res.status(400).json({ error: '参数不完整' });
+  const user_id = positiveId(req.body.user_id);
+  if (!user_id) return res.status(400).json({ error: '用户 ID 无效' });
 
   const result = req.db.prepare("DELETE FROM friends WHERE user_id = ? AND friend_id = ? AND status = 'blocked'")
     .run(req.user.id, parseInt(user_id));
@@ -125,8 +146,10 @@ router.post('/unblock', authRequired, (req, res) => {
 
 // 删除好友
 router.delete('/:id', authRequired, (req, res) => {
-  const result = req.db.prepare('DELETE FROM friends WHERE id = ? AND (user_id = ? OR friend_id = ?)')
-    .run(parseInt(req.params.id), req.user.id, req.user.id);
+  const id = positiveId(req.params.id);
+  if (!id) return res.status(400).json({ error: '关系 ID 无效' });
+  const result = req.db.prepare("DELETE FROM friends WHERE id = ? AND ((status='accepted' AND (user_id=? OR friend_id=?)) OR (status='pending' AND user_id=?))")
+    .run(id, req.user.id, req.user.id, req.user.id);
 
   if (result.changes === 0) return res.status(404).json({ error: '好友关系不存在' });
   res.json({ message: '已删除好友' });

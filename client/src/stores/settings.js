@@ -1,6 +1,6 @@
 import { defineStore, acceptHMRUpdate } from 'pinia'
-import { computed, ref } from 'vue'
-import api from '../api'
+import { computed, ref, onScopeDispose } from 'vue'
+import api, { getSessionToken, subscribeSessionChange, getApiErrorMessage } from '../api'
 import { useUserStore } from './user'
 import { useWallStore } from './wall'
 
@@ -54,20 +54,20 @@ export const PREF_SCHEMA = {
   always_focus_ring: { def: false },
   disable_blur:      { def: false },
 
-  accent: { def: 'indigo' },
+  accent: { def: 'teal' },
 }
 
 // 可选主题色。每项给出两个色标，按钮渐变、选中态、焦点环都由它派生。
 export const ACCENTS = [
   { key: 'indigo', label: '靛蓝', c1: '#7183f0', c2: '#5a68d8', shadow: '72, 92, 210' },
-  { key: 'teal',   label: '青碧', c1: '#3fb8ad', c2: '#2f9389', shadow: '36, 128, 120' },
+  { key: 'teal',   label: '青碧', c1: '#397d72', c2: '#2d655c', shadow: '36, 96, 86' },
   { key: 'forest', label: '松绿', c1: '#5cb073', c2: '#438c59', shadow: '48, 110, 70' },
   { key: 'amber',  label: '琥珀', c1: '#e0a34a', c2: '#c4832f', shadow: '150, 100, 30' },
   { key: 'rose',   label: '绛红', c1: '#e0708a', c2: '#c4526e', shadow: '150, 55, 80' },
   { key: 'slate',  label: '石墨', c1: '#7c8794', c2: '#5f6a77', shadow: '70, 80, 92' },
 ]
 
-const DEFAULT_NAV = NAV_ITEMS.reduce((acc, item) => { acc[item.key] = true; return acc }, {})
+const DEFAULT_NAV = NAV_ITEMS.reduce((acc, item) => { acc[item.key] = !['votes', 'treehole', 'bookmarks', 'help'].includes(item.key); return acc }, {})
 // 导航工具项（主题/壁纸），同样可在设置里开关
 const DEFAULT_TOOLS = { theme: true, wallpaper: true }
 const DEFAULT_PREFS = Object.fromEntries(Object.entries(PREF_SCHEMA).map(([k, v]) => [k, v.def]))
@@ -93,10 +93,11 @@ export const useSettingsStore = defineStore('settings', () => {
     return items
   })
 
-  const accent = computed(() => ACCENTS.find(a => a.key === prefs.value.accent) || ACCENTS[0])
+  const accent = computed(() => ACCENTS.find(a => a.key === prefs.value.accent) || ACCENTS.find(a => a.key === 'teal'))
 
   // 把外观类偏好写到 <html> 上，由 global.css 的属性选择器接管
   function applyAppearance() {
+    if (typeof document === 'undefined') return
     const el = document.documentElement
     const p = prefs.value
     el.dataset.density = p.density
@@ -127,37 +128,82 @@ export const useSettingsStore = defineStore('settings', () => {
     applyAppearance()
   }
 
+  const saveError = ref('')
+  let loadPromise = null
+  let saveQueue = Promise.resolve()
+  let settingsRevision = 0
+
+  function reset() {
+    settingsRevision++
+    applyStored({})
+    loaded.value = false
+    saveError.value = ''
+    loadPromise = null
+    saveQueue = Promise.resolve()
+  }
+  onScopeDispose(subscribeSessionChange(event => { if (event.resetContext) reset() }))
+
   async function loadSettings() {
-    if (!userStore.isLoggedIn) return
-    try {
-      const res = await api.get('/auth/prefs')
-      if (res.data?.prefs) applyStored(res.data.prefs)
-    } catch {}
-    loaded.value = true
+    if (!userStore.isLoggedIn) return false
+    if (loadPromise) return loadPromise
+    const revision = settingsRevision
+    const requestedToken = getSessionToken()
+    const request = (async () => {
+      try {
+        const res = await api.get('/auth/prefs')
+        if (revision !== settingsRevision || requestedToken !== getSessionToken()) return false
+        if (res.data?.prefs) applyStored(res.data.prefs)
+        loaded.value = true
+        saveError.value = ''
+        return true
+      } catch (error) {
+        if (revision === settingsRevision) saveError.value = getApiErrorMessage(error, '设置加载失败，请重试')
+        return false
+      }
+    })()
+    loadPromise = request
+    try { return await request } finally { if (loadPromise === request) loadPromise = null }
   }
 
-  // 切换导航项显示并持久化到后端
-  async function setNavPref(key, val) {
-    if (key in nav.value) nav.value = { ...nav.value, [key]: !!val }
-    else if (key in tools.value) tools.value = { ...tools.value, [key]: !!val }
-    try {
-      await api.put('/auth/prefs', { prefs: { [key]: !!val } })
-    } catch {}
+  function savePreference(key, value, target) {
+    const revision = settingsRevision
+    const requestedToken = getSessionToken()
+    const operation = saveQueue.catch(() => {}).then(async () => {
+      if (!requestedToken || revision !== settingsRevision || requestedToken !== getSessionToken()) return false
+      const before = target.value[key]
+      target.value = { ...target.value, [key]: value }
+      applyAppearance()
+      saveError.value = ''
+      try {
+        await api.put('/auth/prefs', { prefs: { [key]: value } })
+        return revision === settingsRevision
+      } catch (error) {
+        if (revision === settingsRevision) {
+          target.value = { ...target.value, [key]: before }
+          applyAppearance()
+          saveError.value = getApiErrorMessage(error, '保存失败，已恢复原设置')
+        }
+        return false
+      }
+    })
+    saveQueue = operation
+    return operation
   }
 
-  // 设置任意偏好项；后端是增量保存，只需传改动的那一个
-  async function setPref(key, val) {
-    if (!(key in prefs.value)) return
-    prefs.value = { ...prefs.value, [key]: val }
-    applyAppearance()
-    try {
-      await api.put('/auth/prefs', { prefs: { [key]: val } })
-    } catch {}
+  function setNavPref(key, value) {
+    if (Object.hasOwn(nav.value, key)) return savePreference(key, !!value, nav)
+    if (Object.hasOwn(tools.value, key)) return savePreference(key, !!value, tools)
+    return Promise.resolve(false)
+  }
+
+  function setPref(key, value) {
+    if (!Object.hasOwn(prefs.value, key)) return Promise.resolve(false)
+    return savePreference(key, value, prefs)
   }
 
   return {
-    nav, tools, prefs, loaded, visibleNav, accent,
-    loadSettings, setNavPref, setPref, applyAppearance,
+    nav, tools, prefs, loaded, visibleNav, accent, saveError,
+    loadSettings, setNavPref, setPref, applyAppearance, reset,
   }
 })
 

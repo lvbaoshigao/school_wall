@@ -1,111 +1,138 @@
 #!/bin/bash
-# 校园墙 —— 服务器端安装/更新脚本（在部署机上以 server 用户运行，需要 sudo）
-#
-#   bash deploy/install-server.sh
-#
-# 幂等：重复执行只会把配置刷成当前版本，不会重复追加。
+# Debian server installation/update. Run as server from /home/server/school_wall.
+# Rebuilds locked dependencies and installs nginx/systemd/UFW configuration.
+# --check is read-only; the normal invocation really changes the deployment host.
 set -euo pipefail
-
-APP_ROOT="/home/server/school_wall"
+umask 077
+# Non-interactive shells may omit Debian administrative command directories.
+export PATH="$PATH:/usr/sbin:/sbin"
+APP_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 DEPLOY_DIR="$APP_ROOT/deploy"
 PROXY_PORT=11451
+SSH_PORT="${SSH_PORT:-22}"
+CHECK_ONLY=0
+case "${1:-}" in
+    --check) CHECK_ONLY=1 ;;
+    '') ;;
+    *) echo "Usage: bash deploy/install-server.sh [--check]" >&2; exit 1 ;;
+esac
+[ "$#" -le 1 ] || { echo "Unexpected arguments" >&2; exit 1; }
+say() { printf '\n==> %s\n' "$*"; }
 
-say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+say "1/6 Preflight (no deployment changes yet)"
+for tool in node npm nginx sudo systemctl ss curl ufw install readlink; do
+    command -v "$tool" >/dev/null || { echo "Missing prerequisite: $tool" >&2; exit 1; }
+done
+node "$DEPLOY_DIR/check-runtime.cjs"
+NGINX_BUILD="$(nginx -V 2>&1)"
+[[ "$NGINX_BUILD" == *--with-http_realip_module* ]] || { echo "nginx requires http_realip_module" >&2; exit 1; }
+[[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$SSH_PORT >= 1 && 10#$SSH_PORT <= 65535 )) || {
+    echo "SSH_PORT must be 1..65535" >&2; exit 1;
+}
+SSH_PORT=$((10#$SSH_PORT))
+for snippet in proxy headers csp realip; do
+    [ -f "$DEPLOY_DIR/nginx/school-wall-$snippet.conf" ] || { echo "Missing nginx snippet: $snippet" >&2; exit 1; }
+done
+for directory in server client; do
+    [ -f "$APP_ROOT/$directory/package-lock.json" ] || { echo "Missing $directory lockfile" >&2; exit 1; }
+done
+SERVICE_DATA_DIR="$(node "$DEPLOY_DIR/service-data-dir.cjs")"
+NODE_BIN="$(node -p 'process.execPath')"
+[[ "$NODE_BIN" =~ ^/[a-zA-Z0-9_./-]+$ ]] || { echo "Unsupported node executable path: $NODE_BIN" >&2; exit 1; }
+if [ "$CHECK_ONLY" = 1 ]; then
+    node "$DEPLOY_DIR/check-runtime.cjs" --sharp
+    [ -f "$APP_ROOT/client/dist/index.html" ] || { echo "Frontend build is missing" >&2; exit 1; }
+    echo "Preflight passed. No services, firewall rules, permissions or configuration were changed."
+    exit 0
+fi
+[ "$(id -un)" = server ] || { echo "Run as the server user" >&2; exit 1; }
+[ "$APP_ROOT" = /home/server/school_wall ] || { echo "This service/nginx template requires /home/server/school_wall" >&2; exit 1; }
+# Refuse foreign/bare listeners. Never pkill matching command names across projects.
+if [ -n "$(ss -H -ltn 'sport = :3000')" ] && ! systemctl is-active --quiet school-wall; then
+    echo "Port 3000 is already used outside the running school-wall unit. Stop its owner explicitly." >&2
+    exit 1
+fi
+sudo -v
 
-[ "$(id -un)" = "server" ] || { echo "请以 server 用户运行"; exit 1; }
+say "2/6 Stop this project's service and prepare locked dependencies/frontend"
+if systemctl is-active --quiet school-wall; then sudo systemctl stop school-wall; fi
+# Stop before replacing dependencies; a failed preparation leaves the service stopped.
+bash "$APP_ROOT/deploy.sh" --prepare-only
 
-# ---------------------------------------------------------------
-say "1/6 收紧文件权限"
-# nginx 以 www-data 运行，要读 dist 和 uploads，就得能穿过 /home/server。
-# 711 只给「穿过」不给「列目录」—— 别人知道确切路径才能读到，且读到的只有前端静态文件。
+say "3/6 File permissions (only frontend assets are public)"
 chmod 711 /home/server
 chmod 755 "$APP_ROOT" "$APP_ROOT/client"
-[ -d "$APP_ROOT/client/dist" ] && chmod -R a+rX "$APP_ROOT/client/dist"
-
-# 后端目录只给穿过权限，不给列目录 —— 里面有数据库和依赖
-chmod 751 "$APP_ROOT/server"
-chmod -R a+rX "$APP_ROOT/server/uploads" 2>/dev/null || true
-chmod 755 "$APP_ROOT/server/uploads"
-
-# 数据库和密钥只有属主能读
-chmod 600 "$APP_ROOT/server"/data.db* 2>/dev/null || true
-[ -f "$APP_ROOT/server/.env" ] && chmod 600 "$APP_ROOT/server/.env"
-
-# ---------------------------------------------------------------
-say "2/6 安装 nginx 配置"
-sudo install -m 644 -D "$DEPLOY_DIR/nginx/school-wall-proxy.conf" \
-    /etc/nginx/snippets/school-wall-proxy.conf
-sudo install -m 644 -D "$DEPLOY_DIR/nginx/school-wall-headers.conf" \
-    /etc/nginx/snippets/school-wall-headers.conf
-sudo install -m 644 -D "$DEPLOY_DIR/nginx/school-wall.conf" \
-    /etc/nginx/sites-available/school-wall
-sudo ln -sfn /etc/nginx/sites-available/school-wall /etc/nginx/sites-enabled/school-wall
-
-# 默认站点监听 80 且能列目录，用不到，去掉减少暴露面
-sudo rm -f /etc/nginx/sites-enabled/default
-
-sudo nginx -t
-
-# ---------------------------------------------------------------
-say "3/6 安装 systemd 服务"
-# 之前可能有在 SSH 里裸跑的实例占着 3000 端口
-if pgrep -f 'node index\.js' >/dev/null 2>&1; then
-    echo "  停掉裸跑的 node 实例…"
-    pkill -f 'node index\.js' || true
-    sleep 2
+chmod -R u+rwX,go+rX,go-w "$APP_ROOT/client/dist"
+chmod 700 "$APP_ROOT/server"
+if [ ! -d "$SERVICE_DATA_DIR" ]; then
+    sudo install -d -m 700 -o server -g server "$SERVICE_DATA_DIR"
 fi
+chmod 700 "$SERVICE_DATA_DIR"
+for private_directory in uploads backups; do
+    target="$SERVICE_DATA_DIR/$private_directory"
+    [ ! -L "$target" ] || { echo "Private data directory must not be a symlink: $target" >&2; exit 1; }
+    if [ -d "$target" ]; then chmod -R u+rwX,go-rwx "$target"; fi
+done
+for private_file in "$SERVICE_DATA_DIR"/data.db* "$SERVICE_DATA_DIR/.jwt_secret" "$APP_ROOT/server/.env"; do
+    if [ -f "$private_file" ]; then chmod 600 "$private_file"; fi
+done
 
-sudo install -m 644 -D "$DEPLOY_DIR/systemd/school-wall.service" \
-    /etc/systemd/system/school-wall.service
+say "4/6 Install and validate nginx and systemd configuration"
+for snippet in proxy headers csp realip; do
+    sudo install -m 644 -D "$DEPLOY_DIR/nginx/school-wall-$snippet.conf" \
+        "/etc/nginx/snippets/school-wall-$snippet.conf"
+done
+sudo install -m 644 -D "$DEPLOY_DIR/nginx/school-wall.conf" /etc/nginx/sites-available/school-wall
+sudo ln -sfn /etc/nginx/sites-available/school-wall /etc/nginx/sites-enabled/school-wall
+# Preserve other sites, including the distribution's default site.
+sudo nginx -t
+sudo install -m 644 -D "$DEPLOY_DIR/systemd/school-wall.service" /etc/systemd/system/school-wall.service
+sudo install -d -m 755 /etc/systemd/system/school-wall.service.d
+# The selected, version-checked node may be installed with nvm rather than /usr/bin.
+# Explicitly list the data directory as writable under ProtectSystem=strict.
+printf '[Service]\nExecStart=\nExecStart=%s index.js\nReadWritePaths=\nReadWritePaths=%s\n' \
+    "$NODE_BIN" "$SERVICE_DATA_DIR" \
+    | sudo tee /etc/systemd/system/school-wall.service.d/50-runtime.conf >/dev/null
 sudo systemctl daemon-reload
-sudo systemctl enable school-wall
-sudo systemctl restart school-wall
 
-# ---------------------------------------------------------------
-say "4/6 配置防火墙"
-# 对外只留 SSH 和反代端口；后端 3000 绑在回环上，本来就进不来，
-# 这里再显式拒一次，防止以后有人把 HOST 改回 0.0.0.0 时无声地暴露出去。
-#
-# 放行规则必须排在 enable 前面：ufw 默认拒绝入站，
-# 先 enable 再 allow 的话，中间那一瞬间会把正在操作的 SSH 会话本身掐断。
-sudo ufw allow 22/tcp            >/dev/null
-sudo ufw allow "$PROXY_PORT"/tcp >/dev/null
-sudo ufw deny  3000/tcp          >/dev/null
+say "5/6 Firewall rules and service startup"
+# Add project rules without claiming to remove pre-existing UFW rules.
+# Set SSH_PORT for a nonstandard SSH listener before running this installer.
+sudo ufw allow "$SSH_PORT/tcp" >/dev/null
+sudo ufw allow "$PROXY_PORT/tcp" >/dev/null
+sudo ufw deny 3000/tcp >/dev/null
 sudo ufw --force enable >/dev/null
 sudo ufw reload >/dev/null
+sudo systemctl enable school-wall nginx >/dev/null
+sudo systemctl restart school-wall
+sudo systemctl reload-or-restart nginx
 
-# ---------------------------------------------------------------
-say "5/6 启动 nginx"
-sudo systemctl enable nginx >/dev/null
-sudo systemctl restart nginx
-
-# ---------------------------------------------------------------
-say "6/6 自检"
-sleep 3
-LOCAL_IP=$(hostname -I | awk '{print $1}')
-
+say "6/6 Bounded health checks"
 fail=0
 check() {
-    local desc="$1" cmd="$2"
-    if eval "$cmd" >/dev/null 2>&1; then
-        printf '  \033[32m✓\033[0m %s\n' "$desc"
-    else
-        printf '  \033[31m✗\033[0m %s\n' "$desc"; fail=1
-    fi
+    local description="$1"; shift
+    if "$@" >/dev/null 2>&1; then printf '  OK %s\n' "$description"
+    else printf '  FAIL %s\n' "$description"; fail=1; fi
 }
-
-check "school-wall 服务 running"     "systemctl is-active --quiet school-wall"
-check "nginx 服务 running"           "systemctl is-active --quiet nginx"
-check "后端只监听回环 127.0.0.1:3000" "ss -ltn | grep -q '127.0.0.1:3000'"
-check "后端未监听 0.0.0.0:3000"       "! ss -ltn | grep -q '0.0.0.0:3000'"
-check "nginx 监听 $PROXY_PORT"        "ss -ltn | grep -q ':$PROXY_PORT'"
-check "反代首页 200"                  "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PROXY_PORT/)\" = 200 ]"
-check "反代 API 可达"                 "curl -sf http://127.0.0.1:$PROXY_PORT/api/setup/status >/dev/null"
-check "不存在的 API 返回 404 而非挂起" "[ \"\$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:$PROXY_PORT/api/nope)\" = 404 ]"
-
-echo ""
-if [ "$fail" = 0 ]; then
-    printf '\033[32m全部通过\033[0m  →  http://%s:%s\n' "$LOCAL_IP" "$PROXY_PORT"
-else
-    printf '\033[31m有检查未通过\033[0m，看 journalctl -u school-wall -n 50\n'; exit 1
+backend_loopback_only() {
+    local addresses
+    addresses="$(ss -H -ltn 'sport = :3000' | awk '{print $4}')"
+    [ "$addresses" = 127.0.0.1:3000 ]
+}
+http_status() {
+    local expected="$1" url="$2" actual
+    actual="$(curl -sS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' "$url")" || return 1
+    [ "$actual" = "$expected" ]
+}
+check "school-wall is active" systemctl is-active --quiet school-wall
+check "nginx is active" systemctl is-active --quiet nginx
+# Retry actual database health, not merely a static page that nginx serves itself.
+check "backend/database health through nginx" curl -fsS --connect-timeout 2 --max-time 5 --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$PROXY_PORT/api/health"
+check "backend listens only on 127.0.0.1:3000" backend_loopback_only
+check "frontend returns 200" http_status 200 "http://127.0.0.1:$PROXY_PORT/"
+check "unknown API returns 404" http_status 404 "http://127.0.0.1:$PROXY_PORT/api/nope"
+if [ "$fail" != 0 ]; then
+    echo "Check journalctl -u school-wall -n 50 and nginx error logs." >&2; exit 1
 fi
+echo "Deployment checks passed. Proxy port: $PROXY_PORT. No default administrator account."
+echo "Complete first-time setup through a local/SSH connection before enabling public access."

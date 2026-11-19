@@ -17,11 +17,11 @@ const emit = defineEmits(['retry'])
 </script>
 
 <template>
-  <div class="state-block state-error error-state-block">
+  <div class="state-block state-error error-state-block" role="status" aria-live="polite">
     <div class="state-icon"><Icon name="alert-triangle" :size="34" /></div>
     <p class="state-title">{{ title }}</p>
     <p v-if="desc" class="state-desc">{{ desc }}</p>
-    <button v-if="showRetry" class="btn btn-secondary btn-sm mt-2" @click="emit('retry')">
+    <button v-if="showRetry" type="button" class="btn btn-secondary btn-sm mt-2" @click="emit('retry')">
       {{ retryText }}
     </button>
     <slot />

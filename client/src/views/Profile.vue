@@ -1,12 +1,14 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
-import api from '../api'
+import api, { getApiErrorMessage, getPasswordError } from '../api'
 import { useToast } from '../composables/useToast'
 import { useTimeAgo } from '../composables/useTimeAgo'
 import Icon from '../components/Icon.vue'
 
 const userStore = useUserStore()
+const router = useRouter()
 const toast = useToast()
 const { timeAgo } = useTimeAgo()
 const user = computed(() => userStore.user)
@@ -32,7 +34,7 @@ const editForm = ref({
   nickname: '', real_name: '', show_real_name: false,
   bio: '', gender: '',
   contact_qq: '', contact_wechat: '', contact_weibo: '', contact_bilibili: '', show_contact: false,
-  class_number: 0, is_graduate: false, graduation_year: 2024
+  class_number: 0, is_graduate: false, graduation_year: new Date().getFullYear()
 })
 
 const showPasswordForm = ref(false)
@@ -53,6 +55,21 @@ let deleteTimer = null
 const successMsg = ref('')
 const errorMsg = ref('')
 const avatarUploading = ref(false)
+const profileSaving = ref(false)
+const passwordSaving = ref(false)
+const deletingAccount = ref(false)
+const blacklistLoading = ref(false)
+const blacklistError = ref('')
+const avatarInput = ref(null)
+const deleteDialog = ref(null)
+const currentYear = new Date().getFullYear()
+
+watch(showDeleteAccount, async open => {
+  await nextTick()
+  if (open) deleteDialog.value?.showModal()
+  else { deleteDialog.value?.close(); clearInterval(deleteTimer); deletePassword.value = '' }
+})
+onUnmounted(() => clearInterval(deleteTimer))
 
 function startEdit() {
   showPasswordForm.value = false
@@ -70,16 +87,24 @@ function startEdit() {
     show_contact: !!user.value?.show_contact,
     class_number: user.value?.class_number || 0,
     is_graduate: !!user.value?.is_graduate,
-    graduation_year: user.value?.graduation_year || 2024
+    graduation_year: user.value?.graduation_year || currentYear
   }
   editMode.value = true
 }
 
 async function saveProfile() {
+  if (profileSaving.value) return
+  errorMsg.value = ''; successMsg.value = ''
+  const f = editForm.value
+  if (f.nickname.trim().length > 30 || f.real_name.trim().length > 20 || f.bio.length > 200) { errorMsg.value = '昵称最多30字，真实姓名最多20字，自我介绍最多200字'; return }
+  if (['contact_qq', 'contact_wechat', 'contact_weibo', 'contact_bilibili'].some(key => f[key].trim().length > 50)) { errorMsg.value = '每项联系方式最多50个字符'; return }
+  if (!Number.isInteger(Number(f.class_number)) || Number(f.class_number) < 0 || Number(f.class_number) > 9999) { errorMsg.value = '班级号需要是0–9999的整数'; return }
+  if (f.is_graduate && (!Number.isInteger(Number(f.graduation_year)) || Number(f.graduation_year) < 1900 || Number(f.graduation_year) > 2100)) { errorMsg.value = '毕业届数需要是1900–2100的整数'; return }
+  profileSaving.value = true
   try {
     await userStore.updateProfile({
-      nickname: editForm.value.nickname,
-      real_name: editForm.value.real_name,
+      nickname: editForm.value.nickname.trim(),
+      real_name: editForm.value.real_name.trim(),
       show_real_name: editForm.value.show_real_name ? 1 : 0,
       bio: editForm.value.bio,
       gender: editForm.value.gender,
@@ -94,14 +119,14 @@ async function saveProfile() {
     })
     editMode.value = false
     successMsg.value = '资料更新成功'
-    setTimeout(() => successMsg.value = '', 3000)
+
   } catch (e) {
-    errorMsg.value = e.response?.data?.error || '更新失败'
-    setTimeout(() => errorMsg.value = '', 3000)
-  }
+    errorMsg.value = getApiErrorMessage(e, '更新失败，请重试')
+  } finally { profileSaving.value = false }
 }
 
 async function changePassword() {
+  if (passwordSaving.value) return
   passwordError.value = ''
   passwordSuccess.value = ''
   if (!passwordForm.value.oldPassword || !passwordForm.value.newPassword) {
@@ -112,82 +137,76 @@ async function changePassword() {
     passwordError.value = '两次密码不一致'
     return
   }
-  if (passwordForm.value.newPassword.length < 6) {
-    passwordError.value = '新密码至少6个字符'
-    return
-  }
+  const validation = getPasswordError(passwordForm.value.newPassword)
+  if (validation) { passwordError.value = validation; return }
+  if (passwordForm.value.oldPassword === passwordForm.value.newPassword) { passwordError.value = '新密码不能与当前密码相同'; return }
+  passwordSaving.value = true
   try {
     await userStore.changePassword(passwordForm.value.oldPassword, passwordForm.value.newPassword)
     passwordSuccess.value = '密码修改成功'
     passwordForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
-    setTimeout(() => { passwordSuccess.value = ''; showPasswordForm.value = false }, 2000)
+
   } catch (e) {
-    passwordError.value = e.response?.data?.error || '修改失败'
-  }
+    passwordError.value = getApiErrorMessage(e, '修改失败，请重试')
+  } finally { passwordSaving.value = false }
 }
 
 async function loadBlacklist() {
+  blacklistLoading.value = true
+  blacklistError.value = ''
   try {
     const res = await api.get('/friends/blocked')
     blacklist.value = res.data
   } catch (e) {
-    console.error('加载黑名单失败', e)
-  }
+    blacklistError.value = getApiErrorMessage(e, '黑名单加载失败，请重试')
+  } finally { blacklistLoading.value = false }
 }
 
 async function unblockUser(userId) {
   try {
     await api.post('/friends/unblock', { user_id: userId })
-    loadBlacklist()
+    await loadBlacklist()
   } catch (e) {
     toast.error(e.response?.data?.error || '操作失败')
   }
 }
 
-function handleAvatarUpload(e) {
-  const file = e.target.files[0]
-  if (!file) return
-  if (file.size > 5 * 1024 * 1024) {
-    errorMsg.value = '图片不能超过5MB'
-    setTimeout(() => errorMsg.value = '', 3000)
+async function handleAvatarUpload(event) {
+  const input = event.target
+  const file = input.files?.[0]
+  if (!file || avatarUploading.value) return
+  errorMsg.value = ''; successMsg.value = ''
+  if (file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
+    errorMsg.value = '请选择不超过5MB的JPEG、PNG、WebP或GIF图片'
+    input.value = ''
     return
   }
-
   avatarUploading.value = true
-  const reader = new FileReader()
-  reader.onload = async (ev) => {
-    const img = new Image()
-    img.onload = async () => {
-      const canvas = document.createElement('canvas')
-      const size = 256
-      const minDim = Math.min(img.width, img.height)
-      const sx = (img.width - minDim) / 2
-      const sy = (img.height - minDim) / 2
-      canvas.width = size
-      canvas.height = size
-      canvas.getContext('2d').drawImage(img, sx, sy, minDim, minDim, 0, 0, size, size)
-
-      let quality = 0.85
-      let base64 = canvas.toDataURL('image/jpeg', quality)
-      while (base64.length > 150 * 1024 && quality > 0.3) {
-        quality -= 0.1
-        base64 = canvas.toDataURL('image/jpeg', quality)
-      }
-
-      try {
-        await userStore.updateAvatar(base64)
-        successMsg.value = '头像更新成功'
-        setTimeout(() => successMsg.value = '', 3000)
-      } catch (err) {
-        errorMsg.value = err.response?.data?.error || '上传失败'
-        setTimeout(() => errorMsg.value = '', 3000)
-      } finally {
-        avatarUploading.value = false
-      }
-    }
-    img.src = ev.target.result
-  }
-  reader.readAsDataURL(file)
+  try {
+    const source = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = reader.onabort = () => reject(new Error('图片读取失败'))
+      reader.readAsDataURL(file)
+    })
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => reject(new Error('图片无法解码'))
+      img.src = source
+    })
+    if (!image.width || !image.height || image.width * image.height > 40000000) throw new Error('图片尺寸过大，请缩小后上传')
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = 256
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('浏览器无法处理图片')
+    const edge = Math.min(image.width, image.height)
+    context.drawImage(image, (image.width - edge) / 2, (image.height - edge) / 2, edge, edge, 0, 0, 256, 256)
+    await userStore.updateAvatar(canvas.toDataURL('image/jpeg', .85))
+    successMsg.value = '头像已更新'
+  } catch (error) {
+    errorMsg.value = getApiErrorMessage(error, error.message || '头像上传失败，请重试')
+  } finally { avatarUploading.value = false; input.value = '' }
 }
 
 function togglePassword() {
@@ -218,6 +237,7 @@ function openDeleteAccount() {
 }
 
 async function deleteAccount() {
+  if (deletingAccount.value) return
   if (!deleteReadTerms.value) {
     toast.error('请先阅读并同意注销须知')
     return
@@ -230,16 +250,15 @@ async function deleteAccount() {
     toast.error('请输入密码以确认是本人操作')
     return
   }
-  if (!confirm('最终确认：确定注销账号？此操作不可恢复！')) return
-
+  deletingAccount.value = true
   try {
     await api.delete('/auth/account', { data: { password: deletePassword.value } })
     toast.success('账号已注销')
     userStore.logout()
-    window.location.href = '/login'
+    await router.replace('/login')
   } catch (e) {
-    toast.error(e.response?.data?.error || '注销失败')
-  }
+    toast.error(getApiErrorMessage(e, '注销失败，请重试'))
+  } finally { deletingAccount.value = false }
 }
 
 const roleLabel = computed(() => {
@@ -277,15 +296,13 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
   <div class="profile-page" v-if="user">
     <div class="profile-header glass-strong">
       <div class="avatar-wrapper">
-        <img v-if="user.avatar" :src="user.avatar" class="avatar-lg-img" />
+        <img v-if="user.avatar" :src="user.avatar" class="avatar-lg-img" alt="我的头像" />
         <div v-else class="avatar-lg">{{ (user.nickname || user.username)[0] }}</div>
-        <label class="avatar-upload-btn">
-          <Icon name="image" :size="18" />
-          <input type="file" accept="image/*" @change="handleAvatarUpload" hidden />
-        </label>
+        <button type="button" class="avatar-upload-btn" :disabled="avatarUploading" :aria-label="avatarUploading ? '头像上传中' : '更换头像'" @click="avatarInput?.click()"><Icon name="image" :size="18" /></button>
+        <input ref="avatarInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" aria-label="选择头像图片" @change="handleAvatarUpload" hidden />
       </div>
       <div class="profile-info">
-        <h2>{{ user.nickname || user.username }}</h2>
+        <h1>{{ user.nickname || user.username }}</h1>
         <p class="text-muted">@{{ user.username }}</p>
         <div class="profile-tags">
           <span class="tag role-tag" :class="user.role">{{ roleLabel }}</span>
@@ -321,24 +338,25 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
       </div>
     </div>
 
-    <div v-if="successMsg" class="toast toast-success">{{ successMsg }}</div>
-    <div v-if="errorMsg" class="toast toast-error">{{ errorMsg }}</div>
+    <p v-if="avatarUploading" role="status">正在处理并上传头像…</p>
+    <div v-if="successMsg" class="inline-feedback success-msg" role="status">{{ successMsg }}</div>
+    <div v-if="errorMsg" class="inline-feedback error-msg" role="alert">{{ errorMsg }}</div>
 
     <!-- 编辑资料 -->
-    <div v-if="editMode" class="section glass">
+    <form v-if="editMode" class="section glass" :aria-busy="profileSaving" @submit.prevent="saveProfile">
       <h3>编辑资料</h3>
       <div class="edit-grid">
         <div class="form-group">
-          <label>昵称</label>
-          <input v-model="editForm.nickname" placeholder="你的昵称" />
+          <label for="profile-nickname">昵称</label>
+          <input id="profile-nickname" v-model="editForm.nickname" maxlength="30" placeholder="你的昵称" />
         </div>
         <div class="form-group">
-          <label>真实姓名</label>
-          <input v-model="editForm.real_name" placeholder="真实姓名" />
+          <label for="profile-real_name">真实姓名</label>
+          <input id="profile-real_name" v-model="editForm.real_name" maxlength="20" placeholder="真实姓名" />
         </div>
         <div class="form-group">
-          <label>性别</label>
-          <select v-model="editForm.gender">
+          <label for="profile-gender">性别</label>
+          <select id="profile-gender" v-model="editForm.gender">
             <option value="">未设置</option>
             <option value="male">男</option>
             <option value="female">女</option>
@@ -346,14 +364,14 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
           </select>
         </div>
         <div class="form-group">
-          <label>班级</label>
-          <input v-model="editForm.class_number" type="number" min="0" placeholder="班级号" />
+          <label for="profile-class_number">班级</label>
+          <input id="profile-class_number" v-model="editForm.class_number" type="number" min="0" max="9999" step="1" placeholder="班级号" />
         </div>
       </div>
 
       <div class="form-group">
-        <label>自我介绍</label>
-        <textarea v-model="editForm.bio" placeholder="介绍一下自己..." rows="3" maxlength="200"></textarea>
+        <label for="profile-bio">自我介绍</label>
+        <textarea id="profile-bio" v-model="editForm.bio" placeholder="介绍一下自己..." rows="3" maxlength="200"></textarea>
       </div>
 
       <div class="form-group">
@@ -366,20 +384,20 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
       <h4 style="margin: 16px 0 12px; font-size: 15px;">联系方式</h4>
       <div class="edit-grid">
         <div class="form-group">
-          <label>QQ</label>
-          <input v-model="editForm.contact_qq" placeholder="QQ号" />
+          <label for="profile-contact_qq">QQ</label>
+          <input id="profile-contact_qq" v-model="editForm.contact_qq" maxlength="50" placeholder="QQ号" />
         </div>
         <div class="form-group">
-          <label>微信</label>
-          <input v-model="editForm.contact_wechat" placeholder="微信号" />
+          <label for="profile-contact_wechat">微信</label>
+          <input id="profile-contact_wechat" v-model="editForm.contact_wechat" maxlength="50" placeholder="微信号" />
         </div>
         <div class="form-group">
-          <label>微博</label>
-          <input v-model="editForm.contact_weibo" placeholder="微博名" />
+          <label for="profile-contact_weibo">微博</label>
+          <input id="profile-contact_weibo" v-model="editForm.contact_weibo" maxlength="50" placeholder="微博名" />
         </div>
         <div class="form-group">
-          <label>B站</label>
-          <input v-model="editForm.contact_bilibili" placeholder="B站用户名" />
+          <label for="profile-contact_bilibili">B站</label>
+          <input id="profile-contact_bilibili" v-model="editForm.contact_bilibili" maxlength="50" placeholder="B站用户名" />
         </div>
       </div>
 
@@ -397,41 +415,43 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
         </label>
       </div>
       <div v-if="editForm.is_graduate" class="form-group">
-        <label>毕业届数</label>
-        <input v-model="editForm.graduation_year" type="number" min="1900" max="2030" placeholder="如：2024" />
+        <label for="profile-graduation_year">毕业届数</label>
+        <input id="profile-graduation_year" v-model="editForm.graduation_year" type="number" min="1900" max="2100" :placeholder="String(currentYear)" />
       </div>
 
       <div class="form-actions">
-        <button class="btn btn-primary" @click="saveProfile">保存</button>
-        <button class="btn btn-secondary" @click="editMode = false">取消</button>
+        <button type="submit" class="btn btn-primary" :disabled="profileSaving">{{ profileSaving ? '保存中…' : '保存资料' }}</button>
+        <button type="button" class="btn btn-secondary" :disabled="profileSaving" @click="editMode = false">取消</button>
       </div>
-    </div>
+    </form>
 
     <!-- 修改密码 -->
-    <div v-if="showPasswordForm" class="section glass">
+    <form v-if="showPasswordForm" class="section glass" :aria-busy="passwordSaving" @submit.prevent="changePassword">
       <h3>修改密码</h3>
-      <div v-if="passwordError" class="error-msg">{{ passwordError }}</div>
-      <div v-if="passwordSuccess" class="success-msg">{{ passwordSuccess }}</div>
+      <div v-if="passwordError" id="password-error" class="error-msg" role="alert">{{ passwordError }}</div>
+      <div v-if="passwordSuccess" class="success-msg" role="status">{{ passwordSuccess }}</div>
       <div class="form-group">
-        <label>旧密码</label>
-        <input v-model="passwordForm.oldPassword" type="password" placeholder="当前密码" />
+        <label for="profile-oldPassword">旧密码</label>
+        <input id="profile-oldPassword" v-model="passwordForm.oldPassword" autocomplete="current-password" maxlength="1024" required :aria-invalid="!!passwordError" :aria-describedby="passwordError ? 'password-error' : undefined" type="password" placeholder="当前密码" />
       </div>
       <div class="form-group">
-        <label>新密码</label>
-        <input v-model="passwordForm.newPassword" type="password" placeholder="至少6个字符" />
+        <label for="profile-newPassword">新密码</label>
+        <input id="profile-newPassword" v-model="passwordForm.newPassword" autocomplete="new-password" maxlength="1024" required :aria-invalid="!!passwordError" :aria-describedby="passwordError ? 'password-error' : undefined" type="password" placeholder="至少6个字符" />
       </div>
       <div class="form-group">
-        <label>确认新密码</label>
-        <input v-model="passwordForm.confirmPassword" type="password" placeholder="再次输入" @keyup.enter="changePassword" />
+        <label for="profile-confirmPassword">确认新密码</label>
+        <input id="profile-confirmPassword" v-model="passwordForm.confirmPassword" autocomplete="new-password" maxlength="1024" required :aria-invalid="!!passwordError" :aria-describedby="passwordError ? 'password-error' : undefined" type="password" placeholder="再次输入" />
       </div>
-      <button class="btn btn-primary" @click="changePassword">修改密码</button>
-    </div>
+      <button type="submit" class="btn btn-primary" :disabled="passwordSaving">{{ passwordSaving ? '修改中…' : '确认修改密码' }}</button>
+    </form>
 
     <!-- 黑名单 -->
     <div v-if="showBlacklist" class="section glass">
       <h3>黑名单</h3>
       <p class="text-muted mb-2" style="font-size:13px">被拉黑的用户无法给你发消息或添加好友</p>
-      <div v-if="blacklist.length === 0" class="empty-state" style="padding: 20px;">
+      <p v-if="blacklistLoading" role="status">正在加载黑名单…</p>
+      <div v-else-if="blacklistError" role="alert">{{ blacklistError }} <button class="btn btn-secondary" @click="loadBlacklist">重试</button></div>
+      <div v-else-if="blacklist.length === 0" class="empty-state" style="padding: 20px;">
         <p>黑名单为空</p>
       </div>
       <div v-else class="blacklist-list">
@@ -462,12 +482,15 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
     </div>
   </div>
 
-  <div v-else class="loading">加载中</div>
+  <div v-else class="empty-state" :role="userStore.restoreError ? 'alert' : 'status'">
+    <p>{{ userStore.restoreError || '正在恢复账户资料…' }}</p>
+    <button v-if="userStore.restoreError" class="btn btn-primary" @click="userStore.fetchUser">重新加载</button>
+  </div>
 
   <!-- 注销账号弹窗 -->
-  <div v-if="showDeleteAccount" class="modal-overlay" @click.self="showDeleteAccount = false">
+  <dialog v-if="showDeleteAccount" ref="deleteDialog" class="account-dialog" aria-labelledby="delete-account-title" @cancel.prevent="!deletingAccount && (showDeleteAccount = false)" @close="showDeleteAccount = false">
     <div class="modal glass-strong">
-      <h3>注销账号</h3>
+      <h3 id="delete-account-title">注销账号</h3>
       <div class="delete-terms">
         <h4>注销须知：</h4>
         <ul>
@@ -484,10 +507,11 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
         我已阅读并同意注销须知
       </label>
       <div class="form-group">
-        <label>确认密码</label>
+        <label for="delete-password">确认密码</label>
         <input
           type="password"
-          v-model="deletePassword"
+          id="delete-password"
+          v-model="deletePassword" maxlength="1024"
           placeholder="输入登录密码以确认本人操作"
           autocomplete="current-password"
           style="width: 100%;"
@@ -496,15 +520,15 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
       <div class="modal-actions">
         <button
           class="btn btn-danger"
-          :disabled="!deleteReadTerms || deleteCountdown > 0"
+          :disabled="!deleteReadTerms || deleteCountdown > 0 || !deletePassword || deletingAccount"
           @click="deleteAccount"
         >
-          {{ deleteCountdown > 0 ? `请等待 ${deleteCountdown} 秒` : '确定注销' }}
+          {{ deletingAccount ? '注销中…' : deleteCountdown > 0 ? `请等待 ${deleteCountdown} 秒` : '永久注销账号' }}
         </button>
-        <button class="btn btn-secondary" @click="showDeleteAccount = false">取消</button>
+        <button class="btn btn-secondary" :disabled="deletingAccount" autofocus @click="showDeleteAccount = false">取消</button>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <style scoped>
@@ -524,7 +548,7 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
 }
 .avatar-upload-btn:hover { background: rgba(0,0,0,0.8); transform: scale(1.1); }
 
-.profile-info h2 { font-size: 22px; margin-bottom: 4px; }
+.profile-info h1 { font-size: 22px; margin-bottom: 4px; }
 .joined {
   display: flex; align-items: center; gap: 5px;
   margin-top: 8px; font-size: 12.5px;
@@ -561,8 +585,8 @@ const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tr
   .action-danger .btn { width: 100%; }
 }
 
-select { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 12px 16px; border-radius: var(--radius-md); font-size: 14px; width: 100%; }
-select option { background: #333; color: #fff; }
+select { background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text-primary); padding: 12px 16px; border-radius: var(--radius-md); font-size: 14px; width: 100%; }
+select option { background: var(--bg-main); color: var(--text-primary); }
 
 textarea { resize: vertical; }
 
@@ -596,4 +620,20 @@ textarea { resize: vertical; }
 .app-status.pending { background: rgba(255,200,0,0.2); color: #ffeaa7; }
 .app-status.approved { background: rgba(46,213,115,0.2); color: #b8ffb8; }
 .app-status.rejected { background: rgba(255,107,107,0.2); color: #ffb8b8; }
+.profile-page { max-width: 52rem; margin-inline: auto; }
+.profile-header { border-top: 3px solid var(--accent-1); }
+.profile-info { min-width: 0; overflow-wrap: anywhere; }
+.profile-info h1 { letter-spacing: -.025em; }
+.avatar-lg, .avatar-lg-img { border-radius: var(--radius-lg); }
+.avatar-upload-btn { width: 2.75rem; height: 2.75rem; bottom: -.6rem; right: -.6rem; color: white; }
+.role-tag.super_admin, .role-tag.admin, .role-tag.tree_hole, .role-tag.member { color: var(--text-link); background: var(--accent-soft); border-color: var(--accent-line); }
+.error-msg { color: var(--danger-light); background: var(--bg-input); border-color: var(--danger); }
+.success-msg { color: var(--text-link); background: var(--accent-soft); border-color: var(--accent-line); }
+.account-dialog { padding: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); color: var(--text-primary); background: var(--bg-main); width: min(92vw, 30rem); max-height: 90dvh; margin: auto; }
+.account-dialog::backdrop { background: rgba(10, 30, 27, .65); }
+.account-dialog .modal { width: 100%; max-width: none; padding: 1.5rem; }
+.delete-terms h4 { color: var(--danger-light); }
+.bio-section p, .contact-item { overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { .profile-page { animation: none; } }
+@media (max-width: 400px) { .profile-header { gap: 1rem; padding: 1.25rem; } .modal-actions { flex-wrap: wrap; } }
 </style>

@@ -9,6 +9,7 @@ import AvatarIcon from './AvatarIcon.vue'
 import Icon from './Icon.vue'
 import { useMarkdown } from '../composables/useMarkdown'
 import { useToast } from '../composables/useToast'
+import { useFocusTrap } from '../composables/useFocusTrap'
 
 const emit = defineEmits(['change-wallpaper', 'toggle-theme'])
 const props = defineProps({ theme: { type: String, default: 'dark' } })
@@ -20,6 +21,8 @@ const router = useRouter()
 const { renderMarkdown, truncateText } = useMarkdown()
 const toast = useToast()
 
+const navRef = ref(null)
+const mobileToggleRef = ref(null)
 const showMenu = ref(false)
 const openDropdown = ref('')
 const showWallMenu = ref(false)
@@ -36,7 +39,8 @@ let unreadTimer = null
 const isLoggedIn = computed(() => userStore.isLoggedIn)
 const user = computed(() => userStore.user)
 const currentWall = computed(() => wallStore.currentWall)
-const myWalls = computed(() => wallStore.myWalls)
+const myWalls = computed(() => wallStore.myWalls.filter(wall => !wall.member_status || wall.member_status === 'active'))
+const unreadScope = computed(() => [userStore.sessionRevision, userStore.user?.id, wallStore.currentWallId].join(':'))
 // 树洞入口按「在当前墙是否拥有树洞权限」显示。
 // 重构前这里还带了 || isGlobalAdmin，但服务端从来只认 wall_members.wall_role ——
 // 不是志愿者的全局管理员点进去只会看到空队列、接入时 403，属于死入口，这次一并去掉。
@@ -48,20 +52,20 @@ const canOpenAdmin = computed(() =>
   wallStore.canHere('wall.stats.view') || wallStore.canHere('wall.member.view'))
 
 function selectWall(id) {
-  wallStore.switchWall(id)
-  showWallMenu.value = false
-  showMobileMenu.value = false
-  if (router.currentRoute.value.path === '/') {
-    location.reload()
-  } else {
-    router.push('/')
+  if (!wallStore.switchWall(id)) {
+    toast.error('无法切换到此校园墙，请刷新列表后重试')
+    return
   }
+  closeMenus()
+  router.push('/')
 }
 
 async function fetchUnread() {
   if (!userStore.isLoggedIn) return
+  const scope = unreadScope.value
   try {
     const res = await api.get('/messages/unread-count')
+    if (scope !== unreadScope.value || !userStore.isLoggedIn) return
     unreadCount.value = res.data.count || 0
     unreadChat.value = res.data.chat || 0
     unreadTreeHole.value = res.data.treeHole || 0
@@ -80,7 +84,63 @@ function restartUnreadTimer() {
   }
 }
 
+// 点击下拉菜单外部时收起所有打开的菜单（墙切换 / 发布类下拉 / 头像菜单）。
+// 此前完全没有外部关闭逻辑：点开后再点页面空白处，菜单会一直挂着。
+// 捕获阶段执行，先于按钮自身的 click；点在 dropdown-wrapper 内则放行给原有逻辑。
+function closeMenus() {
+  showWallMenu.value = false
+  showMenu.value = false
+  openDropdown.value = ''
+  showSearchMenu.value = false
+  showMobileMenu.value = false
+}
+
+function toggleNavMenu(key) {
+  const wasOpen = key === 'wall' ? showWallMenu.value : key === 'account' ? showMenu.value : openDropdown.value === key
+  closeMenus()
+  if (key === 'wall') showWallMenu.value = !wasOpen
+  else if (key === 'account') showMenu.value = !wasOpen
+  else openDropdown.value = wasOpen ? '' : key
+}
+
+function onDocClick(event) {
+  if (navRef.value?.contains(event.target) && event.target?.closest?.('.dropdown-wrapper, .mobile-menu, .mobile-menu-btn')) return
+  closeMenus()
+}
+
+function onNavKeydown(event) {
+  const wrapper = event.target.closest?.('.dropdown-wrapper')
+  if (event.key === 'Escape') {
+    const mobileWasOpen = showMobileMenu.value
+    if (!mobileWasOpen && !showMenu.value && !showWallMenu.value && !openDropdown.value && !showSearchMenu.value) return
+    event.preventDefault()
+    closeMenus()
+    if (mobileWasOpen) mobileToggleRef.value?.focus()
+    else wrapper?.querySelector('button, input')?.focus()
+  } else if (event.key === 'ArrowDown' && wrapper && event.target.matches('button[aria-expanded="true"]')) {
+    event.preventDefault()
+    wrapper.querySelector('.dropdown button')?.focus()
+  }
+}
+
+function onNavFocusout(event) {
+  const wrapper = event.target.closest?.('.dropdown-wrapper')
+  if (wrapper && !wrapper.contains(event.relatedTarget)) {
+    showMenu.value = false
+    showWallMenu.value = false
+    openDropdown.value = ''
+    showSearchMenu.value = false
+  }
+  if (!navRef.value?.contains(event.relatedTarget)) showMobileMenu.value = false
+}
+
+function onResize() {
+  if (window.innerWidth > 1080) showMobileMenu.value = false
+}
+
 onMounted(() => {
+  document.addEventListener('click', onDocClick, true)
+  window.addEventListener('resize', onResize)
   if (userStore.isLoggedIn) {
     fetchUnread()
     restartUnreadTimer()
@@ -91,8 +151,20 @@ onMounted(() => {
 watch(() => settingsStore.prefs.unread_interval, () => {
   if (userStore.isLoggedIn) restartUnreadTimer()
 })
+watch(unreadScope, () => {
+  clearInterval(unreadTimer)
+  unreadCount.value = unreadChat.value = unreadTreeHole.value = unreadSystem.value = unreadAnnouncement.value = 0
+  closeMenus()
+  closeAnnouncements()
+  if (userStore.isLoggedIn) { fetchUnread(); restartUnreadTimer() }
+})
+watch(() => router.currentRoute.value.fullPath, closeMenus)
 
-onUnmounted(() => clearInterval(unreadTimer))
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick, true)
+  window.removeEventListener('resize', onResize)
+  clearInterval(unreadTimer)
+})
 
 function logout() {
   userStore.logout()
@@ -102,7 +174,7 @@ function logout() {
 }
 
 function toggleDropdown(key) {
-  openDropdown.value = openDropdown.value === key ? '' : key
+  toggleNavMenu(key)
 }
 
 function go(path) {
@@ -125,10 +197,6 @@ function goSearch() {
   }
 }
 
-function hideSearchMenu() {
-  setTimeout(() => { showSearchMenu.value = false }, 150)
-}
-
 function isActive(item) {
   const p = router.currentRoute.value.path
   if (item.path === '/') return p === '/'
@@ -145,7 +213,7 @@ function changeWallpaper() {
 async function openDashboard() {
   try {
     await api.post('/dashboard/session')
-    window.open('/dashboard', '_blank')
+    window.open('/dashboard', '_blank', 'noopener,noreferrer')
   } catch {
     toast.error('无法打开管理后台，请重新登录后再试')
   }
@@ -153,32 +221,53 @@ async function openDashboard() {
 
 const isHomePage = computed(() => router.currentRoute.value.path === '/')
 const userAvatar = computed(() => user.value?.avatar || '')
+// 模板里 4 处引用但此前从未定义 —— 用户名与头像 alt 一直渲染为空
+const userName = computed(() => user.value?.nickname || user.value?.username || '用户')
 
 // 公告弹窗
 const showAnnouncementModal = ref(false)
 const announcementList = ref([])
 const announcementLoading = ref(false)
+const announcementError = ref('')
+let announcementRequest = 0
 const showAnnDetail = ref(false)
 const selectedAnn = ref(null)
+const annModalRef = ref(null)
+// 弹窗焦点管理：打开移入焦点、Tab 锁在弹层内、Esc 关闭、关闭后焦点还给公告按钮。
+// 此前公告弹窗没有这套处理，键盘用户会被困在弹窗背后的页面里。
+useFocusTrap(showAnnouncementModal, annModalRef, closeAnnouncements)
 
 async function fetchAnnouncements() {
+  const request = ++announcementRequest
+  const scope = unreadScope.value
   announcementLoading.value = true
+  announcementError.value = ''
   try {
     const res = await api.get('/announcements')
-    announcementList.value = res.data || []
-  } catch {}
-  announcementLoading.value = false
+    if (request !== announcementRequest || scope !== unreadScope.value) return
+    if (!Array.isArray(res.data)) throw new Error('Invalid announcements')
+    announcementList.value = res.data
+    // 仅在实际读取成功后标记，失败时保留未读提示。
+    api.put('/messages/read-all', { type: 'announcement' }).then(() => {
+      if (scope === unreadScope.value) unreadAnnouncement.value = 0
+    }).catch(() => {})
+  } catch {
+    if (request === announcementRequest && scope === unreadScope.value) announcementError.value = '公告加载失败，请检查网络后重试'
+  } finally {
+    if (request === announcementRequest) announcementLoading.value = false
+  }
 }
 
 function openAnnouncements() {
-  fetchAnnouncements()
+  if (showMobileMenu.value) mobileToggleRef.value?.focus()
+  closeMenus()
   showAnnouncementModal.value = true
-  // 打开弹窗时标记所有公告为已读
-  api.put('/messages/read-all', { type: 'announcement' }).catch(() => {})
-  unreadAnnouncement.value = 0
+  fetchAnnouncements()
 }
 
 function closeAnnouncements() {
+  announcementRequest++
+  announcementLoading.value = false
   showAnnouncementModal.value = false
   showAnnDetail.value = false
   selectedAnn.value = null
@@ -195,17 +284,17 @@ function renderAnnouncement(content) {
 </script>
 
 <template>
-  <nav class="navbar">
+  <nav ref="navRef" class="navbar" :class="{ 'menu-open': showMobileMenu }" aria-label="主导航" @keydown="onNavKeydown" @focusout="onNavFocusout">
     <div class="nav-inner" :class="{ 'nav-inner-wide': isHomePage }">
       <!-- 左：已登录显示墙切换器（取代原 logo），未登录显示 logo -->
       <div class="nav-left">
         <div v-if="isLoggedIn" class="dropdown-wrapper wall-switcher">
-          <button class="wall-btn" @click="showWallMenu = !showWallMenu" :title="currentWall?.description || '切换校园墙'">
+          <button class="wall-btn" aria-controls="nav-wall-menu" :aria-expanded="showWallMenu" @click="toggleNavMenu('wall')" :title="currentWall?.description || '切换校园墙'">
             <Icon name="school" :size="15" />
             <span class="wall-name">{{ currentWall?.name || '选择校园墙' }}</span>
             <Icon name="chevron-down" :size="14" />
           </button>
-          <div v-if="showWallMenu" class="dropdown wall-dropdown">
+          <div v-if="showWallMenu" id="nav-wall-menu" class="dropdown wall-dropdown">
             <div class="dropdown-header"><strong>我的校园墙</strong></div>
             <div class="dropdown-divider"></div>
             <button v-for="w in myWalls" :key="w.id" class="dropdown-item wall-item"
@@ -254,11 +343,12 @@ function renderAnnouncement(content) {
               placeholder="搜索帖子"
               @keyup.enter="goSearch"
               @focus="showSearchMenu = true"
-              @blur="hideSearchMenu"
+              aria-controls="nav-search-panel"
+              aria-describedby="nav-search-help"
             />
           </div>
-          <div v-if="showSearchMenu" class="dropdown search-dropdown" @mousedown.prevent>
-            <div class="search-dropdown-tip text-muted">搜索帖子内容，或输入追踪码 RPT-XXXX 查询举报进度</div>
+          <div v-if="showSearchMenu" id="nav-search-panel" class="dropdown search-dropdown" @mousedown.prevent>
+            <div id="nav-search-help" class="search-dropdown-tip text-muted">搜索帖子内容，或输入追踪码 RPT-XXXX 查询举报进度</div>
             <div class="dropdown-divider"></div>
             <button class="dropdown-item" @click="goSearch">搜索「{{ searchQuery || '…' }}」</button>
           </div>
@@ -268,14 +358,15 @@ function renderAnnouncement(content) {
       <!-- 右：工具与导航 -->
       <div class="nav-right desktop-only">
         <template v-if="isLoggedIn">
+          <button v-if="settingsStore.nav.search !== false" class="nav-btn nav-icon-btn nav-search-shortcut" :class="{ 'nav-search-shortcut-visible': !isHomePage }" aria-label="搜索帖子" title="搜索帖子" @click="go('/search')"><Icon name="search" :size="17" /></button>
           <template v-for="item in settingsStore.visibleNav" :key="item.key">
             <!-- 下拉型（发布/求助） -->
             <div v-if="item.type === 'dropdown'" class="dropdown-wrapper">
-              <button class="nav-btn" :aria-expanded="openDropdown === item.key" @click="toggleDropdown(item.key)">
+              <button class="nav-btn" :aria-controls="'nav-menu-' + item.key" :aria-expanded="openDropdown === item.key" @click="toggleDropdown(item.key)">
                 {{ item.label }}
                 <Icon name="chevron-down" :size="14" />
               </button>
-              <div v-if="openDropdown === item.key" class="dropdown" @click="openDropdown = ''">
+              <div v-if="openDropdown === item.key" :id="'nav-menu-' + item.key" class="dropdown" @click="openDropdown = ''">
                 <button v-for="c in item.children" :key="c.path" class="dropdown-item" @click="go(c.path)">{{ c.label }}</button>
               </div>
             </div>
@@ -295,10 +386,10 @@ function renderAnnouncement(content) {
           </template>
 
           <div class="dropdown-wrapper">
-            <button class="avatar-btn" aria-label="账号菜单" :aria-expanded="showMenu" @click="showMenu = !showMenu">
+            <button class="avatar-btn" aria-label="账号菜单" :aria-expanded="showMenu" aria-controls="nav-account-menu" @click="toggleNavMenu('account')">
               <AvatarIcon :src="userAvatar" :name="userName" size="md" />
             </button>
-            <div v-if="showMenu" class="dropdown" @click="showMenu = false">
+            <div v-if="showMenu" id="nav-account-menu" class="dropdown" @click="showMenu = false">
               <div class="dropdown-header">
                 <strong>{{ userName }}</strong>
                 <span class="text-muted">@{{ user?.username }}</span>
@@ -320,7 +411,7 @@ function renderAnnouncement(content) {
       </div>
 
       <!-- 移动端汉堡菜单 -->
-      <button class="mobile-menu-btn mobile-only" :aria-label="showMobileMenu ? '关闭菜单' : '打开菜单'"
+      <button ref="mobileToggleRef" class="mobile-menu-btn mobile-only" aria-controls="nav-mobile-panel" :aria-label="showMobileMenu ? '关闭菜单' : '打开菜单'"
               :aria-expanded="showMobileMenu" @click="showMobileMenu = !showMobileMenu">
         <Icon :name="showMobileMenu ? 'close' : 'menu'" :size="22" />
       </button>
@@ -328,7 +419,7 @@ function renderAnnouncement(content) {
 
     <!-- 移动端菜单面板 -->
     <Transition name="slide">
-      <div v-if="showMobileMenu" class="mobile-menu">
+      <div v-if="showMobileMenu" id="nav-mobile-panel" class="mobile-menu" role="group" aria-label="移动端导航">
         <template v-if="isLoggedIn">
           <div class="mobile-user-info">
             <AvatarIcon :src="userAvatar" :name="userName" size="lg" />
@@ -349,12 +440,14 @@ function renderAnnouncement(content) {
             <Icon v-if="w.id === wallStore.currentWallId" class="check" name="check" :size="15" label="当前校园墙" />
           </button>
           <button class="mobile-item" @click="go('/walls')">加入 / 申请建墙</button>
+          <button class="mobile-item" @click="openAnnouncements">公告<span v-if="unreadAnnouncement > 0" class="unread-badge">{{ unreadAnnouncement > 99 ? '99+' : unreadAnnouncement }} 条未读</span></button>
+          <button class="mobile-item" @click="go('/profile')">个人主页</button>
           <div class="mobile-divider"></div>
           <template v-for="item in settingsStore.visibleNav" :key="item.key">
             <template v-if="item.type === 'dropdown'">
               <button v-for="c in item.children" :key="c.path" class="mobile-item" @click="go(c.path)">{{ c.label }}</button>
             </template>
-            <button v-else-if="item.type === 'link'" class="mobile-item" @click="go(item.path)">
+            <button v-else-if="item.type === 'link'" class="mobile-item" :class="{ 'mobile-active': isActive(item) }" :aria-current="isActive(item) ? 'page' : undefined" @click="go(item.path)">
               {{ item.label }}
               <span v-if="item.key === 'chat' && unreadChat > 0" class="nav-dot-inline"></span>
               <span v-if="item.key === 'treehole' && unreadTreeHole > 0" class="nav-dot-inline"></span>
@@ -365,6 +458,7 @@ function renderAnnouncement(content) {
           <button v-if="settingsStore.nav.search !== false" class="mobile-item" @click="go('/search')">搜索</button>
           <button class="mobile-item" @click="go('/settings')">设置</button>
           <button v-if="canOpenAdmin" class="mobile-item" @click="go('/admin')">管理后台</button>
+          <button v-if="userStore.can('global.dashboard')" class="mobile-item" @click="openDashboard">运行看板</button>
           <button v-if="settingsStore.tools.wallpaper" class="mobile-item" @click="changeWallpaper">换壁纸</button>
           <div class="mobile-divider"></div>
           <button class="mobile-item danger" @click="logout">退出登录</button>
@@ -372,6 +466,7 @@ function renderAnnouncement(content) {
         <template v-else>
           <button class="mobile-item" @click="go('/login')">登录</button>
           <button class="mobile-item" @click="go('/register')">注册</button>
+          <button v-if="settingsStore.tools.theme" class="mobile-item" @click="emit('toggle-theme')">{{ props.theme === 'dark' ? '切换亮色' : '切换暗色' }}</button>
         </template>
       </div>
     </Transition>
@@ -380,13 +475,18 @@ function renderAnnouncement(content) {
   <!-- 公告弹窗 -->
   <Teleport to="body">
     <div v-if="showAnnouncementModal" class="announcement-overlay" @click.self="closeAnnouncements">
-      <div class="announcement-modal glass-strong" role="dialog" aria-modal="true" aria-label="公告">
+      <div ref="annModalRef" tabindex="-1" class="announcement-modal glass-strong" role="dialog" aria-modal="true" aria-label="公告">
         <div class="ann-modal-header">
           <h3>公告</h3>
           <button class="close-btn" aria-label="关闭公告" @click="closeAnnouncements"><Icon name="close" :size="17" /></button>
         </div>
         <div class="ann-modal-body">
-          <div v-if="announcementLoading" class="loading">加载中…</div>
+          <div v-if="announcementLoading" class="loading" role="status" aria-live="polite">正在加载公告…</div>
+          <div v-else-if="announcementError" class="state-block" role="status">
+            <Icon name="alert-triangle" :size="28" />
+            <p>{{ announcementError }}</p>
+            <button class="btn btn-secondary" @click="fetchAnnouncements">重试</button>
+          </div>
           <div v-else-if="announcementList.length === 0" class="empty-state">
             <div class="icon"><Icon name="megaphone" :size="34" /></div>
             <p>暂无公告</p>
@@ -427,56 +527,36 @@ function renderAnnouncement(content) {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 1000;
-  background: rgba(20, 20, 40, 0.85);
+  z-index: var(--z-nav);
+  background: var(--surface-nav);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--border);
 }
 
-body.light-theme .navbar {
-  background: rgba(255, 255, 255, 0.85);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-}
+.navbar.menu-open { z-index: calc(var(--z-floating) + 1); }
 
-body.light-theme .logo,
-body.light-theme .nav-btn,
-body.light-theme .dropdown-item,
-body.light-theme .mobile-item,
-body.light-theme .wall-btn { color: rgba(0, 0, 0, 0.75); }
-
-body.light-theme .nav-btn:hover,
-body.light-theme .dropdown-item:hover,
-body.light-theme .mobile-item:hover { background: rgba(0, 0, 0, 0.05); color: #000; }
-
-body.light-theme .dropdown,
-body.light-theme .mobile-menu {
-  background: rgba(255, 255, 255, 0.95);
-  border-color: rgba(0, 0, 0, 0.1);
-}
-
-body.light-theme .dropdown-divider,
-body.light-theme .mobile-divider { background: rgba(0, 0, 0, 0.08); }
+/* 两种主题沿用同一套语义 token。 */
 
 /* 三栏布局。两侧按内容占位（auto），中栏吸收剩余空间并在不够时先收窄。
    不用 `1fr auto 1fr`：那样两侧是弹性的、中栏是定宽的，空间不够时被榨干的是两侧 ——
    左栏会被压到比内容还窄，里面的工具按钮（不可收缩）就溢出去压在搜索框上。
    现在反过来，让唯一可以无损收窄的搜索框去让路。 */
 .nav-inner {
-  max-width: 1000px;
+  max-width: var(--container);
   margin: 0 auto;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
-  height: 60px;
+  height: 64px;
   padding: 0 var(--space-3);
 }
 
 /* 主页正文容器放宽到了 1280px（App.vue 的 .main-wide），
    顶栏内容不跟着放宽的话，左侧墙切换器会缩在左分类栏右边，对不齐。 */
 .nav-inner-wide {
-  max-width: 1280px;
+  max-width: var(--container-wide);
 }
 
 .nav-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -489,9 +569,9 @@ body.light-theme .mobile-divider { background: rgba(0, 0, 0, 0.08); }
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 18px;
+  font-size: var(--font-lg);
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
   text-decoration: none;
 }
 
@@ -503,16 +583,16 @@ body.light-theme .mobile-divider { background: rgba(0, 0, 0, 0.08); }
   gap: 6px;
   width: 100%;
   min-width: 0;
-  height: 32px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  min-height: 44px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-pill);
   padding: 0 12px;
   transition: border-color 0.25s var(--ease), background 0.25s var(--ease);
 }
 .search-input-wrap:focus-within {
   border-color: color-mix(in srgb, var(--accent-1) 60%, transparent);
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--bg-input-focus);
 }
 .search-icon { opacity: 0.65; flex-shrink: 0; }
 /* 输入框填满中栏，宽度由栅格决定。
@@ -526,15 +606,12 @@ body.light-theme .mobile-divider { background: rgba(0, 0, 0, 0.08); }
   background: transparent;
   border: none;
   outline: none;
-  color: #fff;
-  font-size: 13px;
+  color: var(--text-primary);
+  font-size: var(--font-sm);
   padding: 0;
 }
 .nav-search input::placeholder { color: var(--text-muted); }
-body.light-theme .nav-search input { color: rgba(0, 0, 0, 0.8); }
-body.light-theme .nav-search input::placeholder { color: rgba(0, 0, 0, 0.35); }
-body.light-theme .search-input-wrap { background: rgba(0, 0, 0, 0.05); border-color: rgba(0, 0, 0, 0.1); }
-body.light-theme .search-input-wrap:focus-within { border-color: color-mix(in srgb, var(--accent-1) 60%, transparent); background: rgba(0, 0, 0, 0.06); }
+
 
 /* 搜索建议面板跟随搜索框居中 */
 .search-dropdown { right: auto; left: 50%; transform: translateX(-50%); min-width: 260px; }
@@ -555,12 +632,12 @@ body.light-theme .search-input-wrap:focus-within { border-color: color-mix(in sr
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 32px;
+  min-height: 44px;
   padding: 0 11px;
   background: none;
   border: 1px solid transparent;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--font-sm);
   cursor: pointer;
   border-radius: var(--radius-pill);
   transition: background 0.25s var(--ease), color 0.25s var(--ease), box-shadow 0.25s var(--ease), transform 0.25s var(--ease);
@@ -568,31 +645,28 @@ body.light-theme .search-input-wrap:focus-within { border-color: color-mix(in sr
 }
 
 .nav-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
   transform: translateY(-1px);
 }
 
 /* 纯图标按钮（主题/壁纸）：收窄内边距，保持与文字按钮同高 */
-.nav-icon-btn { padding: 0 8px; }
+.nav-icon-btn { width: 44px; padding: 0; justify-content: center; }
 
 /* 激活项：轻标记 —— 浅底 + 1px 描边，不用外发光大色块 */
 .nav-btn.nav-active {
   background: color-mix(in srgb, var(--accent-1) 18%, transparent);
   border-color: color-mix(in srgb, var(--accent-1) 50%, transparent);
-  color: #fff;
+  color: var(--text-primary);
 }
 
-body.light-theme .nav-btn.nav-active {
-  background: color-mix(in srgb, var(--accent-1) 12%, transparent);
-  border-color: color-mix(in srgb, var(--accent-1) 40%, transparent);
-  color: #4a5fc8;
-}
+.nav-btn.nav-active { color: var(--text-link); font-weight: 600; }
+.mobile-item.mobile-active { background: var(--accent-soft); color: var(--text-link); font-weight: 600; }
 
 .admin-btn { color: #ffd700; }
 
 .unread-badge {
-  background: #ff6b6b;
+  background: var(--danger-fill);
   color: #fff;
   font-size: 10px;
   padding: 1px 5px;
@@ -612,9 +686,9 @@ body.light-theme .nav-btn.nav-active {
   right: 2px;
   width: 8px;
   height: 8px;
-  background: #ff6b6b;
+  background: var(--danger);
   border-radius: 50%;
-  border: 1.5px solid rgba(20, 20, 40, 0.9);
+  border: 1.5px solid var(--surface-raised);
   animation: dotPulse 2s ease-in-out infinite;
 }
 
@@ -627,7 +701,7 @@ body.light-theme .nav-btn.nav-active {
   display: inline-block;
   width: 8px;
   height: 8px;
-  background: #ff6b6b;
+  background: var(--danger);
   border-radius: 50%;
   margin-left: 6px;
   vertical-align: middle;
@@ -645,10 +719,18 @@ body.light-theme .nav-btn.nav-active {
   z-index: 1001;
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  background: rgba(20, 20, 40, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
+  /* 入场：自上方 4px 轻沉 + 淡入（只写 from，结束态用元素自身样式，
+     不干扰 search-dropdown 的 translateX(-50%) 居中） */
+  animation: dropIn 0.18s var(--ease);
+  transform-origin: top;
+}
+
+@keyframes dropIn {
+  from { opacity: 0; translate: 0 -4px; }
 }
 
 .dropdown::before {
@@ -662,7 +744,7 @@ body.light-theme .nav-btn.nav-active {
 
 .dropdown-header { padding: 8px 12px; }
 .dropdown-header strong { display: block; font-size: 14px; }
-.dropdown-divider { height: 1px; background: rgba(255, 255, 255, 0.1); margin: 4px 0; }
+.dropdown-divider { height: 1px; background: var(--border); margin: 4px 0; }
 
 .dropdown-item {
   display: block;
@@ -671,21 +753,25 @@ body.light-theme .nav-btn.nav-active {
   background: none;
   border: none;
   color: var(--text-secondary);
+  min-height: 44px;
   padding: 10px 12px;
-  font-size: 14px;
+  font-size: var(--font-sm);
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: all 0.2s;
 }
 
-.dropdown-item:hover { background: rgba(255, 255, 255, 0.15); }
-.dropdown-item.danger { color: #ff6b6b; }
+.dropdown-item:hover { background: var(--bg-card-hover); }
+.dropdown-item.danger { color: var(--danger); }
 
 /* 头像 */
 .avatar-btn {
   display: inline-flex;
   align-items: center;
-  padding: 0;
+  padding: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  justify-content: center;
   background: none;
   border: none;
   border-radius: var(--radius-pill);
@@ -698,25 +784,30 @@ body.light-theme .nav-btn.nav-active {
   align-items: center;
   background: none;
   border: none;
-  color: #fff;
+  color: var(--text-primary);
   cursor: pointer;
-  padding: 8px;
+  padding: 10px;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: var(--radius-md);
 }
 
-body.light-theme .mobile-menu-btn { color: #333; }
+
 
 .mobile-menu {
   position: absolute;
-  top: 60px;
+  top: 64px;
   left: 0;
   right: 0;
-  background: rgba(20, 20, 40, 0.95);
+  background: var(--surface-raised);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--border);
   padding: 12px;
   z-index: 999;
-  max-height: calc(100vh - 60px);
+  max-height: calc(100dvh - 64px);
+  overscroll-behavior: contain;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
   overflow-y: auto;
 }
 
@@ -729,7 +820,7 @@ body.light-theme .mobile-menu-btn { color: #333; }
 
 .mobile-divider {
   height: 1px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--border);
   margin: 8px 0;
 }
 
@@ -741,14 +832,14 @@ body.light-theme .mobile-menu-btn { color: #333; }
   border: none;
   color: var(--text-secondary);
   padding: 12px 16px;
-  font-size: 15px;
+  font-size: var(--font-base);
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: all 0.2s;
 }
 
-.mobile-item:hover { background: rgba(255, 255, 255, 0.1); }
-.mobile-item.danger { color: #ff6b6b; }
+.mobile-item:hover { background: var(--bg-card-hover); }
+.mobile-item.danger { color: var(--danger); }
 
 /* 校园墙切换器（logo 位置）。间距由 .nav-left 的 gap 统一给，不再单独留 margin */
 .wall-switcher { min-width: 0; }
@@ -756,11 +847,11 @@ body.light-theme .mobile-menu-btn { color: #333; }
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 32px;
+  min-height: 44px;
   background: color-mix(in srgb, var(--accent-1) 18%, transparent);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #fff;
-  font-size: 13px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
   cursor: pointer;
   padding: 0 10px;
   border-radius: var(--radius-pill);
@@ -777,23 +868,27 @@ body.light-theme .mobile-menu-btn { color: #333; }
 .wall-dropdown { left: 0; right: auto; min-width: 200px; }
 .wall-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .wall-item.active { background: color-mix(in srgb, var(--accent-1) 25%, transparent); }
-.wall-item .check { color: #b8ffb8; }
+/* 勾选图标原为旧米色主题的 #b8ffb8，改为跟随成功色变量 */
+.wall-item .check { color: var(--success); }
 .mobile-wall-label { padding: 8px 16px; font-size: 12px; color: var(--text-muted); }
 .wall-mobile-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .wall-mobile-item.active { background: color-mix(in srgb, var(--accent-1) 20%, transparent); }
-.wall-mobile-item .check { color: #b8ffb8; }
+.wall-mobile-item .check { color: var(--success); }
 
 /* 响应式 */
 .desktop-only { display: flex; }
+.nav-search-shortcut { display: none; }
+.nav-search-shortcut-visible { display: inline-flex; }
 .mobile-only { display: none; }
 
 /* 窄一些的桌面宽度下，中栏被压到剩不下多少，搜索框留着也没法用了 ——
    直接收起，把空间还给导航项。搜索仍可从 /search 页面进入。 */
-@media (max-width: 880px) {
+@media (max-width: 1280px) {
   .nav-center { display: none; }
+  .nav-search-shortcut { display: inline-flex; }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1080px) {
   /* 移动端只剩左侧标识 + 汉堡按钮，三栏网格退回两端对齐 */
   .nav-inner { display: flex; justify-content: space-between; }
   .desktop-only { display: none !important; }
@@ -808,23 +903,24 @@ body.light-theme .mobile-menu-btn { color: #333; }
 .ann-dot {
   position: absolute; top: 2px; right: 1px;
   width: 8px; height: 8px;
-  background: #ff6b6b;
+  background: var(--danger);
   border-radius: 50%;
-  border: 1.5px solid rgba(20, 20, 40, 0.9);
+  border: 1.5px solid var(--surface-raised);
   animation: dotPulse 2s ease-in-out infinite;
 }
 
 /* 公告弹窗 */
 .announcement-overlay {
-  position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,0.6);
+  position: fixed; inset: 0; z-index: var(--z-modal);
+  background: var(--overlay);
+  padding: var(--space-4);
   display: flex; justify-content: center; align-items: center;
 }
 .announcement-modal {
-  width: 90%; max-width: 520px;
-  max-height: 80vh; display: flex; flex-direction: column;
+  width: 100%; max-width: 560px;
+  max-height: calc(100dvh - 48px); display: flex; flex-direction: column;
   padding: 0; border-radius: var(--radius-lg); overflow: hidden;
-  background: var(--bg-card);
+  background: var(--surface-raised);
 }
 .ann-modal-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -837,14 +933,19 @@ body.light-theme .mobile-menu-btn { color: #333; }
   padding: 12px 14px;
   background: var(--bg-card-hover);
   border-radius: var(--radius-md);
-  border-left: 3px solid #c9b99a;
+  /* 原为旧米色主题硬编码 #c9b99a，改为主题色派生 */
+  border-left: 3px solid var(--accent-line);
   cursor: pointer;
   transition: background 0.15s ease;
 }
-.ann-item:hover { background: rgba(255,255,255,0.08); }
-.ann-item-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.ann-item:hover { background: var(--bg-input-focus); }
+.ann-item-header { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
 .ann-item-body { font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: var(--text-primary); margin-bottom: 6px; }
 .ann-item-footer { font-size: 12px; text-align: right; }
 .ann-detail-item { padding: 12px 0; }
 .ann-detail-view { display: flex; flex-direction: column; gap: 12px; }
+.close-btn { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-sm); color: var(--text-primary); background: var(--bg-input); cursor: pointer; flex-shrink: 0; }
+.close-btn:hover { background: var(--bg-input-focus); }
+.dropdown { max-width: min(340px, calc(100vw - 24px)); max-height: calc(100dvh - 90px); overflow-y: auto; }
+@media (min-width: 1081px) { .mobile-menu { display: none; } }
 </style>

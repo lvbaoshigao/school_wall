@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   /** 图片 URL，有则显示图片 */
@@ -17,7 +17,9 @@ const fontSizeMap = { sm: 12, md: 14, lg: 18, xl: 28 }
 
 const avatarSize = computed(() => sizeMap[props.size] || 36)
 const avatarFontSize = computed(() => fontSizeMap[props.size] || 14)
-const firstChar = computed(() => (props.name || '?')[0])
+const imageFailed = ref(false)
+watch(() => props.src, () => { imageFailed.value = false })
+const firstChar = computed(() => props.anonymous ? '匿' : Array.from(props.name || '?')[0])
 
 const bgGradient = computed(() =>
   props.anonymous
@@ -29,6 +31,8 @@ const bgGradient = computed(() =>
 <template>
   <div
     class="avatar-icon"
+    role="img"
+    :aria-label="anonymous ? '匿名用户头像' : (name || '用户') + '的头像'"
     :class="{ anonymous }"
     :style="{
       width: avatarSize + 'px',
@@ -38,7 +42,7 @@ const bgGradient = computed(() =>
     }"
   >
     <img
-      v-if="src"
+      v-if="src && !anonymous && !imageFailed"
       :src="src"
       class="avatar-img"
       alt=""
@@ -46,6 +50,8 @@ const bgGradient = computed(() =>
       :height="avatarSize"
       loading="lazy"
       decoding="async"
+      referrerpolicy="no-referrer"
+      @error="imageFailed = true"
     />
     <span v-else class="avatar-text">{{ firstChar }}</span>
   </div>
@@ -61,7 +67,7 @@ const bgGradient = computed(() =>
   color: #fff;
   flex-shrink: 0;
   overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.2);
+  border: 2px solid var(--border-strong);
 }
 
 .avatar-icon.anonymous {

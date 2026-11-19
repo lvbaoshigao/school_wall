@@ -1,26 +1,29 @@
 <script setup>
-defineProps({
+import { computed } from 'vue'
+const props = defineProps({
   lines: { type: Number, default: 3 },
   imageCount: { type: Number, default: 0 },
 })
+const safeLines = computed(() => Math.max(1, Math.min(6, Math.trunc(Number(props.lines) || 3))))
+const safeImageCount = computed(() => Math.max(0, Math.min(9, Math.trunc(Number(props.imageCount) || 0))))
 </script>
 
 <template>
-  <div class="skeleton-card glass">
-    <div class="skeleton-header">
+  <div class="skeleton-card glass" role="status" aria-busy="true" aria-label="正在加载内容">
+    <div class="skeleton-header" aria-hidden="true">
       <div class="skeleton-avatar shimmer" />
       <div class="skeleton-info">
         <div class="skeleton-line shimmer" style="width: 80px" />
         <div class="skeleton-line shimmer" style="width: 50px; height: 10px" />
       </div>
     </div>
-    <div class="skeleton-body">
-      <div v-for="i in lines" :key="i" class="skeleton-line shimmer" :style="{ width: (90 - (i - 1) * 15) + '%' }" />
+    <div class="skeleton-body" aria-hidden="true">
+      <div v-for="i in safeLines" :key="i" class="skeleton-line shimmer" :style="{ width: (90 - (i - 1) * 15) + '%' }" />
     </div>
-    <div v-if="imageCount > 0" class="skeleton-images">
-      <div v-for="i in imageCount" :key="i" class="skeleton-img shimmer" />
+    <div v-if="safeImageCount > 0" class="skeleton-images" aria-hidden="true">
+      <div v-for="i in safeImageCount" :key="i" class="skeleton-img shimmer" />
     </div>
-    <div class="skeleton-footer">
+    <div class="skeleton-footer" aria-hidden="true">
       <div class="skeleton-line shimmer" style="width: 60px" />
       <div class="skeleton-line shimmer" style="width: 60px" />
     </div>
@@ -44,6 +47,7 @@ defineProps({
   width: 36px;
   height: 36px;
   border-radius: 50%;
+  background: var(--bg-input);
   flex-shrink: 0;
 }
 
@@ -64,11 +68,12 @@ defineProps({
 .skeleton-line {
   height: 14px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-input);
 }
 
 .skeleton-images {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -77,14 +82,14 @@ defineProps({
   width: 80px;
   height: 80px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-input);
 }
 
 .skeleton-footer {
   display: flex;
   gap: 24px;
   padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--border);
 }
 
 .shimmer {
@@ -95,7 +100,8 @@ defineProps({
 .shimmer::after {
   content: '';
   position: absolute;
-  top: 0; left: -100%;
+  top: 0; left: 0;
+  transform: translateX(-100%);
   width: 100%;
   height: 100%;
   background: linear-gradient(
@@ -108,6 +114,6 @@ defineProps({
 }
 
 @keyframes shimmer {
-  100% { left: 100%; }
+  100% { transform: translateX(100%); }
 }
 </style>

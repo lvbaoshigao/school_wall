@@ -1,11 +1,12 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
 import api from '../api'
 import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
+import ConfirmModal from '../components/ConfirmModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,28 +19,41 @@ const loading = ref(true)
 const voting = ref(false)
 const selectedOption = ref(null)
 const showConfirm = ref(false)
+const showDeleteConfirm = ref(false)
+const deleting = ref(false)
+const loadError = ref('')
+const now = ref(Date.now())
+let clock = null
+let loadVersion = 0
+let disposed = false
 
 async function loadVote() {
+  const version = ++loadVersion
   loading.value = true
+  loadError.value = ''
   try {
     const res = await api.get(`/votes/${route.params.id}`)
+    if (disposed || version !== loadVersion) return
     vote.value = res.data
   } catch (e) {
+    if (disposed || version !== loadVersion) return
+    loadError.value = e.response?.data?.error || '投票加载失败，请重试'
     if (e.response?.status === 404) {
       toast.error('投票不存在')
       router.push('/votes')
     }
   } finally {
-    loading.value = false
+    if (!disposed && version === loadVersion) loading.value = false
   }
 }
 
 function selectOption(optionId) {
-  if (vote.value.voted || isEnded.value) return
+  if (!vote.value || voting.value || vote.value.voted || isEnded.value) return
   selectedOption.value = optionId
 }
 
 function confirmVote() {
+  if (!vote.value || voting.value || vote.value.voted || isEnded.value) return
   if (!selectedOption.value) {
     toast.error('请先选择一个选项')
     return
@@ -48,6 +62,9 @@ function confirmVote() {
 }
 
 async function doVote() {
+  if (!vote.value || voting.value || vote.value.voted || !selectedOption.value || loading.value) return
+  now.value = Date.now()
+  if (isEnded.value) { showConfirm.value = false; toast.error('投票已结束'); return }
   if (!userStore.isLoggedIn) {
     router.push('/login')
     return
@@ -56,7 +73,11 @@ async function doVote() {
   voting.value = true
   showConfirm.value = false
   try {
-    await api.post(`/votes/${vote.value.id}/vote`, { option_id: selectedOption.value })
+    const currentVote = vote.value
+    const optionId = selectedOption.value
+    await api.post(`/votes/${currentVote.id}/vote`, { option_id: optionId })
+    if (disposed || vote.value !== currentVote) return
+    currentVote.voted = optionId
     selectedOption.value = null
     await loadVote()
   } catch (e) {
@@ -67,23 +88,24 @@ async function doVote() {
 }
 
 async function deleteVote() {
-  if (!confirm('确定删除这个投票？')) return
+  if (deleting.value || !vote.value) return
+  deleting.value = true
   try {
     await api.delete(`/votes/${vote.value.id}`)
     router.push('/votes')
   } catch (e) {
     toast.error(e.response?.data?.error || '删除失败')
-  }
+  } finally { deleting.value = false }
 }
 
 const isEnded = computed(() => {
   if (!vote.value?.end_at) return false
-  return new Date(vote.value.end_at) < new Date()
+  return new Date(vote.value.end_at).getTime() <= now.value
 })
 
 const totalVotes = computed(() => {
   if (!vote.value?.options) return 0
-  return vote.value.options.reduce((sum, opt) => sum + opt.vote_count, 0)
+  return vote.value.options.reduce((sum, opt) => sum + (Number(opt.vote_count) || 0), 0)
 })
 
 const getPercent = (count) => {
@@ -101,7 +123,18 @@ const selectedOptionText = computed(() => {
   return opt?.option_text || ''
 })
 
-onMounted(() => loadVote())
+watch([() => route.params.id, () => wallStore.currentWallId], () => {
+  vote.value = null
+  selectedOption.value = null
+  showConfirm.value = false
+  showDeleteConfirm.value = false
+  loadVote()
+})
+onMounted(() => {
+  clock = setInterval(() => { now.value = Date.now() }, 1000)
+  loadVote()
+})
+onBeforeUnmount(() => { disposed = true; loadVersion++; clearInterval(clock) })
 </script>
 
 <template>
@@ -126,8 +159,11 @@ onMounted(() => loadVote())
         截止时间: {{ new Date(vote.end_at).toLocaleString('zh-CN') }}
       </div>
 
-      <div class="options-list">
-        <div
+      <div class="options-list" aria-label="投票选项">
+        <button
+          type="button"
+          :disabled="!!vote.voted || isEnded || voting"
+          :aria-pressed="selectedOption === opt.id || vote.voted === opt.id"
           v-for="opt in vote.options"
           :key="opt.id"
           class="option-item"
@@ -149,7 +185,7 @@ onMounted(() => loadVote())
           <div class="option-bar">
             <div class="option-bar-fill" :style="{ width: getPercent(opt.vote_count) + '%' }"></div>
           </div>
-        </div>
+        </button>
       </div>
 
       <!-- 投票按钮 -->
@@ -173,24 +209,17 @@ onMounted(() => loadVote())
           {{ vote.author_nickname ? `创建者: ${vote.author_nickname}` : '匿名创建' }}
           · {{ new Date(vote.created_at).toLocaleDateString() }}
         </span>
-        <button v-if="canDelete" class="btn btn-sm btn-danger" @click="deleteVote">删除</button>
+        <button v-if="canDelete" class="btn btn-sm btn-danger" :disabled="deleting" @click="showDeleteConfirm = true">删除</button>
       </div>
     </div>
   </div>
 
-  <!-- 确认弹窗 -->
-  <div v-if="showConfirm" class="modal-overlay" @click.self="showConfirm = false">
-    <div class="modal glass-strong">
-      <h3>确认投票</h3>
-      <p>你选择了：</p>
-      <div class="confirm-option">{{ selectedOptionText }}</div>
-      <p class="text-muted" style="font-size:13px;margin-top:12px">投票后不可更改，确定提交吗？</p>
-      <div class="modal-actions">
-        <button class="btn btn-primary" @click="doVote">确定提交</button>
-        <button class="btn btn-secondary" @click="showConfirm = false">再想想</button>
-      </div>
-    </div>
-  </div>
+  <ConfirmModal :show="showConfirm" title="确认投票"
+    :message="'你选择了：' + selectedOptionText + '。投票后不可更改，确定提交吗？'"
+    confirm-text="确定提交" @confirm="doVote" @update:show="showConfirm = $event" />
+  <ConfirmModal :show="showDeleteConfirm" title="删除投票" message="确定删除这个投票？此操作无法撤销。"
+    danger confirm-text="删除" @confirm="deleteVote" @update:show="showDeleteConfirm = $event" />
+  <p v-if="loadError" class="state-error" role="alert">{{ loadError }} <button class="btn btn-secondary btn-sm" @click="loadVote">重试</button></p>
 
   <div v-if="loading && !vote" class="loading">加载中</div>
 </template>
@@ -202,7 +231,7 @@ onMounted(() => loadVote())
 .vote-card { padding: 28px; }
 
 .vote-header { margin-bottom: 16px; }
-.vote-header h2 { font-size: 22px; margin-bottom: 10px; }
+.vote-header h2 { font-size: 1.375rem; margin-bottom: 10px; }
 
 .vote-meta {
   display: flex;
@@ -215,16 +244,16 @@ onMounted(() => loadVote())
   display: inline-block;
   padding: 3px 10px;
   border-radius: var(--radius-xl);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
-.tag-anonymous { background: rgba(159,147,134,0.2); color: #c9b99a; }
-.tag-ended { background: rgba(255,107,107,0.2); color: #ffb8b8; }
-.tag-active { background: rgba(46,213,115,0.2); color: #b8ffb8; }
-.tag-voted { background: rgba(169,155,134,0.2); color: #d4c5b0; }
+.tag-anonymous { background: rgba(159,147,134,0.2); color: var(--text-link); }
+.tag-ended { background: rgba(255,107,107,0.2); color: var(--danger-light); }
+.tag-active { background: rgba(46,213,115,0.2); color: var(--success); }
+.tag-voted { background: rgba(169,155,134,0.2); color: var(--text-link); }
 
 .vote-description {
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: var(--text-secondary);
   margin-bottom: 12px;
   line-height: 1.6;
@@ -232,7 +261,7 @@ onMounted(() => loadVote())
 
 .vote-end-time {
   margin-bottom: 20px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .options-list {
@@ -286,14 +315,14 @@ onMounted(() => loadVote())
 }
 
 .option-radio.checked {
-  border-color: #c9b99a;
-  box-shadow: inset 0 0 0 3px #c9b99a;
+  border-color: var(--text-link);
+  box-shadow: inset 0 0 0 3px var(--text-link);
 }
 
-.option-text { font-size: 15px; }
+.option-text { font-size: 0.9375rem; }
 
 .option-count {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-muted);
 }
 
@@ -306,7 +335,7 @@ onMounted(() => loadVote())
 
 .option-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #c9b99a, #a8937a);
+  background: linear-gradient(90deg, var(--text-link), var(--accent-2));
   border-radius: var(--radius-xs);
   transition: width 0.3s ease;
 }
@@ -323,7 +352,7 @@ onMounted(() => loadVote())
   padding: 16px 0;
   border-top: 1px solid rgba(255,255,255,0.08);
   margin-top: 16px;
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 
 .vote-footer {
@@ -354,17 +383,17 @@ onMounted(() => loadVote())
   text-align: center;
 }
 
-.modal h3 { margin-bottom: 16px; font-size: 20px; }
+.modal h3 { margin-bottom: 16px; font-size: 1.25rem; }
 
 .confirm-option {
   padding: 14px 20px;
   background: rgba(201,185,154,0.15);
   border: 1px solid rgba(201,185,154,0.3);
   border-radius: var(--radius-md);
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   margin: 12px 0;
-  color: #d4c5b0;
+  color: var(--text-link);
 }
 
 .modal-actions {
@@ -373,4 +402,16 @@ onMounted(() => loadVote())
   justify-content: center;
   margin-top: 20px;
 }
+
+/* 与校园墙主题保持一致，并为状态反馈留出可读空间。 */
+.state-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin: 12px 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--text-primary); line-height: 1.6; }
+.option-item { width: 100%; text-align: left; color: var(--text-primary); font: inherit; }
+.option-item:disabled { opacity: 1; cursor: default; }
+.option-header, .vote-footer { gap: 12px; flex-wrap: wrap; }
+.option-left { min-width: 0; }
+.option-text, .vote-description { overflow-wrap: anywhere; white-space: pre-wrap; }
+.option-count { font-variant-numeric: tabular-nums; }
+.option-item.selected, .option-item.voted { border-color: var(--accent-line); background: var(--accent-soft); }
+.option-bar-fill { background: var(--accent-1); }
+@media (max-width: 480px) { .vote-card { padding: 20px 16px; } .option-item { padding: 14px 12px; } }
 </style>

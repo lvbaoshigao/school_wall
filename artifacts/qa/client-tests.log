@@ -1,0 +1,360 @@
+(node:68004) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+> client@0.0.0 test
+> node --test test/*.test.js
+
+(node:68025) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:68032) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: explicit wall context survives and wall path supplies its own context
+ok 1 - explicit wall context survives and wall path supplies its own context
+  ---
+  duration_ms: 23.80433
+  type: 'test'
+  ...
+# Subtest: incorrect login password remains on form without clearing an existing session
+ok 2 - incorrect login password remains on form without clearing an existing session
+  ---
+  duration_ms: 6.692506
+  type: 'test'
+  ...
+# Subtest: current 401 clears account permissions wall and preferences together
+ok 3 - current 401 clears account permissions wall and preferences together
+  ---
+  duration_ms: 10.905868
+  type: 'test'
+  ...
+# Subtest: outdated request 401 cannot clear a freshly rotated password token
+ok 4 - outdated request 401 cannot clear a freshly rotated password token
+  ---
+  duration_ms: 3.139984
+  type: 'test'
+  ...
+# Subtest: global ban keeps verified token for appeals and records real restriction
+ok 5 - global ban keeps verified token for appeals and records real restriction
+  ---
+  duration_ms: 2.277806
+  type: 'test'
+  ...
+# Subtest: temporary restore failure retains credentials and can be retried
+ok 6 - temporary restore failure retains credentials and can be retried
+  ---
+  duration_ms: 4.630944
+  type: 'test'
+  ...
+# Subtest: late profile response cannot restore account after logout
+ok 7 - late profile response cannot restore account after logout
+  ---
+  duration_ms: 3.19705
+  type: 'test'
+  ...
+# Subtest: pending and banned walls remain listed but cannot become current wall
+ok 8 - pending and banned walls remain listed but cannot become current wall
+  ---
+  duration_ms: 3.774902
+  type: 'test'
+  ...
+# Subtest: wall network failure preserves known walls without declaring first load successful
+ok 9 - wall network failure preserves known walls without declaring first load successful
+  ---
+  duration_ms: 4.17681
+  type: 'test'
+  ...
+# Subtest: failed preferences roll back and report failure instead of false success
+ok 10 - failed preferences roll back and report failure instead of false success
+  ---
+  duration_ms: 6.499632
+  type: 'test'
+  ...
+# Subtest: preference saves serialize and failed later change restores persisted value
+ok 11 - preference saves serialize and failed later change restores persisted value
+  ---
+  duration_ms: 6.203084
+  type: 'test'
+  ...
+# Subtest: cross-tab logout clears reactive stores
+ok 12 - cross-tab logout clears reactive stores
+  ---
+  duration_ms: 1.867916
+  type: 'test'
+  ...
+# Subtest: username and unicode password boundaries match server rules
+ok 13 - username and unicode password boundaries match server rules
+  ---
+  duration_ms: 1.456535
+  type: 'test'
+  ...
+# (node:68033) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: all scoped Vue scripts and templates compile
+ok 14 - all scoped Vue scripts and templates compile
+  ---
+  duration_ms: 1160.703835
+  type: 'test'
+  ...
+# Subtest: search keeps latest response and clearing invalidates in-flight work
+ok 15 - search keeps latest response and clearing invalidates in-flight work
+  ---
+  duration_ms: 35.042447
+  type: 'test'
+  ...
+# Subtest: search rejects array query parameters safely and preserves retry state
+ok 16 - search rejects array query parameters safely and preserves retry state
+  ---
+  duration_ms: 7.316055
+  type: 'test'
+  ...
+# Subtest: feed ignores stale categories and stale wall metadata
+ok 17 - feed ignores stale categories and stale wall metadata
+  ---
+  duration_ms: 21.598851
+  type: 'test'
+  ...
+# Subtest: bookmark removal refreshes a valid page and ignores stale responses
+ok 18 - bookmark removal refreshes a valid page and ignores stale responses
+  ---
+  duration_ms: 18.908961
+  type: 'test'
+  ...
+# Subtest: post actions prevent duplicate writes and use each post wall context
+ok 19 - post actions prevent duplicate writes and use each post wall context
+  ---
+  duration_ms: 12.038786
+  type: 'test'
+  ...
+# Subtest: comment submission is single-flight and does not erase a newer draft
+ok 20 - comment submission is single-flight and does not erase a newer draft
+  ---
+  duration_ms: 6.712399
+  type: 'test'
+  ...
+# Subtest: unmounted comment responses never emit into the next post
+ok 21 - unmounted comment responses never emit into the next post
+  ---
+  duration_ms: 14.572655
+  type: 'test'
+  ...
+# Subtest: publishing accepts images only and revalidates confirmation path
+ok 22 - publishing accepts images only and revalidates confirmation path
+  ---
+  duration_ms: 14.239317
+  type: 'test'
+  ...
+# Subtest: unsupported and corrupt image files leave uploading recoverable
+ok 23 - unsupported and corrupt image files leave uploading recoverable
+  ---
+  duration_ms: 26.710154
+  type: 'test'
+  ...
+# Subtest: detail ignores previous route responses and paginates unique comments
+ok 24 - detail ignores previous route responses and paginates unique comments
+  ---
+  duration_ms: 17.580778
+  type: 'test'
+  ...
+# Subtest: invalid dates do not display Invalid Date
+ok 25 - invalid dates do not display Invalid Date
+  ---
+  duration_ms: 111.453661
+  type: 'test'
+  ...
+# Subtest: attachment URLs reject script data protocol-relative and traversal sources
+ok 26 - attachment URLs reject script data protocol-relative and traversal sources
+  ---
+  duration_ms: 7.812986
+  type: 'test'
+  ...
+# (node:68039) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: all authorized SFC templates compile with native interactive markup
+ok 27 - all authorized SFC templates compile with native interactive markup
+  ---
+  duration_ms: 1628.796571
+  type: 'test'
+  ...
+# Subtest: ChatRoom does not restart polling when initial request resolves after unmount
+ok 28 - ChatRoom does not restart polling when initial request resolves after unmount
+  ---
+  duration_ms: 11.07885
+  type: 'test'
+  ...
+# Subtest: TreeHoleChat does not restart polling when initial request resolves after unmount
+ok 29 - TreeHoleChat does not restart polling when initial request resolves after unmount
+  ---
+  duration_ms: 2.173379
+  type: 'test'
+  ...
+# Subtest: private chat applies revocation updates even when message ids stay unchanged
+ok 30 - private chat applies revocation updates even when message ids stay unchanged
+  ---
+  duration_ms: 5.732359
+  type: 'test'
+  ...
+# Subtest: private chat ignores a stale response after switching recipient
+ok 31 - private chat ignores a stale response after switching recipient
+  ---
+  duration_ms: 4.163746
+  type: 'test'
+  ...
+# Subtest: anonymous chat reports by conversation without exposing a user id
+ok 32 - anonymous chat reports by conversation without exposing a user id
+  ---
+  duration_ms: 15.26493
+  type: 'test'
+  ...
+# Subtest: inbox category mark-all preserves other category counts and prevents duplicates
+ok 33 - inbox category mark-all preserves other category counts and prevents duplicates
+  ---
+  duration_ms: 3.127674
+  type: 'test'
+  ...
+# Subtest: inbox repeated mark-read only decrements once
+ok 34 - inbox repeated mark-read only decrements once
+  ---
+  duration_ms: 1.96956
+  type: 'test'
+  ...
+# Subtest: inbox latest filter response wins even if old request ignores abort
+ok 35 - inbox latest filter response wins even if old request ignores abort
+  ---
+  duration_ms: 2.510506
+  type: 'test'
+  ...
+# Subtest: deleting a sent message updates sent list without reducing recipient unread counts
+ok 36 - deleting a sent message updates sent list without reducing recipient unread counts
+  ---
+  duration_ms: 2.980612
+  type: 'test'
+  ...
+# Subtest: create vote blocks expired and duplicate options before any request
+ok 37 - create vote blocks expired and duplicate options before any request
+  ---
+  duration_ms: 2.463203
+  type: 'test'
+  ...
+# Subtest: create vote sends an unambiguous ISO deadline and locks concurrent submissions
+ok 38 - create vote sends an unambiguous ISO deadline and locks concurrent submissions
+  ---
+  duration_ms: 2.381506
+  type: 'test'
+  ...
+# Subtest: vote deadline reacts to the clock and rejects a late confirmation
+ok 39 - vote deadline reacts to the clock and rejects a late confirmation
+  ---
+  duration_ms: 2.54854
+  type: 'test'
+  ...
+# Subtest: vote submission is locked and stays voted if result refresh fails
+ok 40 - vote submission is locked and stays voted if result refresh fails
+  ---
+  duration_ms: 2.633721
+  type: 'test'
+  ...
+# Subtest: BugReport blocks submission while evidence is still uploading
+ok 41 - BugReport blocks submission while evidence is still uploading
+  ---
+  duration_ms: 1.405977
+  type: 'test'
+  ...
+# Subtest: ReportForm blocks submission while evidence is still uploading
+ok 42 - ReportForm blocks submission while evidence is still uploading
+  ---
+  duration_ms: 1.475682
+  type: 'test'
+  ...
+# Subtest: partial anonymous conversation deletion retains only failed ids for retry
+ok 43 - partial anonymous conversation deletion retains only failed ids for retry
+  ---
+  duration_ms: 3.536843
+  type: 'test'
+  ...
+# Subtest: administrator permission scope ignores stale response and blocks saving while loading
+ok 44 - administrator permission scope ignores stale response and blocks saving while loading
+  ---
+  duration_ms: 6.052189
+  type: 'test'
+  ...
+# Subtest: inbox read finishing after refresh reconciles totals instead of decrementing twice
+ok 45 - inbox read finishing after refresh reconciles totals instead of decrementing twice
+  ---
+  duration_ms: 2.705507
+  type: 'test'
+  ...
+# Subtest: administrator evidence accepts signed array or JSON URLs and survives malformed data
+ok 46 - administrator evidence accepts signed array or JSON URLs and survives malformed data
+  ---
+  duration_ms: 4.945813
+  type: 'test'
+  ...
+# (node:68056) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Browser checks passed: 375/1140/1440px, light/dark, nav Escape/ArrowDown, skip link, announcement retry, modal Tab/return, nested image Escape/scroll lock, labelled prompt, reduced motion
+# Subtest: shared UI browser navigation, modal and image accessibility regressions
+ok 47 - shared UI browser navigation, modal and image accessibility regressions
+  ---
+  duration_ms: 18934.267023
+  type: 'test'
+  ...
+# (node:68065) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:68065) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+# Subtest: modal skips disabled, hidden and negative-tabindex controls, wraps Tab and restores focus
+ok 48 - modal skips disabled, hidden and negative-tabindex controls, wraps Tab and restores focus
+  ---
+  duration_ms: 20.373103
+  type: 'test'
+  ...
+# Subtest: nested modal Escape closes only top layer and retains scroll lock
+ok 49 - nested modal Escape closes only top layer and retains scroll lock
+  ---
+  duration_ms: 4.051033
+  type: 'test'
+  ...
+# Subtest: initially open empty modal focuses its container and unmount restores its trigger
+ok 50 - initially open empty modal focuses its container and unmount restores its trigger
+  ---
+  duration_ms: 1.246954
+  type: 'test'
+  ...
+# Subtest: unmounting unopened trap does not unlock another dialog; safe initial control wins
+ok 51 - unmounting unopened trap does not unlock another dialog; safe initial control wins
+  ---
+  duration_ms: 2.485265
+  type: 'test'
+  ...
+# Subtest: toast expiration pauses and resumes with remaining time; explicit zero remains persistent
+ok 52 - toast expiration pauses and resumes with remaining time; explicit zero remains persistent
+  ---
+  duration_ms: 3.61815
+  type: 'test'
+  ...
+# Subtest: default error notification provides eight seconds and dismissal clears its timer
+ok 53 - default error notification provides eight seconds and dismissal clears its timer
+  ---
+  duration_ms: 0.851554
+  type: 'test'
+  ...
+# Subtest: every shared Vue component compiles its script and template
+ok 54 - every shared Vue component compiles its script and template
+  ---
+  duration_ms: 1252.222531
+  type: 'test'
+  ...
+# Subtest: shared text and filled-action colors meet WCAG AA body contrast
+ok 55 - shared text and filled-action colors meet WCAG AA body contrast
+  ---
+  duration_ms: 29.147064
+  type: 'test'
+  ...
+1..55
+# tests 55
+# suites 0
+# pass 55
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 20838.380943

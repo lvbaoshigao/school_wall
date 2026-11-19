@@ -8,35 +8,23 @@ const { initDB, getWrapper, getSetting } = require('./db');
 const { authRequired, SECRET } = require('./middleware/auth');
 const { readPrefs } = require('./lib/prefs');
 const visits = require('./lib/visits');
+const { countAccessibleTreeUnread } = require('./lib/treeAccess');
 
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const { UPLOADS_DIR } = require('./lib/paths');
+const { privateUploadGuard } = require('./lib/uploads');
 const AVATAR_DIR = path.join(UPLOADS_DIR, 'avatars');
 const IMAGE_DIR = path.join(UPLOADS_DIR, 'images');
 const BUG_REPORT_IMAGE_DIR = path.join(UPLOADS_DIR, 'bug-reports');
 [UPLOADS_DIR, AVATAR_DIR, IMAGE_DIR, BUG_REPORT_IMAGE_DIR].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
 
-// 是否部署在我们自己掌控的反向代理（nginx / Cloudflare）之后。
-// 只有为真时才允许从请求头取客户端 IP —— 否则任何人都能自己伪造
-// CF-Connecting-IP，为每个请求换一个「IP」，限流形同虚设。
-const BEHIND_PROXY = process.env.TRUST_PROXY === '1' || parseInt(process.env.TRUST_PROXY) > 0;
+// 只信任明确配置的代理跳数（1–10）；反向代理必须覆盖客户端提交的转发头。
+const TRUST_PROXY_HOPS = /^\d+$/.test(process.env.TRUST_PROXY || '') ? Number(process.env.TRUST_PROXY) : 0;
 
-// 取真实客户端 IP。
-// 直连时只认 socket 对端；在代理后按 CF-Connecting-IP → X-Forwarded-For 首项 → req.ip 的顺序。
-// 这一步取错的后果不是「限流变松」而是「服务不可用」：若拿到的是代理自身的 IP，
-// 全站所有用户会共用同一个计数桶，正常流量互相把对方挤成 429。
-// Cloudflare 场景尤其隐蔽 —— 即使配了 trust proxy，req.ip 拿到的仍是
-// Cloudflare 边缘节点 IP，几百个节点后面站着全部用户。
+// Express 从 socket 开始按受信跳数反向解析 XFF，绝不直接信任 CF 头或 XFF 首项。
+// 反代/隧道先在入口恢复并覆盖真实来源，避免校园 NAT 用户共享错误的限流桶。
 function clientIp(req) {
-  if (BEHIND_PROXY) {
-    const cf = req.headers['cf-connecting-ip'];
-    if (cf) return String(cf).trim();
-    const xff = req.headers['x-forwarded-for'];
-    if (xff) {
-      const first = String(xff).split(',')[0].trim();
-      if (first) return first;
-    }
-  }
-  return req.ip || req.connection?.remoteAddress || 'unknown';
+  // Express walks X-Forwarded-For from the trusted socket, rather than trusting a client-controlled first value.
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 // 限流的计数 key。
@@ -47,10 +35,13 @@ function clientIp(req) {
 // 伪造 token 拿不到独立额度 —— 验签不过就落回 IP 桶。
 function rateKey(req) {
   const auth = req.headers.authorization;
-  if (auth && auth.startsWith('Bearer ')) {
+  if (typeof auth === 'string' && /^Bearer [^\s]{1,8192}$/.test(auth)) {
     try {
-      const payload = jwt.verify(auth.slice(7), SECRET);
-      if (payload?.id) return `u:${payload.id}`;
+      const payload = jwt.verify(auth.slice(7), SECRET, { algorithms: ['HS256'] });
+      if (payload.aud === undefined && Number.isSafeInteger(payload?.id) && payload.id > 0 && Number.isSafeInteger(payload.exp) && Number.isSafeInteger(payload.tv ?? 0)) {
+        const user = getWrapper().prepare('SELECT token_version, status FROM users WHERE id=?').get(payload.id);
+        if (user && (user.token_version || 0) === (payload.tv ?? 0) && user.status === 'active') return `u:${payload.id}`;
+      }
     } catch {}
   }
   return `ip:${clientIp(req)}`;
@@ -62,7 +53,7 @@ function rateKey(req) {
 // 每个 key 只存 3 个数字，内存 O(1)；并对 key 总数设上限，避免大量来源 IP 把 Map 撑大。
 const RL_MAX_KEYS = 20000;
 
-function createRateLimiter(windowMs, maxRequests, name = '') {
+function createRateLimiter(windowMs, maxRequests, name = '', keyOf = rateKey) {
   const hits = new Map();
 
   // 定期清掉不活跃的 key，而不是把所有计数一起归零
@@ -73,7 +64,7 @@ function createRateLimiter(windowMs, maxRequests, name = '') {
   if (sweep.unref) sweep.unref();
 
   return (req, res, next) => {
-    const key = rateKey(req);
+    const key = keyOf(req);
     const now = Date.now();
     const idx = Math.floor(now / windowMs);
 
@@ -155,6 +146,9 @@ async function main() {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'");
+    if (/^\/api(?:\/|$)/i.test(req.path)) res.setHeader('Cache-Control', 'no-store');
     next();
   });
 
@@ -177,6 +171,12 @@ async function main() {
   // 否则任意一个端点都能收 5MB 并触发一次同步 JSON.parse。
   app.use(['/api/upload/image', '/api/avatar/upload', '/api/auth/avatar', '/api/upload/bug-image'], express.json({ limit: '5mb' }));
   app.use(express.json({ limit: '128kb' }));
+  app.use('/api', (req, res, next) => {
+    if (req.body !== undefined && (req.body === null || Array.isArray(req.body) || typeof req.body !== 'object')) {
+      return res.status(400).json({ error: '请求内容必须是 JSON 对象' });
+    }
+    next();
+  });
   // body-parser 的 PayloadTooLargeError（EntityTooLarge）默认走 express 兜底返回 HTML，
   // 而不是 JSON。上传类接口单独挂 5mb 解析器，其余接口的 128KB 上限本来就该
   // 返回 413 而非 500 —— 这里把该错误统一转成 JSON 响应，同时不影响真实服务错误。
@@ -185,18 +185,22 @@ async function main() {
       res.status(413).json({ error: '请求体过大' });
       return;
     }
+    if (err && err.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: '请求 JSON 格式无效' });
+    }
     next(err);
   });
   // 安全修复：默认不信任代理头，防止伪造 X-Forwarded-For 绕过限流/伪造 IP。
   // 若部署在反向代理后，设置环境变量 TRUST_PROXY=1（或具体跳数）。
-  app.set('trust proxy', process.env.TRUST_PROXY === '1' ? 1 : (parseInt(process.env.TRUST_PROXY) || false));
+  app.set('trust proxy', Number.isSafeInteger(TRUST_PROXY_HOPS) && TRUST_PROXY_HOPS > 0 && TRUST_PROXY_HOPS <= 10 ? TRUST_PROXY_HOPS : false);
 
   // 读请求便宜，额度给宽松些：单页加载会并发若干请求，未读轮询还在后台跑，
   // 卡太紧会误伤正常浏览。真正的成本集中在写操作上，由 writeLimiter 单独收紧。
   const apiLimiter = createRateLimiter(60000, 300, 'api');
-  const authLimiter = createRateLimiter(60000, 20, 'auth');
+  // Authentication and setup stay IP-limited even when the caller already owns a valid token.
+  const authLimiter = createRateLimiter(60000, 20, 'auth', req => `ip:${clientIp(req)}`);
   const uploadLimiter = createRateLimiter(60000, 10, 'upload');
-  const setupLimiter = createRateLimiter(300000, 5, 'setup'); // 建墙设置接口限流：5分钟内最多5次
+  const setupLimiter = createRateLimiter(300000, 5, 'setup', req => `ip:${clientIp(req)}`); // 建墙设置接口限流：5分钟内最多5次
   // 写操作单独一档更严的限流：读请求便宜，写请求会触发落盘与索引更新，
   // 正常用户发帖/点赞远达不到 40 次/分钟，攻击者靠它拖慢服务却绰绰有余。
   const writeLimiter = createRateLimiter(60000, 40, 'write');
@@ -205,7 +209,7 @@ async function main() {
     req.db = db;
     const origEnd = res.end;
     res.end = function(...args) {
-      if (['POST', 'PUT', 'DELETE'].includes(req.method) && res.statusCode < 400) {
+      if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && res.statusCode < 400) {
         // 只置脏标记（O(1)），真正落盘由 db.js 里的定时器合并执行。
         // 这里原先是直接全库 export + 同步写盘，把每个写请求都变成了
         // 一次与数据量成正比的阻塞操作。
@@ -287,11 +291,14 @@ a:hover{text-decoration:underline}
   app.use('/api/permissions', require('./routes/permissions'));
 
   // ===== 头像文件存储 =====
-  app.use('/uploads', express.static(UPLOADS_DIR, {
+  app.use('/uploads', privateUploadGuard, express.static(UPLOADS_DIR, {
     maxAge: '7d',
     etag: true,
     lastModified: true,
     immutable: true,
+    setHeaders(res) {
+      if (res.locals.privateUpload) res.setHeader('Cache-Control', 'private, no-store');
+    },
   }));
 
   app.use('/api', require('./routes/uploads')(uploadLimiter, { AVATAR_DIR, IMAGE_DIR, BUG_REPORT_IMAGE_DIR }));
@@ -307,28 +314,26 @@ a:hover{text-decoration:underline}
     if (prefs.badge_report) badgeTypes.push('report_notification');
 
     const chatRow = req.db.prepare(
-      "SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND is_read = 0 AND type = 'private'"
+      "SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND COALESCE(receiver_deleted, 0) = 0 AND is_read = 0 AND type = 'private'"
     ).get(req.user.id);
-    const treeHoleRow = req.db.prepare(
-      "SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND is_read = 0 AND type = 'tree_hole'"
-    ).get(req.user.id);
+    const treeHoleCount = countAccessibleTreeUnread(req);
 
     let sys = 0;
     if (badgeTypes.length) {
       const holes = badgeTypes.map(() => '?').join(',');
       const sysRow = req.db.prepare(
-        `SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND is_read = 0 AND type IN (${holes})`
+        `SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND COALESCE(receiver_deleted, 0) = 0 AND is_read = 0 AND type IN (${holes})`
       ).get(req.user.id, ...badgeTypes);
       sys = sysRow?.c || 0;
     }
 
     res.json({
-      count: sys + (chatRow?.c || 0) + (treeHoleRow?.c || 0),
+      count: sys + (chatRow?.c || 0) + treeHoleCount,
       chat: chatRow?.c || 0,
-      treeHole: treeHoleRow?.c || 0,
+      treeHole: treeHoleCount,
       system: sys,
       announcement: (req.db.prepare(
-        "SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND is_read = 0 AND type = 'announcement'"
+        "SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND COALESCE(receiver_deleted, 0) = 0 AND is_read = 0 AND type = 'announcement'"
       ).get(req.user.id)?.c || 0),
     });
   });
@@ -365,6 +370,7 @@ a:hover{text-decoration:underline}
 
   // 运行看板（/api/dashboard/session 换票据 + /dashboard 页面）
   app.use('/', require('./dashboard'));
+  app.use('/api', (req, res) => res.status(404).json({ error: '接口不存在' }));
 
   // 前端静态文件
   if (hasDist) {
@@ -393,6 +399,7 @@ a:hover{text-decoration:underline}
   app.use((err, req, res, next) => {
     console.error('[Error]', err.message || err);
     if (res.headersSent) return next(err);
+    if (err.code === 'IMAGE_BUSY') return res.status(503).json({ error: '图片处理繁忙，请稍后重试' });
     res.status(500).json({ error: '服务器内部错误' });
   });
 

@@ -10,10 +10,14 @@ function onScroll() {
 }
 
 function scrollToTop() {
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  const reduceMotion = document.documentElement.dataset.reduceMotion === 'on' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  window.scrollTo({ top: 0, behavior: reduceMotion ? 'instant' : 'smooth' })
 }
 
-onMounted(() => window.addEventListener('scroll', onScroll, { passive: true }))
+onMounted(() => {
+  onScroll()
+  window.addEventListener('scroll', onScroll, { passive: true })
+})
 onUnmounted(() => window.removeEventListener('scroll', onScroll))
 </script>
 
@@ -29,7 +33,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScroll))
 .back-to-top {
   position: fixed;
   /* 挪到左侧：新增的全局发布 FAB 占用右下，两个浮钮不能叠在一起 */
-  bottom: 28px;
+  bottom: max(24px, env(safe-area-inset-bottom));
   left: 28px;
   z-index: 900;
   width: 44px;
@@ -49,7 +53,7 @@ onUnmounted(() => window.removeEventListener('scroll', onScroll))
   box-shadow: var(--shadow-lg);
 }
 
-.arrow { color: #fff; }
+.arrow { color: var(--text-primary); }
 
 .fab-enter-active { transition: all 0.3s ease; }
 .fab-leave-active { transition: all 0.2s ease; }

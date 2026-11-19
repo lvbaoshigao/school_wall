@@ -7,7 +7,7 @@ import { useUserStore } from '../stores/user'
 import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
-import api from '../api'
+import api, { getApiErrorMessage, writeStorage } from '../api'
 
 const router = useRouter()
 const settingsStore = useSettingsStore()
@@ -37,13 +37,16 @@ const unfindable = computed(() =>
 // 没填真实姓名时开了也没意义，直接禁用并提示
 const hasRealName = computed(() => !!(userStore.user?.real_name || '').trim())
 
+const privacySaving = ref(false)
 async function setPrivacy(key, val, label) {
+  if (privacySaving.value) return
+  privacySaving.value = true
   try {
     await userStore.updateProfile({ [key]: val ? 1 : 0 })
     toast[val ? 'success' : 'info'](`${label}已${val ? '开启' : '关闭'}`)
   } catch (e) {
-    toast.error(e.response?.data?.error || '保存失败')
-  }
+    toast.error(getApiErrorMessage(e, '保存失败，请重试'))
+  } finally { privacySaving.value = false }
 }
 
 // 导航工具项（主题/壁纸）
@@ -58,14 +61,14 @@ function canToggle(item) {
   return wallStore.canHere('wall.tree_hole')
 }
 
-function toggleNav(item, val) {
+async function toggleNav(item, val) {
   if (item.requireTreeHole && !canToggle(item)) return
-  settingsStore.setNavPref(item.key, val)
+  if (!await settingsStore.setNavPref(item.key, val)) { toast.error(settingsStore.saveError || '保存失败，请重试'); return }
   toast[val ? 'success' : 'info'](`${item.label}已${val ? '显示' : '隐藏'}`)
 }
 
-function toggleTool(item, val) {
-  settingsStore.setNavPref(item.key, val)
+async function toggleTool(item, val) {
+  if (!await settingsStore.setNavPref(item.key, val)) { toast.error(settingsStore.saveError || '保存失败，请重试'); return }
   toast[val ? 'success' : 'info'](`${item.label}已${val ? '显示' : '隐藏'}`)
 }
 
@@ -102,7 +105,7 @@ const CHOICES = {
 }
 
 async function setPref(key, val, label, tip) {
-  await settingsStore.setPref(key, val)
+  if (!await settingsStore.setPref(key, val)) { toast.error(settingsStore.saveError || '保存失败，请重试'); return }
   if (tip) toast.info(tip)
   else if (typeof val === 'boolean') toast[val ? 'success' : 'info'](`${label}已${val ? '开启' : '关闭'}`)
   else toast.success(`${label}已设为${label === '主题色' ? val : (CHOICES[key]?.find(c => c.v === val)?.l ?? val)}`)
@@ -152,11 +155,10 @@ function clearLocalCache() {
 }
 
 function doClearLocalCache() {
-  const theme = localStorage.getItem('theme')
-  localStorage.clear()
-  sessionStorage.clear()
-  if (theme) localStorage.setItem('theme', theme)
-  location.href = '/login'
+  userStore.logout()
+  writeStorage('banInfo', null, 'sessionStorage')
+  showClearCacheConfirm.value = false
+  router.replace('/login')
 }
 
 // 近一小时访问量。服务端是内存统计，重启会清零。
@@ -188,7 +190,7 @@ onUnmounted(() => {
   <div class="settings-page">
     <div class="settings-header glass-strong">
       <div class="settings-title-row">
-        <h2>设置</h2>
+        <h1>设置</h1>
         <span v-if="visitStats" class="visit-badge" :title="`近 ${visitStats.windowMinutes} 分钟内有 ${visitStats.visitors} 位访客，共 ${visitStats.requests} 次请求`">
           <Icon name="chart" :size="14" />
           近1小时 {{ visitStats.visitors }} 人访问
@@ -196,6 +198,8 @@ onUnmounted(() => {
       </div>
       <p class="text-muted">个性化你的校园墙体验</p>
     </div>
+
+    <div v-if="settingsStore.saveError" class="settings-error" role="alert">{{ settingsStore.saveError }} <button v-if="!settingsStore.loaded" class="btn btn-secondary btn-sm" @click="settingsStore.loadSettings">重新加载设置</button></div>
 
     <!-- 导航栏显示项 -->
     <div class="settings-card glass">
@@ -210,6 +214,7 @@ onUnmounted(() => {
             type="checkbox"
             class="pref-check"
             :checked="!!settingsStore.nav[item.key]"
+            :aria-label="'在导航栏显示' + item.label"
             :disabled="!canToggle(item)"
             @change="toggleNav(item, $event.target.checked)"
           />
@@ -234,6 +239,7 @@ onUnmounted(() => {
             type="checkbox"
             class="pref-check"
             :checked="!!settingsStore.tools[item.key]"
+            :aria-label="'在导航栏显示' + item.label"
             @change="toggleTool(item, $event.target.checked)"
           />
           <span class="pref-icon">
@@ -259,7 +265,7 @@ onUnmounted(() => {
           <input
             type="checkbox"
             class="pref-check"
-            :checked="privacy.allow_search_by_id"
+            :checked="privacy.allow_search_by_id" aria-label="允许通过 ID 搜索到我" :disabled="privacySaving"
             @change="setPrivacy('allow_search_by_id', $event.target.checked, 'ID 搜索')"
           />
           <span class="pref-icon"><Icon name="tag" :size="16" /></span>
@@ -273,7 +279,7 @@ onUnmounted(() => {
           <input
             type="checkbox"
             class="pref-check"
-            :checked="privacy.allow_search_by_username"
+            :checked="privacy.allow_search_by_username" aria-label="允许通过账号搜索到我" :disabled="privacySaving"
             @change="setPrivacy('allow_search_by_username', $event.target.checked, '账号搜索')"
           />
           <span class="pref-icon">@</span>
@@ -287,7 +293,7 @@ onUnmounted(() => {
           <input
             type="checkbox"
             class="pref-check"
-            :checked="privacy.allow_search_by_nickname"
+            :checked="privacy.allow_search_by_nickname" aria-label="允许通过昵称搜索到我" :disabled="privacySaving"
             @change="setPrivacy('allow_search_by_nickname', $event.target.checked, '昵称搜索')"
           />
           <span class="pref-icon"><Icon name="edit" :size="16" /></span>
@@ -301,8 +307,8 @@ onUnmounted(() => {
           <input
             type="checkbox"
             class="pref-check"
-            :checked="privacy.allow_search_by_real_name"
-            :disabled="!hasRealName"
+            :checked="privacy.allow_search_by_real_name" aria-label="允许通过真实姓名搜索到我"
+            :disabled="!hasRealName || privacySaving"
             @change="setPrivacy('allow_search_by_real_name', $event.target.checked, '真实姓名搜索')"
           />
           <span class="pref-icon"><Icon name="user" :size="16" /></span>
@@ -328,7 +334,7 @@ onUnmounted(() => {
           <input
             type="checkbox"
             class="pref-check"
-            :checked="privacy.allow_discover"
+            :checked="privacy.allow_discover" aria-label="允许出现在发现好友列表" :disabled="privacySaving"
             @change="setPrivacy('allow_discover', $event.target.checked, '发现好友')"
           />
           <span class="pref-icon"><Icon name="compass" :size="16" /></span>
@@ -357,9 +363,9 @@ onUnmounted(() => {
             <span class="pref-name">主页默认排序</span>
             <span class="pref-desc">每次进入主页时默认按哪种顺序排列</span>
           </span>
-          <div class="seg" role="radiogroup" aria-label="主页默认排序">
-            <button v-for="c in CHOICES.feed_sort" :key="c.v" class="seg-btn" role="radio"
-                    :aria-checked="prefs.feed_sort === c.v" :class="{ active: prefs.feed_sort === c.v }"
+          <div class="seg" role="group" aria-label="主页默认排序">
+            <button v-for="c in CHOICES.feed_sort" :key="c.v" class="seg-btn"
+                    :aria-pressed="prefs.feed_sort === c.v" :class="{ active: prefs.feed_sort === c.v }"
                     @click="setPref('feed_sort', c.v, '默认排序')">{{ c.l }}</button>
           </div>
         </div>
@@ -382,9 +388,9 @@ onUnmounted(() => {
             <span class="pref-name">列表密度</span>
             <span class="pref-desc">紧凑模式压缩卡片留白，一屏能看到更多帖子</span>
           </span>
-          <div class="seg" role="radiogroup" aria-label="列表密度">
-            <button v-for="c in CHOICES.density" :key="c.v" class="seg-btn" role="radio"
-                    :aria-checked="prefs.density === c.v" :class="{ active: prefs.density === c.v }"
+          <div class="seg" role="group" aria-label="列表密度">
+            <button v-for="c in CHOICES.density" :key="c.v" class="seg-btn"
+                    :aria-pressed="prefs.density === c.v" :class="{ active: prefs.density === c.v }"
                     @click="setPref('density', c.v, '列表密度')">{{ c.l }}</button>
           </div>
         </div>
@@ -395,9 +401,9 @@ onUnmounted(() => {
             <span class="pref-name">时间显示</span>
             <span class="pref-desc">「3 小时前」还是「08-04 09:12」</span>
           </span>
-          <div class="seg" role="radiogroup" aria-label="时间显示">
-            <button v-for="c in CHOICES.time_format" :key="c.v" class="seg-btn" role="radio"
-                    :aria-checked="prefs.time_format === c.v" :class="{ active: prefs.time_format === c.v }"
+          <div class="seg" role="group" aria-label="时间显示">
+            <button v-for="c in CHOICES.time_format" :key="c.v" class="seg-btn"
+                    :aria-pressed="prefs.time_format === c.v" :class="{ active: prefs.time_format === c.v }"
                     @click="setPref('time_format', c.v, '时间显示')">{{ c.l }}</button>
           </div>
         </div>
@@ -408,15 +414,15 @@ onUnmounted(() => {
             <span class="pref-name">正文字号</span>
             <span class="pref-desc">整体缩放全站文字，立即生效</span>
           </span>
-          <div class="seg" role="radiogroup" aria-label="正文字号">
-            <button v-for="c in CHOICES.font_scale" :key="c.v" class="seg-btn" role="radio"
-                    :aria-checked="prefs.font_scale === c.v" :class="{ active: prefs.font_scale === c.v }"
+          <div class="seg" role="group" aria-label="正文字号">
+            <button v-for="c in CHOICES.font_scale" :key="c.v" class="seg-btn"
+                    :aria-pressed="prefs.font_scale === c.v" :class="{ active: prefs.font_scale === c.v }"
                     @click="setPref('font_scale', c.v, '正文字号')">{{ c.l }}</button>
           </div>
         </div>
 
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.auto_load_images"
+          <input type="checkbox" class="pref-check" :checked="prefs.auto_load_images" aria-label="自动加载帖子图片"
                  @change="setPref('auto_load_images', $event.target.checked, '图片自动加载')" />
           <span class="pref-icon"><Icon name="image" :size="16" /></span>
           <span class="pref-info">
@@ -435,7 +441,7 @@ onUnmounted(() => {
       </div>
       <div class="pref-list">
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.default_anonymous_post"
+          <input type="checkbox" class="pref-check" :checked="prefs.default_anonymous_post" aria-label="默认匿名发帖"
                  @change="setPref('default_anonymous_post', $event.target.checked, '默认匿名发帖')" />
           <span class="pref-icon"><Icon name="user" :size="16" /></span>
           <span class="pref-info">
@@ -445,7 +451,7 @@ onUnmounted(() => {
         </div>
 
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.default_markdown"
+          <input type="checkbox" class="pref-check" :checked="prefs.default_markdown" aria-label="默认使用 Markdown"
                  @change="setPref('default_markdown', $event.target.checked, '默认 Markdown')" />
           <span class="pref-icon"><Icon name="code" :size="16" /></span>
           <span class="pref-info">
@@ -455,7 +461,7 @@ onUnmounted(() => {
         </div>
 
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.confirm_before_post"
+          <input type="checkbox" class="pref-check" :checked="prefs.confirm_before_post" aria-label="发布前确认"
                  @change="setPref('confirm_before_post', $event.target.checked, '发布前二次确认')" />
           <span class="pref-icon"><Icon name="check-circle" :size="16" /></span>
           <span class="pref-info">
@@ -465,7 +471,7 @@ onUnmounted(() => {
         </div>
 
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.default_anonymous_confession"
+          <input type="checkbox" class="pref-check" :checked="prefs.default_anonymous_confession" aria-label="默认匿名表白"
                  @change="setPref('default_anonymous_confession', $event.target.checked, '表白信默认匿名')" />
           <span class="pref-icon"><Icon name="mail" :size="16" /></span>
           <span class="pref-info">
@@ -484,7 +490,7 @@ onUnmounted(() => {
       </div>
       <div class="pref-list">
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.badge_interaction"
+          <input type="checkbox" class="pref-check" :checked="prefs.badge_interaction" aria-label="互动消息计入未读红点"
                  @change="setPref('badge_interaction', $event.target.checked, '互动计入红点')" />
           <span class="pref-icon"><Icon name="heart" :size="16" /></span>
           <span class="pref-info">
@@ -493,7 +499,7 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.badge_announcement"
+          <input type="checkbox" class="pref-check" :checked="prefs.badge_announcement" aria-label="公告计入未读红点"
                  @change="setPref('badge_announcement', $event.target.checked, '公告计入红点')" />
           <span class="pref-icon"><Icon name="megaphone" :size="16" /></span>
           <span class="pref-info">
@@ -502,7 +508,7 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.badge_system"
+          <input type="checkbox" class="pref-check" :checked="prefs.badge_system" aria-label="系统通知计入未读红点"
                  @change="setPref('badge_system', $event.target.checked, '系统通知计入红点')" />
           <span class="pref-icon"><Icon name="bell" :size="16" /></span>
           <span class="pref-info">
@@ -511,7 +517,7 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.badge_report"
+          <input type="checkbox" class="pref-check" :checked="prefs.badge_report" aria-label="举报通知计入未读红点"
                  @change="setPref('badge_report', $event.target.checked, '举报通知计入红点')" />
           <span class="pref-icon"><Icon name="flag" :size="16" /></span>
           <span class="pref-info">
@@ -539,7 +545,7 @@ onUnmounted(() => {
         <div class="pref-divider"></div>
 
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.notify_on_comment"
+          <input type="checkbox" class="pref-check" :checked="prefs.notify_on_comment" aria-label="评论我的帖子时提醒我"
                  @change="setPref('notify_on_comment', $event.target.checked, '被评论提醒')" />
           <span class="pref-icon"><Icon name="message" :size="16" /></span>
           <span class="pref-info">
@@ -548,7 +554,7 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.notify_on_like"
+          <input type="checkbox" class="pref-check" :checked="prefs.notify_on_like" aria-label="点赞我的帖子时提醒我"
                  @change="setPref('notify_on_like', $event.target.checked, '被点赞提醒')" />
           <span class="pref-icon"><Icon name="heart" :size="16" /></span>
           <span class="pref-info">
@@ -567,7 +573,7 @@ onUnmounted(() => {
       </div>
       <div class="pref-list">
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.reduce_motion"
+          <input type="checkbox" class="pref-check" :checked="prefs.reduce_motion" aria-label="减少动效"
                  @change="setPref('reduce_motion', $event.target.checked, '减少动效')" />
           <span class="pref-icon"><Icon name="minus" :size="16" /></span>
           <span class="pref-info">
@@ -576,7 +582,7 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.high_contrast"
+          <input type="checkbox" class="pref-check" :checked="prefs.high_contrast" aria-label="高对比度"
                  @change="setPref('high_contrast', $event.target.checked, '高对比度')" />
           <span class="pref-icon"><Icon name="eye" :size="16" /></span>
           <span class="pref-info">
@@ -585,7 +591,7 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.always_focus_ring"
+          <input type="checkbox" class="pref-check" :checked="prefs.always_focus_ring" aria-label="始终显示焦点框"
                  @change="setPref('always_focus_ring', $event.target.checked, '始终显示焦点框')" />
           <span class="pref-icon"><Icon name="tag" :size="16" /></span>
           <span class="pref-info">
@@ -594,7 +600,7 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.disable_blur"
+          <input type="checkbox" class="pref-check" :checked="prefs.disable_blur" aria-label="关闭毛玻璃模糊"
                  @change="setPref('disable_blur', $event.target.checked, '毛玻璃模糊')" />
           <span class="pref-icon"><Icon name="image" :size="16" /></span>
           <span class="pref-info">
@@ -627,12 +633,12 @@ onUnmounted(() => {
           <span class="pref-name">主题色</span>
           <span class="pref-desc">按钮、选中态、焦点框与背景叠加层都会跟着变</span>
         </div>
-        <div class="accent-swatches" role="radiogroup" aria-label="主题色">
+        <div class="accent-swatches" role="group" aria-label="主题色">
           <button
             v-for="a in ACCENTS" :key="a.key"
-            class="swatch" role="radio"
+            class="swatch"
             :class="{ active: prefs.accent === a.key }"
-            :aria-checked="prefs.accent === a.key"
+            :aria-pressed="prefs.accent === a.key"
             :aria-label="a.label"
             :title="a.label"
             :style="{ background: `linear-gradient(180deg, ${a.c1} 0%, ${a.c2} 100%)` }"
@@ -908,4 +914,13 @@ onUnmounted(() => {
 @media (max-width: 480px) {
   .pref-desc { display: none; }
 }
+.settings-page { max-width: 57rem; margin-inline: auto; }
+.settings-header { border-top: 3px solid var(--accent-1); }
+.settings-title-row h1 { font-size: clamp(1.65rem, 4vw, 2rem); letter-spacing: -.025em; }
+.settings-error { padding: 1rem; margin-block: 1rem; border-left: 3px solid var(--danger); background: var(--bg-card); border-radius: var(--radius-sm); }
+.pref-check { flex-shrink: 0; min-width: 1.25rem; min-height: 1.25rem; cursor: pointer; }
+.pref-info { min-width: 0; overflow-wrap: anywhere; }
+.seg { flex-wrap: wrap; }
+.seg-btn, .pref-enter, .swatch { min-height: 2.75rem; min-width: 2.75rem; }
+@media (prefers-reduced-motion: reduce) { .settings-page { animation: none; } }
 </style>

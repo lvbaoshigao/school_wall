@@ -2,6 +2,10 @@ const express = require('express');
 const { authRequired, requirePerm } = require('../middleware/auth');
 
 const router = express.Router();
+for (const name of ['id', 'appId']) router.param(name, (req, res, next, value) => {
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) return res.status(400).json({ error: '无效的记录 ID' });
+  next();
+});
 
 // 需要「审批建墙申请」权限时用它给申请人发通知
 function notify(db, userIds, title, content, link = '') {
@@ -12,6 +16,7 @@ function notify(db, userIds, title, content, link = '') {
 // ================= 超级管理员：建墙申请审批 =================
 router.get('/admin/applications', authRequired, requirePerm('global.wall.approve'), (req, res) => {
   const status = req.query.status || 'pending';
+  if (!['pending', 'approved', 'rejected'].includes(status)) return res.status(400).json({ error: '无效的申请状态' });
   const apps = req.db.prepare(`
     SELECT wa.*, u.nickname as applicant_name, u.username as applicant_username
     FROM wall_applications wa JOIN users u ON wa.applicant_id=u.id
@@ -36,20 +41,30 @@ router.put('/admin/applications/:appId/review', authRequired, requirePerm('globa
     return res.json({ message: '已拒绝' });
   }
 
-  // 通过：创建墙，申请者为墙主
+  // 通过：仅为仍有效的申请者创建墙，避免已删除或封禁账号成为墙主。
+  const applicant = req.db.prepare('SELECT status FROM users WHERE id=?').get(app.applicant_id);
+  if (!applicant || applicant.status !== 'active') return res.status(400).json({ error: '申请人账号当前不可用' });
   const exists = req.db.prepare('SELECT id FROM walls WHERE name=?').get(app.wall_name);
   if (exists) return res.status(400).json({ error: '同名校园墙已存在，无法通过' });
 
-  const wr = req.db.prepare(
-    "INSERT INTO walls (name, description, owner_id, status, require_join_approval) VALUES (?,?,?,'active',1)"
-  ).run(app.wall_name, app.description || '', app.applicant_id);
-  const wallId = wr.lastInsertRowid;
-  req.db.prepare("INSERT INTO wall_members (wall_id, user_id, wall_role, status) VALUES (?,?,'owner','active')")
-    .run(wallId, app.applicant_id);
+  req.db.exec('BEGIN');
+  let wallId;
+  try {
+    const wr = req.db.prepare(
+      "INSERT INTO walls (name, description, owner_id, status, require_join_approval) VALUES (?,?,?,'active',1)"
+    ).run(app.wall_name, app.description || '', app.applicant_id);
+    wallId = wr.lastInsertRowid;
+    req.db.prepare("INSERT INTO wall_members (wall_id, user_id, wall_role, status) VALUES (?,?,'owner','active')")
+      .run(wallId, app.applicant_id);
 
-  req.db.prepare("UPDATE wall_applications SET status='approved', reviewer_id=?, reviewed_at=datetime('now','localtime') WHERE id=?")
-    .run(req.user.id, app.id);
-  notify(req.db, [app.applicant_id], '建墙申请已通过', `你创建的校园墙「${app.wall_name}」已开通，你已成为墙主`, '/walls');
+    req.db.prepare("UPDATE wall_applications SET status='approved', reviewer_id=?, reviewed_at=datetime('now','localtime') WHERE id=?")
+      .run(req.user.id, app.id);
+    notify(req.db, [app.applicant_id], '建墙申请已通过', `你创建的校园墙「${app.wall_name}」已开通，你已成为墙主`, '/walls');
+    req.db.exec('COMMIT');
+  } catch (error) {
+    req.db.exec('ROLLBACK');
+    throw error;
+  }
   res.json({ message: '已通过并创建校园墙', wall_id: wallId });
 });
 

@@ -1,14 +1,15 @@
 <script setup>
-import { toasts } from '../composables/useToast'
+import { useToast } from '../composables/useToast'
 import Icon from './Icon.vue'
 
-function removeToast(id) {
-  const idx = toasts.value.findIndex(t => t.id === id)
-  if (idx >= 0) toasts.value.splice(idx, 1)
+const { toasts, remove: removeToast, pause, resume } = useToast()
+function resumeIfIdle(event, id) {
+  if (event.currentTarget.contains(document.activeElement) || event.currentTarget.matches(':hover')) return
+  resume(id)
 }
 
 // 提示类型对应的图标；颜色之外再给一个形状差异，色觉障碍下也能区分
-const icons = { success: 'check-circle', error: 'x-circle', warning: 'alert', info: 'info' }
+const icons = { success: 'check-circle', error: 'x-circle', warning: 'alert-triangle', info: 'info' }
 </script>
 
 <template>
@@ -16,22 +17,21 @@ const icons = { success: 'check-circle', error: 'x-circle', warning: 'alert', in
     <!-- role="status" + aria-live="polite"：此前整块容器没有任何语义，
          屏幕阅读器完全感知不到「已收藏 / 发送失败」这类操作反馈。
          用 polite 而非 assertive，避免连续操作时把正在朗读的内容反复打断。 -->
-    <div class="toast-container" role="status" aria-live="polite" aria-atomic="false">
+    <div class="toast-container" role="status" aria-live="polite" aria-atomic="false" aria-relevant="additions">
       <TransitionGroup name="toast">
         <div
           v-for="t in toasts"
           :key="t.id"
           class="toast-item"
           :class="'toast-' + t.type"
-          role="button"
-          tabindex="0"
-          :aria-label="t.message + '，点击关闭'"
-          @click="removeToast(t.id)"
-          @keydown.enter="removeToast(t.id)"
-          @keydown.space.prevent="removeToast(t.id)"
+          @mouseenter="pause(t.id)"
+          @mouseleave="resumeIfIdle($event, t.id)"
+          @focusin="pause(t.id)"
+          @focusout="resumeIfIdle($event, t.id)"
         >
           <Icon class="toast-icon" :name="icons[t.type] || 'info'" :size="17" />
           <span class="toast-message">{{ t.message }}</span>
+          <button type="button" class="toast-close" aria-label="关闭通知" @click="removeToast(t.id)"><Icon name="close" :size="16" /></button>
         </div>
       </TransitionGroup>
     </div>
@@ -44,7 +44,8 @@ const icons = { success: 'check-circle', error: 'x-circle', warning: 'alert', in
   top: 76px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 10000;
+  z-index: var(--z-toast);
+  width: min(28rem, calc(100vw - 24px));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -56,24 +57,32 @@ const icons = { success: 'check-circle', error: 'x-circle', warning: 'alert', in
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 20px;
+  padding: 8px 8px 8px 16px;
+  width: 100%;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   font-size: 14px;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   box-shadow: var(--shadow-md);
-  cursor: pointer;
   pointer-events: auto;
   max-width: 400px;
 }
 
-.toast-success { background: rgba(46, 213, 115, 0.92); border: 1px solid rgba(46, 213, 115, 0.5); color: #fff; }
-.toast-error { background: rgba(255, 107, 107, 0.92); border: 1px solid rgba(255, 107, 107, 0.5); color: #fff; }
-.toast-warning { background: rgba(255, 184, 76, 0.92); border: 1px solid rgba(255, 184, 76, 0.5); color: #1a1a2e; }
-.toast-info { background: color-mix(in srgb, var(--accent-1) 92%, transparent); border: 1px solid color-mix(in srgb, var(--accent-1) 50%, transparent); color: #fff; }
+.toast-success { border-left: 4px solid var(--success); }
+.toast-error { border-left: 4px solid var(--danger); }
+.toast-warning { border-left: 4px solid var(--warning); }
+.toast-info { border-left: 4px solid var(--text-link); }
+.toast-success .toast-icon { color: var(--success); }
+.toast-error .toast-icon { color: var(--danger); }
+.toast-warning .toast-icon { color: var(--warning); }
 
 .toast-icon { flex-shrink: 0; }
-.toast-message { line-height: 1.4; }
+.toast-message { line-height: var(--leading-normal); min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.toast-close { width: 44px; height: 44px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: var(--radius-sm); color: var(--text-secondary); background: transparent; cursor: pointer; }
+.toast-close:hover { background: var(--bg-input); }
 
 .toast-enter-active { transition: all 0.3s ease; }
 .toast-leave-active { transition: all 0.2s ease; }

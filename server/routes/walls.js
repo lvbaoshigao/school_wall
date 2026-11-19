@@ -1,10 +1,23 @@
 const express = require('express');
-const { authRequired, requirePerm, wallPathContext } = require('../middleware/auth');
+const { authRequired, requirePerm, wallPathContext, settleWallBan } = require('../middleware/auth');
 const { parseDuration, banUntilFrom, formatUntil, logBan, banNotice, unbanNotice } = require('../lib/ban');
 
 const router = express.Router();
 
 const MAX_WALL_ADMINS = 5;
+
+function positiveId(raw) {
+  if (typeof raw !== 'string' && typeof raw !== 'number') return 0;
+  if (!/^[1-9]\d*$/.test(String(raw))) return 0;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : 0;
+}
+for (const name of ['id', 'uid']) {
+  router.param(name, (req, res, next, value) => {
+    if (!positiveId(value)) return res.status(400).json({ error: 'ID 无效' });
+    next();
+  });
+}
 
 // link 是收件箱里这条通知的跳转目标（前端路径），留空则该消息不可点击。
 // wallId 让前端在跳转前先切到对应的墙 —— /admin 的墙内面板都按当前墙加载，
@@ -38,6 +51,7 @@ router.get('/', authRequired, (req, res) => {
 
 // ===== 发现可加入的墙 =====
 router.get('/discover', authRequired, (req, res) => {
+  if (req.query.q !== undefined && (typeof req.query.q !== 'string' || req.query.q.length > 100)) return res.status(400).json({ error: '搜索关键词无效' });
   const q = (req.query.q || '').trim();
   const like = `%${q}%`;
   const walls = req.db.prepare(`
@@ -56,7 +70,7 @@ router.get('/:id', authRequired, (req, res) => {
   const wall = req.db.prepare(`
     SELECT w.*, u.nickname as owner_name,
       (SELECT COUNT(*) FROM wall_members m WHERE m.wall_id=w.id AND m.status='active') as member_count
-    FROM walls w LEFT JOIN users u ON w.owner_id=u.id WHERE w.id=?
+    FROM walls w LEFT JOIN users u ON w.owner_id=u.id WHERE w.id=? AND w.status='active'
   `).get(parseInt(req.params.id));
   if (!wall) return res.status(404).json({ error: '校园墙不存在' });
   const m = req.db.prepare("SELECT wall_role, status FROM wall_members WHERE wall_id=? AND user_id=?").get(wall.id, req.user.id);
@@ -74,12 +88,14 @@ router.put('/:id', authRequired, wallPathContext, requirePerm('wall.edit'), (req
   const params = [];
 
   if (description !== undefined) {
-    const d = String(description || '').trim();
+    if (typeof description !== 'string') return res.status(400).json({ error: '墙介绍必须为文本' });
+    const d = description.trim();
     if (d.length > 500) return res.status(400).json({ error: '墙介绍不能超过500字' });
     sets.push('description = ?');
     params.push(d);
   }
   if (require_join_approval !== undefined) {
+    if (![true, false, 0, 1].includes(require_join_approval)) return res.status(400).json({ error: '审批开关无效' });
     sets.push('require_join_approval = ?');
     params.push(require_join_approval ? 1 : 0);
   }
@@ -95,7 +111,8 @@ router.put('/:id', authRequired, wallPathContext, requirePerm('wall.edit'), (req
 // ===== 申请创建新墙（发给超级管理员审批） =====
 router.post('/apply-create', authRequired, (req, res) => {
   const { wall_name, description } = req.body;
-  const name = (wall_name || '').trim();
+  if (typeof wall_name !== 'string' || (description !== undefined && (typeof description !== 'string' || description.length > 500))) return res.status(400).json({ error: '墙名称或介绍无效' });
+  const name = wall_name.trim();
   if (name.length < 2 || name.length > 30) return res.status(400).json({ error: '墙名称长度2-30个字符' });
 
   const exists = req.db.prepare('SELECT id FROM walls WHERE name=?').get(name);
@@ -120,8 +137,10 @@ router.post('/:id/join', authRequired, (req, res) => {
   const wall = req.db.prepare("SELECT id, name, require_join_approval, status FROM walls WHERE id=?").get(wallId);
   if (!wall || wall.status !== 'active') return res.status(404).json({ error: '校园墙不存在或已停用' });
 
-  const existing = req.db.prepare("SELECT id, status FROM wall_members WHERE wall_id=? AND user_id=?").get(wallId, req.user.id);
+  const existing = req.db.prepare("SELECT id, status, wall_ban_until, wall_ban_reason FROM wall_members WHERE wall_id=? AND user_id=?").get(wallId, req.user.id);
   if (existing) {
+    const ban = settleWallBan(req.db, wallId, req.user.id, existing);
+    if (ban.banned) return res.status(403).json({ error: '你已被该校园墙封禁', code: 'BANNED', scope: 'wall' });
     if (existing.status === 'active') return res.status(400).json({ error: '你已是该墙成员' });
     return res.status(400).json({ error: '你的加入申请正在审批中' });
   }
@@ -144,8 +163,10 @@ router.post('/:id/join', authRequired, (req, res) => {
 // ===== 退出墙 =====
 router.post('/:id/leave', authRequired, (req, res) => {
   const wallId = parseInt(req.params.id);
-  const m = req.db.prepare("SELECT wall_role FROM wall_members WHERE wall_id=? AND user_id=?").get(wallId, req.user.id);
+  const m = req.db.prepare("SELECT wall_role, status, wall_ban_until, wall_ban_reason FROM wall_members WHERE wall_id=? AND user_id=?").get(wallId, req.user.id);
   if (!m) return res.status(404).json({ error: '你不是该墙成员' });
+  const ban = settleWallBan(req.db, wallId, req.user.id, m);
+  if (ban.banned) return res.status(403).json({ error: '封禁期间不能退出校园墙', code: 'BANNED', scope: 'wall' });
   if (m.wall_role === 'owner') return res.status(400).json({ error: '墙主不能退出，请先转让墙主' });
   req.db.prepare("DELETE FROM wall_members WHERE wall_id=? AND user_id=?").run(wallId, req.user.id);
   res.json({ message: '已退出该校园墙' });
@@ -154,6 +175,7 @@ router.post('/:id/leave', authRequired, (req, res) => {
 // ===== 墙成员列表（墙管理者可见） =====
 router.get('/:id/members', authRequired, wallPathContext, requirePerm('wall.member.view'), (req, res) => {
   const status = req.query.status;
+  if (status !== undefined && !['pending', 'active', 'banned'].includes(status)) return res.status(400).json({ error: '成员状态无效' });
   let where = 'WHERE wm.wall_id = ?';
   const params = [req.wallId];
   if (status && ['pending', 'active', 'banned'].includes(status)) { where += ' AND wm.status=?'; params.push(status); }
@@ -176,6 +198,7 @@ router.post('/:id/members/:uid/approve', authRequired, wallPathContext, requireP
   const m = req.db.prepare("SELECT id, status FROM wall_members WHERE wall_id=? AND user_id=?").get(req.wallId, uid);
   if (!m || m.status !== 'pending') return res.status(404).json({ error: '没有待审批的申请' });
 
+  if (!req.db.prepare("SELECT id FROM users WHERE id=? AND status='active'").get(uid)) return res.status(400).json({ error: '申请人账号不可用' });
   req.db.prepare("UPDATE wall_members SET status='active' WHERE id=?").run(m.id);
   const wall = req.db.prepare("SELECT name FROM walls WHERE id=?").get(req.wallId);
   notify(req.db, [uid], '进墙申请已通过', `你加入「${wall?.name || '校园墙'}」的申请已通过`, '/walls');
@@ -226,6 +249,7 @@ router.post('/:id/members/:uid/ban', authRequired, wallPathContext, requirePerm(
   const d = parseDuration(duration);
   if (!d.ok) return res.status(400).json({ error: d.error });
 
+  if (reason !== undefined && (typeof reason !== 'string' || reason.length > 1000)) return res.status(400).json({ error: '封禁原因无效（最多1000字）' });
   const cleanReason = (reason || '').trim();
   const until = banUntilFrom(d.minutes);
   req.db.prepare("UPDATE wall_members SET status='banned', wall_ban_until=?, wall_ban_reason=? WHERE id=?")
@@ -245,8 +269,9 @@ router.post('/:id/members/:uid/ban', authRequired, wallPathContext, requirePerm(
 // ===== 解除墙内封禁 =====
 router.post('/:id/members/:uid/unban', authRequired, wallPathContext, requirePerm('wall.member.ban'), (req, res) => {
   const uid = parseInt(req.params.uid);
-  const m = req.db.prepare("SELECT id, status FROM wall_members WHERE wall_id=? AND user_id=?").get(req.wallId, uid);
+  const m = req.db.prepare("SELECT id, wall_role, status FROM wall_members WHERE wall_id=? AND user_id=?").get(req.wallId, uid);
   if (!m) return res.status(404).json({ error: '该用户不是墙成员' });
+  if (m.wall_role === 'admin' && !req.can('wall.member.role')) return res.status(403).json({ error: '只有墙主或超级管理员才能解除管理员封禁' });
   if (m.status !== 'banned') return res.status(400).json({ error: '该成员当前未被封禁' });
 
   req.db.prepare("UPDATE wall_members SET status='active', wall_ban_until='', wall_ban_reason='' WHERE id=?").run(m.id);
@@ -300,11 +325,13 @@ router.put('/:id/members/:uid/role', authRequired, wallPathContext, requirePerm(
 
 // ===== 转让墙主（现任墙主或超级管理员） =====
 router.put('/:id/transfer-owner', authRequired, wallPathContext, requirePerm('wall.transfer'), (req, res) => {
-  const newOwnerId = parseInt(req.body.new_owner_id);
+  const newOwnerId = positiveId(req.body.new_owner_id);
   if (!newOwnerId) return res.status(400).json({ error: '请指定新墙主' });
 
   const target = req.db.prepare("SELECT id, status FROM wall_members WHERE wall_id=? AND user_id=?").get(req.wallId, newOwnerId);
-  if (!target || target.status !== 'active') return res.status(400).json({ error: '新墙主必须是该墙的有效成员' });
+  if (!target || target.status !== 'active' || !req.db.prepare("SELECT id FROM users WHERE id=? AND status='active'").get(newOwnerId)) return res.status(400).json({ error: '新墙主必须是该墙的有效成员' });
+  const wallOwner = req.db.prepare('SELECT owner_id FROM walls WHERE id=?').get(req.wallId);
+  if (wallOwner?.owner_id === newOwnerId) return res.status(400).json({ error: '该用户已经是墙主' });
 
   const currentOwner = req.db.prepare("SELECT user_id FROM wall_members WHERE wall_id=? AND wall_role='owner'").get(req.wallId);
   // 旧墙主降为墙管理员（若名额已满则降为成员）

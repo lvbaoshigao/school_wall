@@ -2,37 +2,39 @@ const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { DATA_DIR } = require('../lib/paths');
 const { effectivePerms, loadOverrides, isWallPerm } = require('../lib/permissions');
 
 // ===== JWT 密钥 =====
 // 优先使用环境变量；否则在 server/.jwt_secret 持久化一个随机密钥。
 // 不再使用硬编码回退密钥（安全漏洞修复）。
 function loadSecret() {
-  if (process.env.JWT_SECRET && process.env.JWT_SECRET.length >= 16) {
+  if (process.env.JWT_SECRET !== undefined) {
+    if (process.env.JWT_SECRET.trim().length < 16) {
+      throw new Error('JWT_SECRET 至少需要16个非空白字符');
+    }
     return process.env.JWT_SECRET;
   }
-  const secretPath = path.join(__dirname, '..', '.jwt_secret');
-  try {
-    if (fs.existsSync(secretPath)) {
-      const s = fs.readFileSync(secretPath, 'utf8').trim();
-      if (s.length >= 16) return s;
-    }
-  } catch {}
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  const secretPath = path.join(DATA_DIR, '.jwt_secret');
+  const readSecret = () => {
+    const s = fs.readFileSync(secretPath, 'utf8').trim();
+    if (s.length < 16) throw new Error('已保存的 JWT 密钥无效，请检查配置');
+    fs.chmodSync(secretPath, 0o600);
+    return s;
+  };
+  try { return readSecret(); } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
   const generated = crypto.randomBytes(48).toString('hex');
   try {
-    // 先检查文件是否存在，存在则只读权限（不覆盖）
-    if (fs.existsSync(secretPath)) {
-      const s = fs.readFileSync(secretPath, 'utf8').trim();
-      if (s.length >= 16) return s;
-    }
-    fs.writeFileSync(secretPath, generated, { mode: 0o600 });
-    // writeFileSync 的 mode 只在新建文件时生效，补一次确保权限正确
-    try { fs.chmodSync(secretPath, 0o600); } catch {};
-    console.warn('[Auth] 未设置 JWT_SECRET 环境变量，已生成随机密钥并保存到 server/.jwt_secret');
-    console.warn('[Auth] 生产环境请设置 JWT_SECRET 环境变量以固定密钥。');
+    // 排他创建：并发进程不得各自覆盖密钥，或悄悄使用不同的临时密钥。
+    fs.writeFileSync(secretPath, generated, { mode: 0o600, flag: 'wx' });
   } catch (e) {
-    console.warn('[Auth] 无法持久化 JWT 密钥，本次运行使用临时密钥（重启后 token 将失效）。');
+    if (e.code === 'EEXIST') return readSecret();
+    throw new Error('无法持久化 JWT 密钥，请配置 JWT_SECRET 或修复密钥文件权限');
   }
+  console.warn('[Auth] 已生成随机 JWT 密钥并保存到 server/.jwt_secret');
   return generated;
 }
 
@@ -142,12 +144,16 @@ function banPayload(state, reason, scope = 'global') {
 
 // 封禁级别拦截：login/all 完全拦截；post 只拦写请求；chat 只拦聊天相关
 function banLevelCheck(req, user, state) {
+  const requestPath = (req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0].toLowerCase().replace(/\/+$/, '');
+  // 全局封禁仍允许本人持有效会话提交申诉，除此以外不放宽封禁权限。
+  if (req.method === 'POST' && requestPath === '/api/auth/appeal') return false;
   const level = state.banLevel || 'login';
-  if (level === 'login' || level === 'all') return true;
+  if (!['post', 'chat'].includes(level)) return true;
   if (level === 'post' && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) return true;
   if (level === 'chat') {
     const chatPaths = ['/api/messages', '/api/friends', '/api/chat'];
-    if (chatPaths.some(p => req.path.startsWith(p))) return true;
+    // Router 内 req.path 已去掉 /api/messages 前缀，必须使用挂载后的完整路径。
+    if (chatPaths.some(p => requestPath === p || requestPath.startsWith(`${p}/`))) return true;
   }
   return false;
 }
@@ -155,7 +161,7 @@ function banLevelCheck(req, user, state) {
 // 必须登录且账号正常
 function authRequired(req, res, next) {
   const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
+  if (typeof header !== 'string' || !/^Bearer [^\s]{1,8192}$/.test(header)) {
     return res.status(401).json({ error: '请先登录' });
   }
   try {
@@ -163,9 +169,16 @@ function authRequired(req, res, next) {
     // 显式锁死算法：不给 alg 白名单时，verify 只依赖库内默认值（虽然 jsonwebtoken v9
     // 已拒绝 none，但显式声明才不受后续升级/降级影响）。
     req.user = jwt.verify(token, SECRET, { algorithms: ['HS256'] });
+    if (!req.user || req.user.aud !== undefined || !Number.isSafeInteger(req.user.id) || req.user.id <= 0 ||
+        !Number.isSafeInteger(req.user.exp) || !Number.isSafeInteger(req.user.tv ?? 0) || (req.user.tv ?? 0) < 0) {
+      return res.status(401).json({ error: '登录状态无效，请重新登录' });
+    }
     // 从库实时读取全局角色与状态
     const user = req.db.prepare('SELECT id, status, ban_until, ban_reason, ban_level, role, token_version FROM users WHERE id = ?').get(req.user.id);
     if (!user) return res.status(401).json({ error: '用户不存在' });
+    if (!['active', 'banned'].includes(user.status)) {
+      return res.status(403).json({ error: '账号当前不可用' });
+    }
 
     // 令牌版本校验：改密码会令 token_version +1，旧 token 即使在 7 天有效期内也立即作废。
     // payload 缺 tv 视为 0，兼容本次升级前签发的存量 token（用户无感，下次改密后生效）。
@@ -182,12 +195,14 @@ function authRequired(req, res, next) {
       // 非完全拦截级别（如 post/chat），允许通过但标记
       req.user.banRestricted = state.banLevel;
     }
+    req.user.id = user.id;
+    req.user.tv = tokenTv;
     req.user.role = user.role;
     attachPermissions(req);
-    next();
   } catch {
     return res.status(401).json({ error: '登录已过期，请重新登录' });
   }
+  next();
 }
 
 // ===== 校园墙上下文 =====
@@ -198,19 +213,19 @@ function authRequired(req, res, next) {
 // 那里的 :id 是帖子 ID。只有 walls.js 的 `/:id/...` 路由里它才是墙 ID，
 // 所以由 wallPathContext 显式传 fromPath 开启。
 function resolveWallId(req, { fromPath = false } = {}) {
-  const toId = (raw) => {
-    const id = parseInt(raw);
-    return Number.isInteger(id) && id > 0 ? id : null;
+  const toId = raw => {
+    if ((typeof raw !== 'string' && typeof raw !== 'number') || !/^[1-9]\d*$/.test(String(raw))) return null;
+    const id = Number(raw);
+    return Number.isSafeInteger(id) ? id : null;
   };
-
-  const fromCtx = toId(req.headers['x-wall-id'] || req.query.wall_id || req.body?.wall_id);
-  if (!fromPath) return { id: fromCtx, conflict: false };
-
-  const pathId = toId(req.params?.id);
-  // 路径与头同时存在且不一致时直接拒绝，而不是默默取其中一个：
-  // 这种请求要么是客户端有 bug，要么是有人在试探，两种都不该当成正常请求处理。
-  if (pathId && fromCtx && pathId !== fromCtx) return { id: null, conflict: true };
-  return { id: pathId || fromCtx, conflict: false };
+  const sources = [req.headers['x-wall-id'], req.query?.wall_id, req.body?.wall_id];
+  if (fromPath) sources.push(req.params?.id);
+  const provided = sources.filter(value => value !== undefined);
+  if (!provided.length) return { id: null, conflict: false };
+  const ids = provided.map(toId);
+  if (ids.some(id => id === null)) return { id: null, invalid: true };
+  if (ids.some(id => id !== ids[0])) return { id: null, conflict: true };
+  return { id: ids[0], conflict: false };
 }
 
 // 墙内封禁结算：到期自动恢复为 active，逻辑与全局封禁对齐
@@ -242,8 +257,9 @@ function settleWallBan(db, wallId, userId, membership) {
 // 必须处于某墙上下文且为其 active 成员（全局管理员放行）
 function wallContextWith(req, res, next, opts) {
   const resolved = resolveWallId(req, opts);
+  if (resolved.invalid) return res.status(400).json({ error: '校园墙ID必须是有效的正整数' });
   if (resolved.conflict) {
-    return res.status(400).json({ error: 'URL 中的校园墙与 X-Wall-Id 不一致' });
+    return res.status(400).json({ error: '校园墙上下文的多个来源不一致' });
   }
   const wallId = resolved.id;
   if (!wallId) return res.status(400).json({ error: '缺少校园墙上下文 (X-Wall-Id)' });

@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
-import api from '../api'
+import api, { readStorage, writeStorage, getApiErrorMessage } from '../api'
 import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
 
@@ -25,8 +25,14 @@ const appealing = ref(false)
 
 onMounted(() => {
   try {
-    const raw = sessionStorage.getItem('banInfo')
-    if (raw) { info.value = { ...info.value, ...JSON.parse(raw) }; hasInfo.value = true }
+    const raw = readStorage('banInfo', 'sessionStorage')
+    if (raw) {
+      const saved = JSON.parse(raw)
+      if (saved && typeof saved === 'object' && ['wall', 'global'].includes(saved.scope)) {
+        info.value = { ...info.value, ...saved }
+        hasInfo.value = true
+      }
+    }
   } catch {}
   timer = setInterval(() => { now.value = Date.now() }, 1000)
 })
@@ -39,13 +45,14 @@ const untilText = computed(() => {
   if (!hasInfo.value) return '未知'
   if (info.value.permanent) return '永久'
   if (!info.value.until) return '未知'
-  return new Date(info.value.until).toLocaleString('zh-CN')
+  const date = new Date(String(info.value.until).replace(' ', 'T'))
+  return Number.isNaN(date.getTime()) ? '未知，请联系管理员确认' : date.toLocaleString('zh-CN')
 })
 
 // 倒计时；归零后提示可以重新登录（后端会在下次请求时自动解封）
 const remaining = computed(() => {
   if (!hasInfo.value || info.value.permanent || !info.value.until) return null
-  const diff = new Date(info.value.until).getTime() - now.value
+  const diff = new Date(String(info.value.until).replace(' ', 'T')).getTime() - now.value
   if (Number.isNaN(diff) || diff <= 0) return null
   const d = Math.floor(diff / 86400000)
   const h = Math.floor((diff % 86400000) / 3600000)
@@ -54,7 +61,7 @@ const remaining = computed(() => {
   return d > 0 ? `${d} 天 ${h} 小时 ${m} 分` : (h > 0 ? `${h} 小时 ${m} 分 ${s} 秒` : `${m} 分 ${s} 秒`)
 })
 
-const expired = computed(() => hasInfo.value && !info.value.permanent && !!info.value.until && remaining.value === null)
+const expired = computed(() => hasInfo.value && !info.value.permanent && !!info.value.until && Number.isFinite(new Date(String(info.value.until).replace(' ', 'T')).getTime()) && new Date(String(info.value.until).replace(' ', 'T')).getTime() <= now.value)
 
 const banLevelLabel = computed(() => {
   const labels = { login: '禁止登录', post: '禁止发帖', chat: '禁止聊天', all: '全部禁止' }
@@ -62,6 +69,7 @@ const banLevelLabel = computed(() => {
 })
 
 async function submitAppeal() {
+  if (appealing.value || appealSent.value || !userStore.isLoggedIn) return
   if (!appealText.value.trim()) { toast.error('请填写申诉理由'); return }
   appealing.value = true
   try {
@@ -69,31 +77,31 @@ async function submitAppeal() {
     appealSent.value = true
     toast.success('申诉已提交')
   } catch (e) {
-    toast.error(e.response?.data?.error || '提交失败')
+    toast.error(getApiErrorMessage(e, '申诉提交失败，请稍后重试'))
   } finally {
     appealing.value = false
   }
 }
 
 function backToLogin() {
-  sessionStorage.removeItem('banInfo')
+  writeStorage('banInfo', null, 'sessionStorage')
   userStore.logout()
   router.push('/login')
 }
 
 function backToWalls() {
-  sessionStorage.removeItem('banInfo')
+  writeStorage('banInfo', null, 'sessionStorage')
   router.push('/walls')
 }
 </script>
 
 <template>
   <div class="banned-page">
-    <div class="banned-card glass-strong" role="alert">
+    <section class="banned-card glass-strong" aria-labelledby="ban-title">
       <div class="banned-icon"><Icon name="ban" :size="40" /></div>
 
-      <h1 class="banned-title">
-        {{ isWallScope ? '你已被该校园墙封禁' : '账号已被封禁' }}
+      <h1 id="ban-title" class="banned-title">
+        {{ !hasInfo ? '无法获取限制详情' : isWallScope ? '该校园墙暂时无法访问' : '账号使用受到限制' }}
       </h1>
 
       <p class="banned-sub text-muted">
@@ -129,14 +137,15 @@ function backToWalls() {
       <p v-if="expired" class="ok-msg">封禁时间已到，现在可以重新登录了。</p>
 
       <!-- 申诉表单 -->
-      <div v-if="!isWallScope && !appealSent" class="appeal-section">
-        <p class="banned-appeal text-muted">如果你认为这是误判，请提交申诉：</p>
-        <textarea v-model="appealText" placeholder="请详细说明申诉理由..." rows="3" maxlength="1000" class="appeal-input"></textarea>
-        <button class="btn btn-primary btn-sm" :disabled="!appealText.trim() || appealing" @click="submitAppeal">
+      <form v-if="hasInfo && !isWallScope && !appealSent && userStore.isLoggedIn" class="appeal-section" :aria-busy="appealing" @submit.prevent="submitAppeal">
+        <label for="ban-appeal" class="banned-appeal text-muted">申诉理由</label>
+        <p id="appeal-help" class="text-muted">请说明情况，最多1000字。每10分钟可提交一次。</p>
+        <textarea id="ban-appeal" aria-describedby="appeal-help" required v-model="appealText" placeholder="请详细说明申诉理由..." rows="3" maxlength="1000" class="appeal-input"></textarea>
+        <button type="submit" class="btn btn-primary btn-sm" :disabled="!appealText.trim() || appealing">
           {{ appealing ? '提交中...' : '提交申诉' }}
         </button>
-      </div>
-      <p v-else-if="appealSent" class="ok-msg">申诉已提交，请等待管理员处理。</p>
+      </form>
+      <p v-else-if="appealSent" class="ok-msg" role="status">申诉已提交，请等待管理员处理。</p>
 
       <p v-else class="banned-appeal text-muted">
         如果你认为这是误判，请通过站内举报或联系管理员申诉。
@@ -148,7 +157,7 @@ function backToWalls() {
           返回登录页
         </button>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
@@ -218,4 +227,10 @@ function backToWalls() {
 }
 
 .banned-actions { display: flex; gap: var(--space-2); justify-content: center; flex-wrap: wrap; }
+.banned-title { font-size: 1.5rem; line-height: 1.4; }
+.banned-detail, .appeal-section { background: var(--bg-input); }
+.banned-card { border-top: 3px solid var(--accent-1); }
+.appeal-section label { display: block; font-weight: 600; color: var(--text-primary); }
+#appeal-help { font-size: .8rem; line-height: 1.7; }
+@media (prefers-reduced-motion: reduce) { .banned-page { animation: none; } }
 </style>

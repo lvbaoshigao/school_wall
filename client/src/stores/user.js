@@ -1,114 +1,120 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import api from '../api'
+import { ref, computed, onScopeDispose } from 'vue'
+import api, { getSessionToken, setSessionToken, subscribeSessionChange, getApiErrorMessage } from '../api'
 
 export const useUserStore = defineStore('user', () => {
-  const token = ref(localStorage.getItem('token') || '')
+  const token = ref(getSessionToken())
   const user = ref(null)
-  // 有效权限，来自 GET /api/permissions/me：{ global: [...], walls: { '<wallId>': [...] } }
-  // 只用于决定界面显示什么，真正的拦截一律在服务端 —— 改这里不等于放宽权限。
   const perms = ref({ global: [], walls: {} })
-
+  const sessionRevision = ref(0)
+  const restoreError = ref('')
+  let restorePromise = null
   const isLoggedIn = computed(() => !!token.value)
   const globalPerms = computed(() => new Set(perms.value.global || []))
+  const roleLabel = computed(() => ({ super_admin: '超级管理员', admin: '全局管理员', user: '普通用户' })[user.value?.role] || '')
 
-  // 角色现在只是「名号」，仅用于展示与目标保护（比如「不能删除超级管理员」），
-  // 不再作为能力判据 —— 能不能做某事一律问 can() / canInWall()。
-  const roleLabel = computed(() => ({
-    super_admin: '超级管理员', admin: '全局管理员', user: '普通用户',
-  })[user.value?.role] || '')
+  onScopeDispose(subscribeSessionChange(event => {
+    token.value = event.token
+    if (event.resetContext) {
+      user.value = null
+      perms.value = { global: [], walls: {} }
+      restoreError.value = ''
+      restorePromise = null
+      sessionRevision.value++
+    }
+  }))
 
-  /** 全局作用域下是否拥有某权限 */
-  function can(perm) {
-    return globalPerms.value.has(perm)
-  }
-
-  /** 在某个校园墙里是否拥有某权限 */
+  // 权限仅控制界面，服务端仍是所有操作的唯一授权方。
+  function can(perm) { return globalPerms.value.has(perm) }
   function canInWall(perm, wallId) {
     if (!wallId) return globalPerms.value.has(perm)
     const list = perms.value.walls?.[wallId]
-    // walls 里只有「我是成员」的墙。不是成员时退回全局授予 ——
-    // 全局管理员就是靠全局作用域持有 wall.* 才能跨墙审核的。
-    if (list) return list.includes(perm)
-    return globalPerms.value.has(perm)
+    return Array.isArray(list) ? list.includes(perm) : globalPerms.value.has(perm)
   }
 
   async function fetchPermissions() {
-    if (!token.value) return
+    const requestedToken = token.value
+    if (!requestedToken) return
     try {
       const res = await api.get('/permissions/me')
-      perms.value = { global: res.data.global || [], walls: res.data.walls || {} }
+      if (token.value !== requestedToken) return
+      perms.value = { global: Array.isArray(res.data?.global) ? res.data.global : [], walls: res.data?.walls || {} }
     } catch {
-      // 拉不到就当作没有任何额外权限，界面退化为普通用户视图
-      perms.value = { global: [], walls: {} }
+      if (token.value === requestedToken) perms.value = { global: [], walls: {} }
     }
   }
 
+  function acceptSession(data) {
+    if (!data?.token || !data.user?.id) throw new Error('登录响应不完整，请重试')
+    setSessionToken(data.token)
+    user.value = data.user
+  }
+
   async function login(username, password) {
-    const res = await api.post('/auth/login', { username, password })
-    token.value = res.data.token
-    user.value = res.data.user
-    localStorage.setItem('token', res.data.token)
+    const res = await api.post('/auth/login', { username: username.trim(), password })
+    acceptSession(res.data)
     await fetchPermissions()
     return res.data
   }
 
   async function register(username, password, nickname, real_name) {
-    const res = await api.post('/auth/register', { username, password, nickname, real_name })
-    if (res.data.token) {
-      token.value = res.data.token
-      user.value = res.data.user
-      localStorage.setItem('token', res.data.token)
+    const res = await api.post('/auth/register', { username: username.trim(), password, nickname: nickname.trim(), real_name: real_name.trim() })
+    if (res.data?.token) {
+      acceptSession(res.data)
       await fetchPermissions()
     }
     return res.data
   }
 
   async function fetchUser() {
-    if (!token.value) return
-    try {
-      const res = await api.get('/auth/me')
-      user.value = res.data
-      await fetchPermissions()
-    } catch {
-      logout()
-    }
+    if (!token.value) return null
+    if (restorePromise) return restorePromise
+    const requestedToken = token.value
+    const request = (async () => {
+      restoreError.value = ''
+      try {
+        const res = await api.get('/auth/me')
+        if (token.value !== requestedToken) return null
+        user.value = res.data
+        await fetchPermissions()
+        return user.value
+      } catch (error) {
+        if (token.value !== requestedToken) return null
+        if (error.response?.status === 401) logout()
+        else restoreError.value = getApiErrorMessage(error, '无法恢复账户信息，请重试')
+        return null
+      }
+    })()
+    restorePromise = request
+    try { return await request } finally { if (restorePromise === request) restorePromise = null }
   }
 
   async function updateProfile(data) {
+    const requestedToken = token.value
     const res = await api.put('/auth/profile', data)
-    user.value = res.data
+    if (token.value === requestedToken) user.value = { ...user.value, ...res.data }
     return res.data
   }
 
   async function updateAvatar(avatarBase64) {
+    const requestedToken = token.value
     const res = await api.put('/auth/avatar', { avatar: avatarBase64 })
-    user.value.avatar = res.data.avatar
+    if (token.value === requestedToken && user.value) user.value = { ...user.value, avatar: res.data.avatar }
     return res.data
   }
 
   async function changePassword(oldPassword, newPassword) {
+    const requestedToken = token.value
     const res = await api.put('/auth/password', { oldPassword, newPassword })
-    // 服务端在改密时会吊销旧会话（token_version +1）并换发新 token ——
-    // 不保存的话当前会话会被自己的改密操作踢下线
-    if (res.data?.token) {
-      token.value = res.data.token
-      localStorage.setItem('token', res.data.token)
-    }
+    if (res.data?.token && token.value === requestedToken) setSessionToken(res.data.token, { resetContext: false })
     return res
   }
 
-  function logout() {
-    token.value = ''
-    user.value = null
-    perms.value = { global: [], walls: {} }
-    localStorage.removeItem('token')
-    localStorage.removeItem('currentWallId')
-  }
+  function logout() { setSessionToken('') }
 
   return {
-    token, user, perms, isLoggedIn, roleLabel,
-    can, canInWall, fetchPermissions,
-    login, register, fetchUser, updateProfile, updateAvatar, changePassword, logout
+    token, user, perms, isLoggedIn, roleLabel, sessionRevision, restoreError,
+    can, canInWall, fetchPermissions, acceptSession,
+    login, register, fetchUser, updateProfile, updateAvatar, changePassword, logout,
   }
 })

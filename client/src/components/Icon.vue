@@ -85,7 +85,7 @@ const props = defineProps({
   label: { type: String, default: '' },
 })
 
-const paths = computed(() => PATHS[props.name] || [])
+const paths = computed(() => PATHS[props.name === 'alert' ? 'alert-triangle' : props.name] || [])
 </script>
 
 <template>

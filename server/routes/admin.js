@@ -6,6 +6,18 @@ const {
 
 const router = express.Router();
 
+const positiveId = value => typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
+function validateId(req, res, next, id) {
+  if (!positiveId(id)) return res.status(400).json({ error: '无效的记录 ID' });
+  next();
+}
+function banTargetError(req, user) {
+  if (user.id === req.user.id) return '不能封禁自己';
+  if (user.role === 'super_admin') return '不能封禁超级管理员';
+  if (user.role === 'admin' && !req.can('global.user.role')) return '只有角色管理者才能封禁全局管理员';
+  return '';
+}
+
 // ============================================================
 // 全局后台（超级管理员 / 全局管理员）
 // ============================================================
@@ -13,6 +25,7 @@ const globalRouter = express.Router();
 // 只做登录校验，具体权限由每条路由各自声明 —— 一刀切的 adminRequired 会让
 // 「只授予某一项全局权限」变得不可能（比如只给某人处理用户举报的权限）。
 globalRouter.use(authRequired);
+globalRouter.param('id', validateId);
 
 // 全局统计
 globalRouter.get('/stats', requirePerm('global.moderate'), (req, res) => {
@@ -41,12 +54,17 @@ globalRouter.get('/stats', requirePerm('global.moderate'), (req, res) => {
 
 // 全局用户列表
 globalRouter.get('/users', requirePerm('global.user.manage'), (req, res) => {
-  const { role, status, q, limit = 50 } = req.query;
+  const { role, status, q, limit = '50' } = req.query;
+  if ((role !== undefined && !['user', 'admin', 'super_admin'].includes(role)) ||
+      (status !== undefined && !['active', 'banned'].includes(status)) ||
+      (q !== undefined && (typeof q !== 'string' || q.length > 200)) || !positiveId(limit)) {
+    return res.status(400).json({ error: '无效的筛选或分页参数' });
+  }
   let where = 'WHERE 1=1';
   const params = [];
   if (role) { where += ' AND role=?'; params.push(role); }
   if (status) { where += ' AND status=?'; params.push(status); }
-  if (q) { where += ' AND (username LIKE ? OR nickname LIKE ? OR real_name LIKE ?)'; params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+  if (q) { where += ' AND (username LIKE ? OR nickname LIKE ? OR (show_real_name=1 AND real_name LIKE ?))'; params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
 
   const total = req.db.prepare(`SELECT COUNT(*) as c FROM users ${where}`).get(...params).c;
   const users = req.db.prepare(`
@@ -58,7 +76,7 @@ globalRouter.get('/users', requirePerm('global.user.manage'), (req, res) => {
 });
 
 // 修改全局角色（user <-> admin，仅超管；super_admin 用 assign-role）
-globalRouter.put('/users/:id/role', requirePerm('global.user.manage'), (req, res) => {
+globalRouter.put('/users/:id/role', requirePerm('global.user.role'), (req, res) => {
   const { role } = req.body;
   if (!['user', 'admin'].includes(role)) return res.status(400).json({ error: '无效角色' });
   if (role === 'admin' && !req.can('global.user.role')) return res.status(403).json({ error: '仅超级管理员可设置全局管理员' });
@@ -83,10 +101,10 @@ globalRouter.put('/users/:id/assign-role', requirePerm('global.user.role'), (req
   const user = req.db.prepare('SELECT id, role FROM users WHERE id=?').get(userId);
   if (!user) return res.status(404).json({ error: '用户不存在' });
   if (user.role === 'super_admin' && role !== 'super_admin') {
-    const count = req.db.prepare("SELECT COUNT(*) as c FROM users WHERE role='super_admin'").get().c;
-    if (count <= 1) return res.status(400).json({ error: '至少保留一名超级管理员' });
+    const count = req.db.prepare("SELECT COUNT(*) as c FROM users WHERE role='super_admin' AND status='active' AND id<>?").get(userId).c;
+    if (count < 1) return res.status(400).json({ error: '至少保留一名超级管理员' });
   }
-  if (role === 'super_admin') {
+  if (role === 'super_admin' && user.role !== 'super_admin') {
     const count = req.db.prepare("SELECT COUNT(*) as c FROM users WHERE role='super_admin'").get().c;
     if (count >= 5) return res.status(400).json({ error: '超级管理员数量已达上限(5人)' });
   }
@@ -101,16 +119,17 @@ globalRouter.put('/users/:id/assign-role', requirePerm('global.user.role'), (req
 // 封禁（全局）
 globalRouter.put('/users/:id/ban', requirePerm('global.user.ban'), (req, res) => {
   const { banned, duration, reason, ban_level } = req.body;
+  if (typeof banned !== 'boolean' || (reason !== undefined && (typeof reason !== 'string' || reason.length > 1000)) ||
+      (ban_level !== undefined && !['login', 'post', 'chat', 'all'].includes(ban_level))) {
+    return res.status(400).json({ error: '无效的封禁参数' });
+  }
   const userId = parseInt(req.params.id);
   const user = req.db.prepare('SELECT id, nickname, role FROM users WHERE id=?').get(userId);
   if (!user) return res.status(404).json({ error: '用户不存在' });
 
   // 权限边界：不能封自己，超管不可被封，普通管理员不能封同级
-  if (userId === req.user.id) return res.status(403).json({ error: '不能封禁自己' });
-  if (user.role === 'super_admin') return res.status(403).json({ error: '不能封禁超级管理员' });
-  if (user.role === 'admin' && !req.can('global.user.role')) {
-    return res.status(403).json({ error: '只有超级管理员才能封禁全局管理员' });
-  }
+  const targetError = banTargetError(req, user);
+  if (targetError) return res.status(403).json({ error: targetError });
 
   if (banned) {
     const d = parseDuration(duration);
@@ -177,35 +196,67 @@ globalRouter.delete('/users/:id', requirePerm('global.user.delete'), (req, res) 
   const ownedWall = req.db.prepare("SELECT name FROM walls WHERE owner_id=? AND status='active'").get(userId);
   if (ownedWall) return res.status(400).json({ error: `该用户是「${ownedWall.name}」的墙主，请先转让墙主` });
 
-  req.db.prepare('DELETE FROM comments WHERE author_id=?').run(userId);
-  req.db.prepare('DELETE FROM likes WHERE user_id=?').run(userId);
-  // 回减投票计数，与注销账号（auth.js）保持一致，避免 vote_count 永久漂移
-  const voteRecs = req.db.prepare('SELECT option_id FROM vote_records WHERE user_id=?').all(userId);
-  const decVote = req.db.prepare('UPDATE vote_options SET vote_count = MAX(0, vote_count - 1) WHERE id=?');
-  voteRecs.forEach(r => decVote.run(r.option_id));
-  req.db.prepare('DELETE FROM vote_records WHERE user_id=?').run(userId);
-  req.db.prepare('DELETE FROM friends WHERE user_id=? OR friend_id=?').run(userId, userId);
-  req.db.prepare('DELETE FROM messages WHERE sender_id=? OR receiver_id=?').run(userId, userId);
-  req.db.prepare('DELETE FROM posts WHERE author_id=?').run(userId);
-  req.db.prepare('DELETE FROM votes WHERE author_id=?').run(userId);
-  req.db.prepare('DELETE FROM wall_members WHERE user_id=?').run(userId);
-  req.db.prepare('DELETE FROM wall_applications WHERE applicant_id=?').run(userId);
-  req.db.prepare('DELETE FROM post_reports WHERE reporter_id=?').run(userId);
-  req.db.prepare('DELETE FROM user_reports WHERE reporter_id=? OR reported_user_id=?').run(userId, userId);
-  req.db.prepare('DELETE FROM reports WHERE reporter_id=?').run(userId);
-  req.db.prepare('DELETE FROM bug_reports WHERE reporter_id=?').run(userId);
-  req.db.prepare('DELETE FROM bookmarks WHERE user_id=?').run(userId);
-  req.db.prepare('DELETE FROM users WHERE id=?').run(userId);
+  req.db.exec('BEGIN');
+  try {
+    req.db.prepare(`UPDATE posts SET comment_count = MAX(0, comment_count -
+      (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id AND comments.author_id = ?))
+      WHERE id IN (SELECT post_id FROM comments WHERE author_id = ?)`).run(userId, userId);
+    req.db.prepare(`UPDATE posts SET like_count = MAX(0, like_count -
+      (SELECT COUNT(*) FROM likes WHERE likes.post_id = posts.id AND likes.user_id = ?))
+      WHERE id IN (SELECT post_id FROM likes WHERE user_id = ?)`).run(userId, userId);
+    req.db.prepare('DELETE FROM comments WHERE author_id = ? OR post_id IN (SELECT id FROM posts WHERE author_id = ?)').run(userId, userId);
+    req.db.prepare('DELETE FROM likes WHERE user_id = ? OR post_id IN (SELECT id FROM posts WHERE author_id = ?)').run(userId, userId);
+    req.db.prepare('DELETE FROM bookmarks WHERE post_id IN (SELECT id FROM posts WHERE author_id = ?)').run(userId);
+    req.db.prepare('DELETE FROM post_reports WHERE post_id IN (SELECT id FROM posts WHERE author_id = ?)').run(userId);
+    // 回减投票计数：直接删记录会让 vote_options.vote_count 与真实票数永久漂移，
+    // 用户看到超过 100% 的百分比。先按记录逐项扣减再删除。
+    const voteRecs = req.db.prepare('SELECT option_id FROM vote_records WHERE user_id = ?').all(userId);
+    const decVote = req.db.prepare('UPDATE vote_options SET vote_count = MAX(0, vote_count - 1) WHERE id = ?');
+    voteRecs.forEach(r => decVote.run(r.option_id));
+    req.db.prepare('DELETE FROM vote_records WHERE user_id = ?').run(userId);
+    req.db.prepare('DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?').run(userId, userId);
+    req.db.prepare('DELETE FROM friends WHERE user_id = ? OR friend_id = ?').run(userId, userId);
+    req.db.prepare('DELETE FROM posts WHERE author_id = ?').run(userId);
+    req.db.prepare('DELETE FROM vote_records WHERE vote_id IN (SELECT id FROM votes WHERE author_id = ?)').run(userId);
+    req.db.prepare('DELETE FROM vote_options WHERE vote_id IN (SELECT id FROM votes WHERE author_id = ?)').run(userId);
+    req.db.prepare('DELETE FROM votes WHERE author_id = ?').run(userId);
+    req.db.prepare('DELETE FROM announcements WHERE author_id = ?').run(userId);
+    req.db.prepare('DELETE FROM wall_members WHERE user_id = ?').run(userId);
+    req.db.prepare('DELETE FROM wall_applications WHERE applicant_id = ?').run(userId);
+    req.db.prepare('DELETE FROM post_reports WHERE reporter_id = ?').run(userId);
+    req.db.prepare('DELETE FROM user_reports WHERE reporter_id = ? OR reported_user_id = ?').run(userId, userId);
+    req.db.prepare('DELETE FROM reports WHERE reporter_id = ?').run(userId);
+    req.db.prepare('DELETE FROM bug_reports WHERE reporter_id = ?').run(userId);
+    req.db.prepare('DELETE FROM bookmarks WHERE user_id = ?').run(userId);
+    req.db.prepare('DELETE FROM user_prefs WHERE user_id = ?').run(userId);
+    req.db.prepare('DELETE FROM user_permissions WHERE user_id = ?').run(userId);
+    req.db.prepare('UPDATE walls SET owner_id = NULL WHERE owner_id = ?').run(userId);
+    req.db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    req.db.exec('COMMIT');
+  } catch (error) {
+    req.db.exec('ROLLBACK');
+    throw error;
+  }
+
   res.json({ message: '账号已删除' });
 });
 
 // 全局删除帖子（全局管理员可删任意墙）
 globalRouter.delete('/posts/:id', requirePerm('global.moderate'), (req, res) => {
   const id = parseInt(req.params.id);
-  req.db.prepare('DELETE FROM comments WHERE post_id=?').run(id);
-  req.db.prepare('DELETE FROM likes WHERE post_id=?').run(id);
-  req.db.prepare('DELETE FROM post_reports WHERE post_id=?').run(id);
-  req.db.prepare('DELETE FROM posts WHERE id=?').run(id);
+  if (!req.db.prepare('SELECT id FROM posts WHERE id=?').get(id)) return res.status(404).json({ error: '帖子不存在' });
+  req.db.exec('BEGIN');
+  try {
+    req.db.prepare('DELETE FROM comments WHERE post_id=?').run(id);
+    req.db.prepare('DELETE FROM likes WHERE post_id=?').run(id);
+    req.db.prepare('DELETE FROM post_reports WHERE post_id=?').run(id);
+    req.db.prepare('DELETE FROM bookmarks WHERE post_id=?').run(id);
+    req.db.prepare('DELETE FROM posts WHERE id=?').run(id);
+    req.db.exec('COMMIT');
+  } catch (error) {
+    req.db.exec('ROLLBACK');
+    throw error;
+  }
   res.json({ message: '帖子已删除' });
 });
 
@@ -235,7 +286,10 @@ globalRouter.get('/user-reports', requirePerm('global.report.handle'), (req, res
 });
 
 globalRouter.put('/user-reports/:id/review', requirePerm('global.report.handle'), (req, res) => {
-  const { action, warning_text, feedback } = req.body;
+  const { action, warning_text, feedback, reason } = req.body;
+  if ([warning_text, feedback, reason].some(v => v !== undefined && (typeof v !== 'string' || v.length > 5000))) {
+    return res.status(400).json({ error: '处理说明必须是长度不超过 5000 的文字' });
+  }
   if (!['ban', 'permanent_ban', 'warn', 'reject'].includes(action)) return res.status(400).json({ error: '无效操作' });
 
   const report = req.db.prepare('SELECT * FROM user_reports WHERE id=?').get(parseInt(req.params.id));
@@ -246,6 +300,11 @@ globalRouter.put('/user-reports/:id/review', requirePerm('global.report.handle')
   // 举报处置产生的封禁同样要记原因、写日志、通知本人
   const banReason = (req.body.reason || '').trim() || `举报处理：${report.reason || '违规内容'}`;
   if (action === 'ban' || action === 'permanent_ban') {
+    if (!req.can('global.user.ban')) return res.status(403).json({ error: '需要全局封禁权限' });
+    const target = req.db.prepare('SELECT id, role FROM users WHERE id=?').get(report.reported_user_id);
+    if (!target) return res.status(404).json({ error: '被举报用户不存在' });
+    const targetError = banTargetError(req, target);
+    if (targetError) return res.status(403).json({ error: targetError });
     let minutes = 0;
     if (action === 'ban') {
       const d = parseDuration(req.body.duration ?? 1440);
@@ -253,7 +312,7 @@ globalRouter.put('/user-reports/:id/review', requirePerm('global.report.handle')
       minutes = d.minutes || 1440; // 定时封号未给时长时默认 1 天
     }
     const banUntil = banUntilFrom(minutes);
-    req.db.prepare("UPDATE users SET status='banned', ban_until=?, ban_reason=? WHERE id=?")
+    req.db.prepare("UPDATE users SET status='banned', ban_until=?, ban_reason=?, ban_level='login' WHERE id=?")
       .run(banUntil, banReason, report.reported_user_id);
 
     logBan(req.db, {
@@ -273,8 +332,8 @@ globalRouter.put('/user-reports/:id/review', requirePerm('global.report.handle')
   }
 
   req.db.prepare(`
-    UPDATE user_reports SET status='resolved', action_taken=?, reviewer_id=?, feedback=?, reviewed_at=datetime('now','localtime') WHERE id=?
-  `).run(actionLabel, req.user.id, feedback || '', report.id);
+    UPDATE user_reports SET status=?, action_taken=?, reviewer_id=?, feedback=?, reviewed_at=datetime('now','localtime') WHERE id=?
+  `).run(action === 'reject' ? 'rejected' : 'resolved', actionLabel, req.user.id, feedback || '', report.id);
 
   req.db.prepare("INSERT INTO messages (sender_id, receiver_id, type, title, content) VALUES (NULL,?,'system',?,?)")
     .run(report.reporter_id, '举报处理结果', `你对用户的举报已处理。处理结果: ${actionLabel}${feedback && feedback.trim() ? '\n' + feedback.trim() : ''}`);
@@ -294,6 +353,7 @@ globalRouter.delete('/user-reports/:id', requirePerm('global.report.handle'), (r
 const wallRouter = express.Router();
 // 同上：只解析墙上下文，权限逐条声明
 wallRouter.use(authRequired, wallContext);
+wallRouter.param('id', validateId);
 
 // 本墙统计
 wallRouter.get('/stats', requirePerm('wall.stats.view'), (req, res) => {
@@ -315,10 +375,10 @@ wallRouter.get('/stats', requirePerm('wall.stats.view'), (req, res) => {
 
 // 本墙公告
 wallRouter.get('/announcements', requirePerm('wall.announcement'), (req, res) => {
-  req.db.prepare("DELETE FROM announcements WHERE delete_at IS NOT NULL AND delete_at != '' AND datetime(delete_at) < datetime('now')").run();
   res.json(req.db.prepare(`
     SELECT a.*, u.nickname as author_name FROM announcements a JOIN users u ON a.author_id=u.id
-    WHERE a.wall_id=? OR a.scope='global'
+    WHERE (a.wall_id=? OR a.scope='global')
+      AND (a.delete_at IS NULL OR a.delete_at='' OR julianday(a.delete_at)>julianday('now'))
     ORDER BY a.scope='global' DESC, a.is_pinned DESC, a.created_at DESC
   `).all(req.wallId));
 });
@@ -328,9 +388,22 @@ wallRouter.get('/announcements', requirePerm('wall.announcement'), (req, res) =>
 // 免得某天一条公告把事件循环卡死几十秒。真要广播需要改成后台分批。
 const BROADCAST_LIMIT = 2000;
 
-wallRouter.post('/announcements', (req, res) => {
+globalRouter.post('/announcements', requirePerm('global.announcement'), (req, res) => {
+  req.body.scope = 'global';
+  publishAnnouncement(req, res);
+});
+globalRouter.delete('/announcements/:id', requirePerm('global.announcement'), deleteAnnouncement);
+wallRouter.post('/announcements', publishAnnouncement);
+
+function publishAnnouncement(req, res) {
   const { title, content, is_pinned, delete_at, is_markdown } = req.body;
-  if (!title || !content) return res.status(400).json({ error: '标题和内容不能为空' });
+  if (typeof title !== 'string' || !title.trim() || title.length > 200 ||
+      typeof content !== 'string' || !content.trim() || content.length > 20000 ||
+      (req.body.scope !== undefined && !['wall', 'global'].includes(req.body.scope)) ||
+      [is_pinned, is_markdown].some(value => value !== undefined && ![true, false, 0, 1].includes(value)) ||
+      (delete_at !== undefined && delete_at !== '' && (typeof delete_at !== 'string' || !Number.isFinite(Date.parse(delete_at))))) {
+    return res.status(400).json({ error: '请填写有效标题（最多200字）、内容（最多20000字）和删除时间' });
+  }
 
   // 作用域：'wall' 只发本墙，'global' 全站。两者要的权限不同。
   const scope = req.body.scope === 'global' ? 'global' : 'wall';
@@ -345,8 +418,8 @@ wallRouter.post('/announcements', (req, res) => {
   const wallId = scope === 'global' ? 0 : req.wallId;
 
   const recipients = scope === 'global'
-    ? req.db.prepare("SELECT id FROM users WHERE status='active'").all()
-    : req.db.prepare("SELECT user_id AS id FROM wall_members WHERE wall_id=? AND status='active'").all(req.wallId);
+    ? req.db.prepare("SELECT id FROM users WHERE status='active' ORDER BY id LIMIT ?").all(BROADCAST_LIMIT + 1)
+    : req.db.prepare("SELECT user_id AS id FROM wall_members WHERE wall_id=? AND status='active' ORDER BY user_id LIMIT ?").all(req.wallId, BROADCAST_LIMIT + 1);
 
   if (recipients.length > BROADCAST_LIMIT) {
     return res.status(400).json({
@@ -354,23 +427,32 @@ wallRouter.post('/announcements', (req, res) => {
     });
   }
 
-  const result = req.db.prepare(`
-    INSERT INTO announcements (wall_id, title, content, author_id, is_pinned, delete_at, is_markdown, scope)
-    VALUES (?,?,?,?,?,?,?,?)
-  `).run(wallId, title, content, req.user.id, is_pinned ? 1 : 0, delete_at || '', is_markdown ? 1 : 0, scope);
+  let result;
+  req.db.exec('BEGIN');
+  try {
+    result = req.db.prepare(`
+      INSERT INTO announcements (wall_id, title, content, author_id, is_pinned, delete_at, is_markdown, scope)
+      VALUES (?,?,?,?,?,?,?,?)
+    `).run(wallId, title, content, req.user.id, is_pinned ? 1 : 0, delete_at || '', is_markdown ? 1 : 0, scope);
 
-  // 收件箱里只放节选，且不提供跳转入口 —— 补一句话指向顶栏的公告入口。
-  const preview = content.length > 200
-    ? content.substring(0, 200) + '\n\n…（内容较长，完整公告见顶栏的公告入口）'
-    : content;
-  const msgTitle = scope === 'global' ? `[全站公告] ${title}` : title;
-  const ins = req.db.prepare("INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content) VALUES (NULL,?,?,'announcement',?,?)");
-  recipients.forEach(u => ins.run(u.id, wallId, msgTitle, preview));
+    // 收件箱里只放节选，且不提供跳转入口 —— 补一句话指向顶栏的公告入口。
+    const preview = content.length > 200
+      ? content.substring(0, 200) + '\n\n…（内容较长，完整公告见顶栏的公告入口）'
+      : content;
+    const msgTitle = scope === 'global' ? `[全站公告] ${title}` : title;
+    const ins = req.db.prepare("INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content) VALUES (NULL,?,?,'announcement',?,?)");
+    recipients.forEach(u => ins.run(u.id, wallId, msgTitle, preview));
+    req.db.exec('COMMIT');
+  } catch (error) {
+    req.db.exec('ROLLBACK');
+    throw error;
+  }
 
   res.json({ id: result.lastInsertRowid, message: scope === 'global' ? '全站公告已发布' : '公告已发布' });
-});
+}
 
-wallRouter.delete('/announcements/:id', (req, res) => {
+wallRouter.delete('/announcements/:id', deleteAnnouncement);
+function deleteAnnouncement(req, res) {
   const ann = req.db.prepare('SELECT id, wall_id, scope FROM announcements WHERE id=?').get(parseInt(req.params.id));
   if (!ann) return res.status(404).json({ error: '公告不存在' });
   // 全局公告不属于任何墙，只能由持有全局公告权限的人删
@@ -381,7 +463,7 @@ wallRouter.delete('/announcements/:id', (req, res) => {
   const r = req.db.prepare('DELETE FROM announcements WHERE id=?').run(ann.id);
   if (r.changes === 0) return res.status(404).json({ error: '公告不存在' });
   res.json({ message: '已删除' });
-});
+}
 
 // 本墙分类
 wallRouter.get('/categories', requirePerm('wall.category'), (req, res) => {
@@ -390,7 +472,8 @@ wallRouter.get('/categories', requirePerm('wall.category'), (req, res) => {
 });
 
 wallRouter.delete('/categories/:name', requirePerm('wall.category'), (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  // Express 已经解码路径参数，不重复解码用户输入。
+  const name = req.params.name;
   const defaultCategories = ['吐槽', '分享', '求助', '讨论', '其他'];
   if (defaultCategories.includes(name)) {
     return res.status(400).json({ error: '不能删除默认分类' });
@@ -426,12 +509,24 @@ wallRouter.put('/post-reports/:id/review', requirePerm('wall.post.report'), (req
   const report = req.db.prepare('SELECT * FROM post_reports WHERE id=? AND wall_id=?').get(parseInt(req.params.id), req.wallId);
   if (!report) return res.status(404).json({ error: '举报不存在' });
 
+  if (report.status !== 'pending') return res.status(400).json({ error: '该举报已处理' });
   if (action === 'delete_post') {
-    req.db.prepare('DELETE FROM comments WHERE post_id=?').run(report.post_id);
-    req.db.prepare('DELETE FROM likes WHERE post_id=?').run(report.post_id);
-    req.db.prepare('DELETE FROM posts WHERE id=?').run(report.post_id);
-    req.db.prepare("UPDATE post_reports SET status='resolved', reviewer_id=?, reviewed_at=datetime('now','localtime') WHERE id=?")
-      .run(req.user.id, report.id);
+    if (!req.can('wall.post.delete')) return res.status(403).json({ error: '需要本墙删除帖子权限' });
+    const post = req.db.prepare('SELECT id FROM posts WHERE id=? AND wall_id=?').get(report.post_id, req.wallId);
+    if (!post) return res.status(404).json({ error: '帖子不存在于当前校园墙' });
+    req.db.exec('BEGIN');
+    try {
+      req.db.prepare('DELETE FROM comments WHERE post_id=?').run(report.post_id);
+      req.db.prepare('DELETE FROM likes WHERE post_id=?').run(report.post_id);
+      req.db.prepare('DELETE FROM bookmarks WHERE post_id=?').run(report.post_id);
+      req.db.prepare('DELETE FROM posts WHERE id=? AND wall_id=?').run(report.post_id, req.wallId);
+      req.db.prepare("UPDATE post_reports SET status='resolved', reviewer_id=?, reviewed_at=datetime('now','localtime') WHERE id=?")
+        .run(req.user.id, report.id);
+      req.db.exec('COMMIT');
+    } catch (error) {
+      req.db.exec('ROLLBACK');
+      throw error;
+    }
     res.json({ message: '帖子已删除，举报已处理' });
   } else if (action === 'resolve') {
     req.db.prepare("UPDATE post_reports SET status='resolved', reviewer_id=?, reviewed_at=datetime('now','localtime') WHERE id=?")

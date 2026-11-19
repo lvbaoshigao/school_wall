@@ -4,15 +4,21 @@
  */
 import { useSettingsStore } from '../stores/settings'
 
+function parseDate(value) {
+  if (value == null || value === '' || !['string', 'number'].includes(typeof value) && !(value instanceof Date)) return null
+  // 服务端 SQLite 使用 localtime；不额外添加 Z，保留已有时区语义。
+  const date = new Date(typeof value === 'string' ? value.replace(' ', 'T') : value)
+  return Number.isFinite(date.getTime()) ? date : null
+}
+
 export function useTimeAgo() {
   // 用户可在设置里改成显示具体时间；store 尚未初始化时（如登录页）回落到相对时间
   let settings = null
   try { settings = useSettingsStore() } catch {}
 
   function timeAgo(date) {
-    if (!date) return ''
-    // 兼容 SQLite datetime 格式（空格分隔）
-    const d = new Date(typeof date === 'string' ? date.replace(' ', 'T') : date)
+    const d = parseDate(date)
+    if (!d) return ''
     if (settings?.prefs?.time_format === 'absolute') {
       return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
     }
@@ -31,8 +37,8 @@ export function useTimeAgo() {
 
   /** 完整日期时间 */
   function fullTime(date) {
-    if (!date) return ''
-    const d = new Date(typeof date === 'string' ? date.replace(' ', 'T') : date)
+    const d = parseDate(date)
+    if (!d) return ''
     return d.toLocaleString('zh-CN')
   }
 

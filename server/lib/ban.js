@@ -13,6 +13,9 @@ const MAX_BAN_MINUTES = 525600; // 365 天
  */
 function parseDuration(raw) {
   if (raw === undefined || raw === null || raw === '') return { ok: true, minutes: 0 };
+  if ((typeof raw !== 'string' && typeof raw !== 'number') || (typeof raw === 'string' && !/^\d+$/.test(raw.trim()))) {
+    return { ok: false, error: '封禁时长必须是整数分钟' };
+  }
   const n = Number(raw);
   if (!Number.isInteger(n)) return { ok: false, error: '封禁时长必须是整数分钟' };
   if (n < 0) return { ok: false, error: '封禁时长不能为负数（0 表示永久封禁）' };

@@ -17,11 +17,12 @@ const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { getWrapper, setSetting, getSetting } = require('../db');
+const { getWrapper, setSetting } = require('../db');
+const { DATA_DIR, DB_PATH, UPLOADS_DIR } = require('../lib/paths');
 const ipguard = require('../lib/ipguard');
 
-const BACKUP_DIR = path.join(__dirname, '..', 'backups');
-if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
 
 const WIPE_WAIT_MS = 10 * 1000;        // prepare 与 execute 之间的最短等待
 const WIPE_EXPIRE_MS = 5 * 60 * 1000;  // 验证码有效期
@@ -43,7 +44,9 @@ function stamp() {
 }
 
 // 备份文件名白名单：只允许本模块生成的格式，下载/删除接口据此拒绝路径穿越
-const SAFE_NAME = /^(backup|pre-wipe)-\d{8}-\d{6}\.db$/;
+const SAFE_NAME = /^(backup|pre-wipe)-\d{8}-\d{6}(?:-[a-f0-9]{12})?\.db$/;
+const quoteIdentifier = name => '"' + name.replace(/"/g, '""') + '"';
+const wipeBinding = req => crypto.createHash('sha256').update(req.user.csrf || req.headers.authorization || '').digest('hex');
 
 function dbStats(db) {
   const tables = db.prepare(
@@ -53,7 +56,7 @@ function dbStats(db) {
   let total = 0;
   for (const t of tables) {
     try {
-      const c = db.prepare(`SELECT COUNT(*) AS c FROM "${t}"`).get().c;
+      const c = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdentifier(t)}`).get().c;
       rows[t] = c; total += c;
     } catch { rows[t] = null; }
   }
@@ -61,8 +64,12 @@ function dbStats(db) {
 }
 
 function backupFilePath(name) {
-  if (!SAFE_NAME.test(name)) return null;
-  return path.join(BACKUP_DIR, name);
+  if (typeof name !== 'string' || !SAFE_NAME.test(name)) return null;
+  const file = path.join(BACKUP_DIR, name);
+  try {
+    if (!fs.lstatSync(file).isFile()) return null;
+  } catch { return null; }
+  return file;
 }
 
 function createBackup(prefix = 'backup') {
@@ -70,17 +77,19 @@ function createBackup(prefix = 'backup') {
   if (!w) throw new Error('数据库未就绪');
   w.saveNow(); // 先把内存中未落盘的改动写下去，保证备份是完整最新状态
   const buf = w.exportBytes();
-  const name = `${prefix}-${stamp()}.db`;
-  fs.writeFileSync(path.join(BACKUP_DIR, name), buf, { mode: 0o600 });
+  if (!['backup', 'pre-wipe'].includes(prefix)) throw new Error('无效的备份类型');
+  const name = `${prefix}-${stamp()}-${crypto.randomBytes(6).toString('hex')}.db`;
+  // 排他创建，避免同秒请求覆盖备份或跟随预置符号链接写入。
+  fs.writeFileSync(path.join(BACKUP_DIR, name), buf, { mode: 0o600, flag: 'wx' });
   return { file: name, size: buf.length };
 }
 
 function listBackups() {
   try {
     return fs.readdirSync(BACKUP_DIR)
-      .filter(f => SAFE_NAME.test(f))
+      .filter(f => backupFilePath(f))
       .map(f => {
-        const st = fs.statSync(path.join(BACKUP_DIR, f));
+        const st = fs.lstatSync(path.join(BACKUP_DIR, f));
         return { name: f, size: st.size, created_at: st.mtime.toISOString() };
       })
       .sort((a, b) => b.name.localeCompare(a.name));
@@ -89,15 +98,22 @@ function listBackups() {
 
 function wipeNow(db) {
   const before = dbStats(db);
+  const foreignKeys = db.prepare('PRAGMA foreign_keys').get().foreign_keys;
   db.pragma('foreign_keys = OFF');
+  let started = false;
   try {
-    for (const t of before.tables) {
-      try { db.prepare(`DELETE FROM "${t}"`).run(); } catch {}
+    db.exec('BEGIN IMMEDIATE');
+    started = true;
+    for (const t of before.tables) db.prepare(`DELETE FROM ${quoteIdentifier(t)}`).run();
+    if (db.prepare("SELECT name FROM sqlite_master WHERE name='sqlite_sequence' AND type='table'").get()) {
+      db.prepare('DELETE FROM sqlite_sequence').run();
     }
-    // 重置自增计数器（sqlite_sequence 在 sqlite_master 里类型是 table 但被上面的过滤排除，单独清）
-    try { db.prepare('DELETE FROM sqlite_sequence').run(); } catch {}
+    db.exec('COMMIT');
+  } catch (error) {
+    if (started) db.exec('ROLLBACK');
+    throw error;
   } finally {
-    db.pragma('foreign_keys = ON');
+    db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
   }
   // settings 一并清空 → 前端重新出现首次设置向导（删库重置语义）
   getWrapper()?.saveNow();
@@ -123,12 +139,13 @@ function validateEntries(entries) {
 function buildRouter(authenticate) {
   const r = express.Router();
   r.use(authenticate);
+  r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 
   // 概览：库大小、行数统计、备份个数、白名单现状
   r.get('/status', (req, res) => {
     const db = req.db;
     let dbSize = 0;
-    try { dbSize = fs.statSync(path.join(__dirname, '..', 'data.db')).size; } catch {}
+    try { dbSize = fs.statSync(DB_PATH).size; } catch {}
     const stats = dbStats(db);
     res.json({
       db_size: dbSize,
@@ -136,7 +153,7 @@ function buildRouter(authenticate) {
       rows: stats.rows,
       total_rows: stats.total,
       backups: listBackups().length,
-      upload_size: dirSize(path.join(__dirname, '..', 'uploads')),
+      upload_size: dirSize(UPLOADS_DIR),
     });
   });
 
@@ -183,24 +200,35 @@ function buildRouter(authenticate) {
     const cleaned = validateEntries(entries);
     if (cleaned === null) return res.status(400).json({ error: 'IP 条目格式无效（仅允许 IPv4/IPv6 与 * 通配）' });
 
-    // 防自锁：新模式生效且名单非空时，当前 IP 必须仍在名单内（或 env 已兜底）
-    if (mode !== 'off' && cleaned.length) {
+    // 启用保护必须有实际名单，且合并环境配置后仍包含当前请求者，避免假保护或自锁。
+    if (mode !== 'off') {
       const merged = [...ipguard.parseList(process.env.ADMIN_IP_WHITELIST || ''), ...cleaned];
+      if (!merged.length) return res.status(400).json({ error: '启用访问保护前请至少配置一条包含当前 IP 的白名单' });
       const myIp = ipguard.clientIpOf(req);
       if (!ipguard.ipMatches(myIp, merged)) {
         return res.status(400).json({ error: `保存被拒绝：新名单不包含当前 IP（${myIp}），保存后将无法访问` });
       }
     }
 
-    setSetting(req.db, 'ip_whitelist_mode', mode);
-    setSetting(req.db, 'admin_ip_whitelist', JSON.stringify(cleaned));
+    req.db.exec('BEGIN');
+    try {
+      setSetting(req.db, 'ip_whitelist_mode', mode);
+      setSetting(req.db, 'admin_ip_whitelist', JSON.stringify(cleaned));
+      req.db.exec('COMMIT');
+    } catch (error) {
+      req.db.exec('ROLLBACK');
+      throw error;
+    }
     res.json({ message: '白名单已更新', mode, entries: cleaned });
   });
 
   // 删库第 1 步：领取验证码
   r.post('/wipe/prepare', (req, res) => {
     const code = genCode();
-    pendingWipes.set(req.user.id, { code, armedAt: Date.now() });
+    for (const [id, pending] of pendingWipes) {
+      if (Date.now() - pending.armedAt > WIPE_EXPIRE_MS) pendingWipes.delete(id);
+    }
+    pendingWipes.set(req.user.id, { code, armedAt: Date.now(), binding: wipeBinding(req), attempts: 0 });
     res.json({
       code,
       wait_seconds: WIPE_WAIT_MS / 1000,
@@ -215,7 +243,8 @@ function buildRouter(authenticate) {
     if (!pending) return res.status(400).json({ error: '请先生成删库验证码' });
 
     const elapsed = Date.now() - pending.armedAt;
-    if (elapsed > WIPE_EXPIRE_MS) {
+    if (pending.binding !== wipeBinding(req)) return res.status(403).json({ error: '请在生成验证码的同一会话执行' });
+    if (elapsed < 0 || elapsed > WIPE_EXPIRE_MS) {
       pendingWipes.delete(req.user.id);
       return res.status(400).json({ error: '验证码已过期，请重新生成' });
     }
@@ -224,8 +253,11 @@ function buildRouter(authenticate) {
       return res.status(425).json({ error: `请等待 ${remain} 秒后再执行（防止误触的强制冷却）` });
     }
     const { code } = req.body || {};
-    if (String(code || '').toUpperCase() !== pending.code) {
-      return res.status(400).json({ error: '验证码不正确' });
+    const supplied = typeof code === 'string' ? code.toUpperCase() : '';
+    if (!/^[A-Z2-9]{6}$/.test(supplied) || !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(pending.code))) {
+      pending.attempts++;
+      if (pending.attempts >= 5) pendingWipes.delete(req.user.id);
+      return res.status(400).json({ error: pending.attempts >= 5 ? '验证码错误次数过多，请重新生成' : '验证码不正确' });
     }
 
     pendingWipes.delete(req.user.id);
@@ -252,7 +284,7 @@ function dirSize(dir) {
   let total = 0;
   try {
     for (const f of fs.readdirSync(dir, { recursive: true })) {
-      try { total += fs.statSync(path.join(dir, f)).size; } catch {}
+      try { const st = fs.lstatSync(path.join(dir, f)); if (st.isFile()) total += st.size; } catch {}
     }
   } catch {}
   return total;

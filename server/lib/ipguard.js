@@ -19,20 +19,10 @@ function normalizeIp(ip) {
   return String(ip || '').trim().replace(/^::ffff:/i, '');
 }
 
-// 与 index.js 的 clientIp 同一套判定，避免循环依赖而复制：
-// 信任代理时按 CF-Connecting-IP → X-Forwarded-For 首项 → req.ip。
+// 与 index.js 同样使用 Express 的受信代理链解析结果，不直接读取可伪造头。
 function clientIpOf(req) {
-  const behindProxy = process.env.TRUST_PROXY === '1' || parseInt(process.env.TRUST_PROXY) > 0;
-  if (behindProxy) {
-    const cf = req.headers['cf-connecting-ip'];
-    if (cf) return normalizeIp(cf);
-    const xff = req.headers['x-forwarded-for'];
-    if (xff) {
-      const first = String(xff).split(',')[0].trim();
-      if (first) return normalizeIp(first);
-    }
-  }
-  return normalizeIp(req.ip || req.connection?.remoteAddress || '');
+  // req.ip already respects Express's configured trusted proxy chain.
+  return normalizeIp(req.ip || req.socket?.remoteAddress || '');
 }
 
 function entryToRegex(entry) {
@@ -86,23 +76,22 @@ function deny(res, scope, path) {
 
 // 挂在 req.db 注入之后、全部路由之前。静态资源与 SPA 页面不拦（mode='all' 也只管 API）。
 function whitelistGuard(req, res, next) {
-  const p = req.path;
+  const p = req.path.toLowerCase();
   if (p === '/api/health') return next();
-  if (p.startsWith('/api/admin') || p.startsWith('/dashboard')) return checkScope(req, res, next, 'admin', p);
-  if (p.startsWith('/api/')) return checkScope(req, res, next, 'all', p);
+  if (/^\/(?:api\/admin|dashboard)(?:\/|$)/.test(p) || /^\/api\/(?:walls\/admin|permissions\/user|bug-reports\/admin)(?:\/|$)/.test(p)) return checkScope(req, res, next, 'admin', p);
+  if (p === '/api' || p.startsWith('/api/')) return checkScope(req, res, next, 'all', p);
   return next();
 }
 
 function checkScope(req, res, next, scope, p) {
   const { envList, cfgList, mode } = getWhitelistConfig(req.db);
   const needsGuard =
-    (scope === 'admin' && (mode === 'admin' || (envList.length > 0))) ||
-    (scope === 'all' && mode === 'all');
+    mode === 'all' || (scope === 'admin' && (mode === 'admin' || envList.length > 0));
   if (!needsGuard) return next();
 
   const list = [...envList, ...cfgList];
-  // 模式开启但一个条目都没有：视为未配置，不拦截（避免管理员保存前全站失联）
-  if (!list.length) return next();
+  // 启用保护后名单为空时拒绝访问；配置接口应在保存前拒绝此状态。
+  if (!list.length) return deny(res, scope, p);
 
   if (!ipMatches(clientIpOf(req), list)) return deny(res, scope, p);
   return next();

@@ -23,6 +23,7 @@ const hiddenRoutes = new Set([
   'CreatePost', 'CreateVote', 'WriteConfession', 'Banned', 'Admin',
 ])
 const visible = computed(() => userStore.isLoggedIn && !hiddenRoutes.has(route.name))
+watch(visible, show => { if (!show) open.value = false })
 
 // 路由切换时收起，避免面板悬在新页面上
 watch(() => route.fullPath, () => { open.value = false })
@@ -51,7 +52,9 @@ function go(path) {
           v-if="open"
           ref="panelRef"
           class="fab-panel glass-strong"
-          role="menu"
+          id="publish-actions-panel"
+          role="dialog"
+          aria-modal="true"
           aria-label="发布新内容"
           tabindex="-1"
         >
@@ -59,7 +62,7 @@ function go(path) {
             v-for="a in actions"
             :key="a.path"
             class="fab-item"
-            role="menuitem"
+            type="button"
             @click="go(a.path)"
           >
             <span class="fab-item-icon"><Icon :name="a.icon" :size="17" /></span>
@@ -75,7 +78,8 @@ function go(path) {
         class="fab-btn"
         :class="{ active: open }"
         :aria-expanded="open"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
+        aria-controls="publish-actions-panel"
         aria-label="发布新内容"
         title="发布新内容"
         @click="open = !open"
@@ -90,8 +94,8 @@ function go(path) {
 .fab-root {
   position: fixed;
   right: 20px;
-  bottom: 24px;
-  z-index: 1500;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  z-index: var(--z-floating);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -142,6 +146,9 @@ function go(path) {
   padding: 6px;
   border-radius: var(--radius-lg);
   min-width: 200px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
   outline: none;
 }
 
@@ -189,7 +196,7 @@ function go(path) {
 
 /* 与 BackToTop 错开：BackToTop 在右下 24px 附近时 FAB 上移 */
 @media (max-width: 600px) {
-  .fab-root { right: 16px; bottom: 20px; }
+  .fab-root { right: 16px; bottom: max(20px, env(safe-area-inset-bottom)); }
   .fab-btn { width: 50px; height: 50px; }
 }
 </style>

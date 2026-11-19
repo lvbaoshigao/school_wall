@@ -2,7 +2,7 @@ const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, 'data.db');
+const { DATA_DIR, DB_PATH } = require('./lib/paths');
 
 class DatabaseWrapper {
   constructor(sqlDb) { this.db = sqlDb; this.dirty = false; }
@@ -131,9 +131,7 @@ function getSetting(db, key, defaultVal = '') {
 }
 
 function setSetting(db, key, value) {
-  try {
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)").run(key, String(value));
-  } catch (e) {}
+  return db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)").run(key, String(value));
 }
 
 // 是否清空重建。默认 false：保留旧数据，通过 migrateSchema 自动补齐新版本所需的表与列。
@@ -141,6 +139,7 @@ function setSetting(db, key, value) {
 const REBUILD = process.env.KEEP_DB === '0';
 
 async function initDB() {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const SQL = await initSqlJs();
   let sqlDb;
   if (fs.existsSync(DB_PATH) && !REBUILD) {
@@ -285,6 +284,8 @@ async function initDB() {
       reply_to_id INTEGER DEFAULT 0,
       reply_to_content TEXT DEFAULT '',
       is_revoked INTEGER DEFAULT 0,
+      sender_deleted INTEGER NOT NULL DEFAULT 0,
+      receiver_deleted INTEGER NOT NULL DEFAULT 0,
       link TEXT DEFAULT '',
       created_at DATETIME DEFAULT (datetime('now','localtime'))
     );
@@ -429,6 +430,7 @@ async function initDB() {
    'CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id)',
    'CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(wall_id, category)',
    'CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id)',
+   'CREATE INDEX IF NOT EXISTS idx_comments_post_created ON comments(post_id, created_at, id)',
    'CREATE INDEX IF NOT EXISTS idx_likes_post ON likes(post_id)',
    'CREATE INDEX IF NOT EXISTS idx_likes_user ON likes(user_id)',
    'CREATE INDEX IF NOT EXISTS idx_votes_wall ON votes(wall_id, created_at DESC)',
@@ -528,6 +530,8 @@ async function initDB() {
     addCol('messages', 'reply_to_id', "INTEGER DEFAULT 0");
     addCol('messages', 'reply_to_content', "TEXT DEFAULT ''");
     addCol('messages', 'is_revoked', "INTEGER DEFAULT 0");
+    addCol('messages', 'sender_deleted', "INTEGER NOT NULL DEFAULT 0");
+    addCol('messages', 'receiver_deleted', "INTEGER NOT NULL DEFAULT 0");
     addCol('messages', 'assignee_id', "INTEGER DEFAULT 0");
     // 站内信的跳转目标（前端路径，如 /post/12）。存量消息为空串，
     // 前端会按 type/conversation_id/追踪码做降级推导。

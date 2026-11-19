@@ -1,108 +1,97 @@
 # 部署与运维
 
-部署机：`192.168.31.43`（Debian 13，VirtualBox 虚拟机，1 核 / 2G / 20G）
-访问地址：**http://192.168.31.43:11451**
+本目录是面向 Debian、服务用户 server、项目路径 /home/server/school_wall 的部署模板。这里描述的是脚本行为，不代表当前机器已经安装或启用了这些设置。安装器正常执行会修改系统服务、Nginx 配置和 UFW；审查与验证可先使用只读模式。
 
-## 架构
+## 运行要求与架构
 
-```
-浏览器 ──▶ nginx :11451 ──▶ node :3000（仅 127.0.0.1）
-             │
-             ├── /api/         反代给 node（限流、体积上限、慢连接超时在这一层）
-             ├── /dashboard    反代给 node
-             ├── /uploads/     nginx 直发（不经过 node 事件循环）
-             ├── /assets/      nginx 直发，长缓存
-             └── /             SPA，回落 index.html
-```
+需要 Node.js >=22.12.0、npm、Nginx（含 http_realip 模块）、systemd、sudo、curl、ss 与 UFW。安全加固脚本还需要 OpenSSH 和 fail2ban。Node.js 路径可以来自 nvm；安装器会把检查通过的当前 Node 绝对路径写进服务 drop-in，升级或移动 Node 后要重新运行安装器。
 
-后端只监听回环，外部无法直连 —— 否则 nginx 上的防护全都能被绕开。
+~~~text
+浏览器 -> nginx :11451 -> node 127.0.0.1:3000
+            |-- /api/       代理：限流、体积上限、超时
+            |-- /dashboard  代理：应用生成 nonce CSP 与看板会话票据
+            |-- /uploads/   代理：应用校验证据图片访问票据并返回缓存策略
+            |-- /assets/    直接读取前端产物，长缓存
+            |-- /           SPA，index.html 要求重新验证缓存
+~~~
 
-## 目录
+上传文件不能由 Nginx alias 直接公开。公开图片与私密证据统一由应用处理；私密响应的 private, no-store 和 no-referrer 会原样保留。前端 CSP 允许 data: / blob: 图片预览；看板使用应用生成的 nonce CSP，代理不向它叠加前端 CSP。
 
-```
-~/school_wall/
-├── server/          后端（data.db、.jwt_secret 都在这里，权限 600）
-├── client/dist/     前端构建产物，由 nginx 直接读
-└── deploy/
-    ├── install-server.sh          安装/更新 nginx + systemd + 防火墙
-    ├── harden-server.sh           安全加固（内核参数、sshd、fail2ban、日志上限）
-    ├── disable-ssh-password.sh    关闭 SSH 密码登录（单独执行，见下）
-    ├── restore-cloudflared.sh     恢复外网隧道（当前已停用）
-    ├── nginx/                     nginx 配置与 snippet
-    ├── systemd/school-wall.service
-    └── hardening/                 sysctl / sshd / fail2ban 配置
-```
+## 首次安装与更新
 
-## 常用操作
+先在受控环境完成首次初始化。可在目标机以前台方式运行 bash deploy.sh（默认只监听回环），通过 ssh -L 3000:127.0.0.1:3000 server@HOST 建立转发，在管理电脑打开 http://localhost:3000 完成向导，再用 Ctrl+C 停止前台进程并执行安装器。系统没有默认管理员账号；不要在初始化之前把站点公开。生产访问应使用 HTTPS，隧道的 HTTPS 边缘也必须回源到 Nginx 11451，不能绕过代理直连 3000。
 
-```bash
-# 看服务状态与日志
-systemctl status school-wall
-journalctl -u school-wall -f
+~~~bash
+# 在项目根目录检查本地依赖，不启动应用、不修改系统
+bash deploy.sh --check
+# 在部署机检查安装器前置条件（不会调用 sudo 或修改权限）
+bash deploy/install-server.sh --check
 
-# 重启
+# 真正安装/更新：仅在目标部署机执行
+bash deploy/install-server.sh
+# 非标准 SSH 端口要先显式指定，避免 UFW 未放行实际管理端口
+SSH_PORT=2222 bash deploy/install-server.sh
+~~~
+
+安装器会停止 school-wall 服务，按两端锁文件执行 npm ci 并重建前端，实际验证 sharp 原生编码/解码，再安装四个 Nginx snippet（proxy、headers、csp、realip）、站点和 systemd 单元。已有 node_modules 和 dist 不会跳过更新。准备失败会退出并保留服务停止状态，修复依赖/构建错误后重新运行；它不冒报成功，也不终止通用的 node index.js 进程。端口 3000 被非受管进程占用时会直接退出，请自行核实进程归属。
+
+需要把完整后端源码、两端 package.json 与 package-lock.json、前端源码和 deploy 目录一起更新到目标机。不要只复制 server/*.js 而漏掉 lib/、routes/ 或锁文件，也不要把其他操作系统/CPU 的 node_modules 搬过去。sharp 的平台原生包属于 optional 依赖，安装命令显式包含它们；安装后会真实生成 PNG 并解码验证。不要用 --omit=optional 或全局禁用安装脚本来绕过错误。
+
+安装器仅添加项目的 UFW 规则（放行 SSH_PORT 与 11451、拒绝 3000），不清空既有规则或删除其他 Nginx 站点，因此不能据此认定机器只开放了两个端口。执行前应确认管理端口配置；执行后查看 sudo ufw status verbose 与 ss -ltn。后端绑定回环是防止绕过代理的主要约束。
+
+## 数据与配置
+
+兼容现有安装，DATA_DIR 默认仍为 server 目录。数据根包含 data.db、.jwt_secret、uploads 与 backups；server/.env 始终是 systemd 的配置文件，应用本身不自动读取它。
+
+~~~ini
+# /home/server/school_wall/server/.env：简单 KEY=value；不使用 shell 命令或变量替换
+DATA_DIR=/home/server/school-wall-data
+# JWT_SECRET 可选。不设置时由应用生成持久化密钥；如设置需至少 16 字符。
+# JWT_SECRET=替换为独立生成且妥善保存的强随机值
+~~~
+
+自定义数据目录需位于源码树外，使用不含空格/变量替换/系统说明符的绝对路径，且现有目录必须属于 server 用户并且不能经过符号链接。安装器校验这些约束，并把实际数据根写入 systemd ReadWritePaths；不能只修改 .env 后重启而不更新这个可写路径。HOST=127.0.0.1、PORT=3000、TRUST_PROXY=1、KEEP_DB=1、NODE_ENV=production 是这套模板的固定约束，.env 不应覆盖它们。
+
+改变 DATA_DIR 不会自动迁移旧数据。停服务后把数据库、JWT 密钥、uploads 与 backups 作为一组迁移，确认路径与权限，再更新配置和重跑安装器；密钥丢失会使旧登录票据失效。不要在服务运行时用独立脚本写 data.db，sql.js 下一次落盘可能覆盖修改。备份与恢复请通过受权限保护的数据库管理接口或停服务维护。
+
+后端目录与数据根权限 700，数据库、JWT 密钥和 .env 为 600，uploads/backups 递归去除组和其他用户权限，systemd UMask=0077。只有 client/dist 及其必要父目录开放给 Nginx 读取，www-data 无需读取上传文件。外部 DATA_DIR 还能让 ProtectSystem=strict 下的应用代码保持只读。
+
+## 检查与日常维护
+
+~~~bash
+systemctl status school-wall nginx
+journalctl -u school-wall -n 50 --no-pager
+sudo nginx -t
+sudo systemctl show school-wall -p ExecStart -p Environment -p ReadWritePaths
+
+# 探活必须查询真实后端数据库，静态首页 200 不代表后端可用
+curl --fail --connect-timeout 2 --max-time 5 http://127.0.0.1:11451/api/health
+curl --max-time 5 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:11451/api/nope
+# 第二条应返回 404
+ss -ltn 'sport = :3000'
+# 应只有 127.0.0.1:3000，不能出现 0.0.0.0 或 [::]
+
+# 常规服务维护
 sudo systemctl restart school-wall
-sudo systemctl reload nginx     # 只改了 nginx 配置时用 reload，不断连接
+sudo nginx -t && sudo systemctl reload nginx
 
-# 改了配置后重新安装
-bash ~/school_wall/deploy/install-server.sh
-```
+# 无需部署的隔离回归：使用临时目录和替代命令，不加载应用数据库
+node --test deploy/test/*.test.cjs
+(cd server && npm test && npm run audit:security)
+(cd client && npm test && npm run audit:security)
+~~~
 
-**注意**：这些脚本里有大量 `sudo`。用 `ssh host 'bash 脚本'` 这种没有 tty 的方式执行时，
-sudo 的免密票据按 ppid 记，命令替换和管道会开子 shell 导致票据命不中，
-表现为同样的命令有的过有的不过。请用 `ssh -t`，或直接在机器上跑。
+安装器的健康检查有连接/总超时，并对实际 /api/health 重试，随后核对回环监听、首页和未知 API 状态。若失败请检查服务与 Nginx 日志。反向代理以校验后的客户端地址覆盖 X-Forwarded-For；仅信任本机 cloudflared 的 CF-Connecting-IP 与协议声明，局域网客户端伪造这些头不能切换代理身份。
 
-## 更新代码
+## 可选安全加固与隧道
 
-```bash
-# 后端：改完直接传，然后重启
-scp server/*.js server/routes/*.js server@192.168.31.43:school_wall/server/...
-ssh server@192.168.31.43 'sudo systemctl restart school-wall'
+~~~bash
+# 会真实修改内核参数、sshd、fail2ban、日志容量和数据权限
+bash deploy/harden-server.sh
+# 会真实关闭 SSH 密码/键盘交互认证；先用第二个终端验证公钥可用
+bash deploy/disable-ssh-password.sh
+~~~
 
-# 前端：本地构建后打包传过去（机器上没装 rsync）
-cd client && npm run build
-tar czf /tmp/dist.tgz -C dist .
-scp /tmp/dist.tgz server@192.168.31.43:/tmp/
-ssh server@192.168.31.43 'cd ~/school_wall/client && rm -rf dist.new && mkdir dist.new \
-  && tar xzf /tmp/dist.tgz -C dist.new && rm -rf dist && mv dist.new dist \
-  && chmod -R a+rX dist && rm /tmp/dist.tgz'
-```
+密码关闭脚本只证明最近十分钟有 server 用户公钥登录记录，不会证明当前连接本身的认证方式。它写入独立的早期 sshd include，先验语法和有效配置再 reload，失败恢复原文件。执行后保留当前会话，再新建连接验证。加固脚本不会自行关闭密码登录，fail2ban 默认只豁免回环，没有历史开发机的固定 IP 例外。SSH 保活参数探测失联客户端，不代表用户无操作会被踢下线。
 
-数据库是 sql.js（整库读进内存，按脏标记合并落盘），**不要**在服务运行时用脚本直接写
-`data.db` —— 服务下一次落盘会把你的改动整个覆盖掉。要改先停服务。
-
-另外，任何 `require('./db.js')` 的脚本都会触发 `initDB()` 的迁移/重建逻辑。
-只读探查请自己 `new SQL.Database(fs.readFileSync('./data.db'))`，别走 db.js。
-
-## 安全现状
-
-已生效：
-
-- 后端只监听 `127.0.0.1:3000`，防火墙额外显式拒绝 3000
-- ufw 仅放行 22 与 11451
-- nginx 层：限流（读 30r/s、写 2r/s）、单 IP 并发 30、请求体上限 6MB、
-  慢连接超时（header 10s / body 20s）
-- nginx 无条件覆盖 `X-Forwarded-For`、清空 `CF-Connecting-IP`/`True-Client-IP`，
-  伪造这些头拿不到独立限流额度（已实测验证）
-- systemd 沙箱：`ProtectSystem=strict`、能力集清空、系统调用过滤、内存上限 768M
-- sshd：禁 root 登录、只允许 server 用户、MaxAuthTries 3、LoginGraceTime 30
-- fail2ban：SSH 3 次失败封 1 小时，重复触发逐次加倍
-- 内核：syncookies、禁 ICMP 重定向与源路由、dmesg/kptr 受限、符号链接保护
-- `data.db` / `.jwt_secret` 权限 600（落盘时显式指定 mode，不再被 umask 冲掉）
-
-**未做**（需要人工决定）：
-
-- SSH 密码登录仍开着。公钥已装好并验证可用，要关执行
-  `bash ~/school_wall/deploy/disable-ssh-password.sh`（脚本会先确认最近有成功的
-  公钥登录记录才动手，失败自动回滚）。
-- HTTPS 未配。当前是纯 HTTP，登录口令和 token 在局域网内是明文传输的。
-  要上 HTTPS 需要证书，测试期间不联网所以没做。
-
-## cloudflared 隧道（已停用）
-
-机器上原有一个 cloudflared 隧道，把 `webhall.dpdns.org` 指向 `http://localhost:3000` ——
-**绕过了 nginx**，公网流量拿不到上面任何一层防护。测试期间已 stop + disable。
-
-要恢复，先在 Cloudflare 面板把 ingress 的 service 改成 `http://localhost:11451`
-（隧道配置是面板远程下发的，机器上改不了），再跑
-`bash ~/school_wall/deploy/restore-cloudflared.sh`。
+如使用 Cloudflare Tunnel，先在面板把 ingress service 设为 http://localhost:11451，然后再按需要执行 bash deploy/restore-cloudflared.sh。脚本会操作 cloudflared 服务；本次代码审查不会启停隧道。跨主机代理或直接接 Cloudflare 边缘时需同步调整 realip 信任列表，不能继续把非本机来源当作回环隧道。

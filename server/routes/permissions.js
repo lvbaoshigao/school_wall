@@ -6,6 +6,16 @@ const {
 } = require('../lib/permissions');
 
 const router = express.Router();
+const parseScope = raw => {
+  if (raw === undefined) return 0;
+  if ((typeof raw !== 'string' && typeof raw !== 'number') || !/^(0|[1-9]\d*)$/.test(String(raw))) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
+};
+router.param('id', (req, res, next, raw) => {
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) return res.status(400).json({ error: '无效的用户 ID' });
+  next();
+});
 
 // 权限目录 + 各名号的默认集。前端拿它渲染勾选界面，
 // 并在切换名号时即时显示「这个名号自带哪些权限」。
@@ -34,7 +44,8 @@ router.get('/me', authRequired, (req, res) => {
 // 前端用「有效 vs 默认」的差异把每条渲染成 继承/强制授予/强制拒绝 三态。
 router.get('/user/:id', authRequired, requirePerm('global.permission.manage'), (req, res) => {
   const userId = parseInt(req.params.id);
-  const wallId = Math.max(0, parseInt(req.query.wall_id) || 0);
+  const wallId = parseScope(req.query.wall_id);
+  if (wallId === null) return res.status(400).json({ error: '无效的权限作用域' });
 
   const user = req.db.prepare('SELECT id, username, nickname, role FROM users WHERE id=?').get(userId);
   if (!user) return res.status(404).json({ error: '用户不存在' });
@@ -63,16 +74,24 @@ router.get('/user/:id', authRequired, requirePerm('global.permission.manage'), (
 // 批量写覆盖项。
 // body: { wall_id, changes: { '<perm>': 'inherit' | 'grant' | 'deny' } }
 // 'inherit' 表示删除该条覆盖，回到名号默认。
-router.put('/user/:id', authRequired, requirePerm('global.permission.manage'), (req, res) => {
+router.put('/user/:id', authRequired, requirePerm('global.permission.manage'), (req, res, next) => {
   const userId = parseInt(req.params.id);
-  const wallId = Math.max(0, parseInt(req.body.wall_id) || 0);
+  const wallId = parseScope(req.body.wall_id);
   const changes = req.body.changes;
+  if (wallId === null) return res.status(400).json({ error: '无效的权限作用域' });
 
-  if (!changes || typeof changes !== 'object') {
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes) || Object.keys(changes).length > 100) {
     return res.status(400).json({ error: '缺少变更内容' });
   }
   const user = req.db.prepare('SELECT id, role FROM users WHERE id=?').get(userId);
   if (!user) return res.status(404).json({ error: '用户不存在' });
+  if (user.role === 'super_admin' && req.user.role !== 'super_admin') {
+    return res.status(403).json({ error: '不能修改超级管理员的权限' });
+  }
+  const stillManageable = req.db.prepare(
+    "SELECT COUNT(*) AS c FROM users WHERE role='super_admin' AND status='active'"
+  ).get().c > 0;
+  if (!stillManageable) return res.status(400).json({ error: '系统中必须至少保留一名有效的超级管理员' });
 
   if (wallId > 0) {
     const wall = req.db.prepare('SELECT id FROM walls WHERE id=?').get(wallId);
@@ -87,30 +106,33 @@ router.put('/user/:id', authRequired, requirePerm('global.permission.manage'), (
 
   const applied = [];
   const rejected = [];
-  for (const [perm, effect] of Object.entries(changes)) {
-    if (!isKnownPerm(perm)) { rejected.push({ perm, reason: '未知权限' }); continue; }
-    // 全局权限没有「只在某个墙生效」的说法，挡掉以免写进去却永远不被读到
-    if (wallId > 0 && !isWallPerm(perm)) {
-      rejected.push({ perm, reason: '该权限只能在全局作用域授予' });
-      continue;
+  req.db.exec('BEGIN');
+  try {
+    for (const [perm, effect] of Object.entries(changes)) {
+      if (!isKnownPerm(perm)) { rejected.push({ perm, reason: '未知权限' }); continue; }
+      // 全局权限没有「只在某个墙生效」的说法，挡掉以免写进去却永远不被读到
+      if (wallId > 0 && !isWallPerm(perm)) {
+        rejected.push({ perm, reason: '该权限只能在全局作用域授予' });
+        continue;
+      }
+      if (!['inherit', 'grant', 'deny'].includes(effect)) {
+        rejected.push({ perm, reason: '无效的取值' });
+        continue;
+      }
+      // 分配权限不是全权提权通道：非超管只能管理自己在该作用域实际持有的能力。
+      if (req.user.role !== 'super_admin' && !req.can(perm, wallId)) {
+        rejected.push({ perm, reason: '不能分配或恢复自己未持有的权限' });
+        continue;
+      }
+      if (effect === 'inherit') { del.run(userId, wallId, perm); applied.push(perm); continue; }
+      ins.run(userId, wallId, perm, effect, req.user.id);
+      applied.push(perm);
     }
-    if (!['inherit', 'grant', 'deny'].includes(effect)) {
-      rejected.push({ perm, reason: '无效的取值' });
-      continue;
-    }
-    if (effect === 'inherit') { del.run(userId, wallId, perm); applied.push(perm); continue; }
-    ins.run(userId, wallId, perm, effect, req.user.id);
-    applied.push(perm);
-  }
 
-  // 兜底：改完之后系统里必须仍有人能分配权限，否则这次修改会把管理通道焊死。
-  // effectivePerms 已经保证超管的这两条不可 deny，这里再从结果侧复核一次 ——
-  // 万一将来 UNDENIABLE 被改动，这里会拦下来而不是等到没人能改权限时才发现。
-  const stillManageable = req.db.prepare(
-    "SELECT COUNT(*) AS c FROM users WHERE role='super_admin' AND status='active'"
-  ).get().c > 0;
-  if (!stillManageable) {
-    return res.status(400).json({ error: '系统中必须至少保留一名有效的超级管理员' });
+    req.db.exec('COMMIT');
+  } catch (error) {
+    req.db.exec('ROLLBACK');
+    return next(error);
   }
 
   res.json({ message: '权限已更新', applied, rejected });

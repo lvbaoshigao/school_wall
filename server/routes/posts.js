@@ -5,15 +5,66 @@ const crypto = require('crypto');
 const { authRequired, wallContext } = require('../middleware/auth');
 const { readPrefs } = require('../lib/prefs');
 const { deletePostImages } = require('../lib/uploads');
+const { userCan } = require('../lib/permissions');
 
 const router = express.Router();
+
+function positiveInteger(value, max = Number.MAX_SAFE_INTEGER) {
+  return typeof value === 'string' && /^[1-9]\d*$/.test(value)
+    && Number.isSafeInteger(Number(value)) && Number(value) <= max;
+}
+
+router.use((req, res, next) => {
+  for (const [key, max] of [['page', 1000000], ['limit', 50], ['days', 30]]) {
+    if (req.query[key] !== undefined && !positiveInteger(req.query[key], max)) {
+      return res.status(400).json({ error: '分页或时间范围参数无效' });
+    }
+  }
+  if ((req.query.q !== undefined && typeof req.query.q !== 'string')
+    || (req.query.category !== undefined && (typeof req.query.category !== 'string' || req.query.category.length > 20))
+    || (req.query.sort !== undefined && !['latest', 'hot'].includes(req.query.sort))) {
+    return res.status(400).json({ error: '查询参数无效' });
+  }
+  if (req.body !== undefined && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) {
+    return res.status(400).json({ error: '请求内容必须是对象' });
+  }
+  for (const key of ['is_anonymous', 'is_markdown']) {
+    const value = req.body?.[key];
+    if (value !== undefined && typeof value !== 'boolean' && value !== 0 && value !== 1) {
+      return res.status(400).json({ error: '匿名和 Markdown 标记必须是布尔值' });
+    }
+  }
+  next();
+});
+
+for (const name of ['id', 'postId', 'commentId']) {
+  router.param(name, (req, res, next, value) => {
+    if (!positiveInteger(value)) return res.status(400).json({ error: '内容编号无效' });
+    next();
+  });
+}
+
+// 数据与计数、通知必须一起提交；同步 savepoint 也支持调用方已有事务。
+function atomic(db, action) {
+  db.exec('SAVEPOINT content_posts');
+  try {
+    const result = action();
+    db.exec('RELEASE SAVEPOINT content_posts');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK TO SAVEPOINT content_posts');
+    db.exec('RELEASE SAVEPOINT content_posts');
+    throw error;
+  }
+}
 
 // 帖子分类列表（允许用户自定义分类）
 const DEFAULT_CATEGORIES = ['吐槽', '分享', '求助', '讨论', '其他'];
 
 // 返回给客户端的帖子列（不含 author_ip —— 安全修复）
 const POST_SELECT = `
-  p.id, p.wall_id, p.content, p.category, p.is_anonymous, p.author_id,
+  p.id, p.wall_id, p.content, p.category, p.is_anonymous,
+  CASE WHEN p.is_anonymous = 1 THEN NULL ELSE p.author_id END as author_id,
   p.like_count, p.comment_count, p.is_markdown, p.created_at,
   CASE WHEN p.is_anonymous = 1 THEN NULL ELSE u.nickname END as author_nickname,
   CASE WHEN p.is_anonymous = 1 THEN NULL ELSE u.avatar END as author_avatar,
@@ -33,9 +84,8 @@ router.get('/search', authRequired, wallContext, (req, res) => {
     return res.status(400).json({ error: '搜索关键词过长' });
   }
 
-  const searchTerm = `%${term}%`;
   // 搜索关键词中的 % 和 _ 是 SQLite LIKE 的通配符，需要转义才能按字面匹配
-  const escapedTerm = term.replace(/[%_]/g, '\\$&');
+  const escapedTerm = term.replace(/[\\%_]/g, '\\$&');
   const searchTermEscaped = `%${escapedTerm}%`;
   // 原先 COUNT 和 SELECT 各扫一遍全表，等于把最贵的操作做了两次。
   // 这里只取一遍：多查一条用于判断「是否还有更多」，total 用结果数近似。
@@ -87,7 +137,7 @@ router.get('/', authRequired, wallContext, (req, res) => {
   const totalRow = req.db.prepare(`SELECT COUNT(*) as count FROM posts p ${where}`).get(...params);
   const total = totalRow ? totalRow.count : 0;
 
-  const orderBy = sort === 'hot' ? 'ORDER BY p.like_count DESC, p.comment_count DESC' : 'ORDER BY p.created_at DESC';
+  const orderBy = sort === 'hot' ? 'ORDER BY p.like_count DESC, p.comment_count DESC, p.id DESC' : 'ORDER BY p.created_at DESC, p.id DESC';
 
   const posts = req.db.prepare(`
     SELECT ${POST_SELECT}
@@ -184,18 +234,19 @@ router.get('/hot', authRequired, wallContext, (req, res) => {
 // 发帖（当前墙）
 router.post('/', authRequired, wallContext, (req, res) => {
   const { content, category, is_anonymous } = req.body;
-  if (!content || content.trim().length === 0) {
+  if (typeof content !== 'string' || content.trim().length === 0) {
     return res.status(400).json({ error: '内容不能为空' });
   }
   if (content.length > 2000) {
     return res.status(400).json({ error: '内容不能超过2000字' });
   }
 
+  if (category !== undefined && typeof category !== 'string') return res.status(400).json({ error: '分类必须是文本' });
   let cat = (category || '分享').trim();
   if (cat.length > 20) cat = cat.substring(0, 20);
   if (!cat) cat = '分享';
 
-  const ip = req.ip || req.connection.remoteAddress;
+  const ip = req.ip || req.connection?.remoteAddress;
   // 脱敏存储 IP 地址：取完整 IP 的 SHA256 前 16 字符，既保留去重能力又不暴露原始 IP
   const ipHash = crypto.createHash('sha256').update(ip || '').digest('hex').substring(0, 16);
   const authorId = is_anonymous ? null : req.user.id;
@@ -222,13 +273,24 @@ router.get('/:id', authRequired, wallContext, (req, res) => {
 
   if (!post) return res.status(404).json({ error: '帖子不存在' });
 
+  const rawCommentsPage = req.query.comments_page ?? '1';
+  const rawCommentsLimit = req.query.comments_limit ?? '50';
+  if (!positiveInteger(rawCommentsPage, 1000000) || !positiveInteger(rawCommentsLimit, 100)) {
+    return res.status(400).json({ error: '评论分页参数无效' });
+  }
+  const commentsPage = Number(rawCommentsPage);
+  const commentsLimit = Number(rawCommentsLimit);
+  const commentsTotal = req.db.prepare(`
+    SELECT COUNT(*) as c FROM comments c JOIN users u ON c.author_id = u.id WHERE c.post_id = ?
+  `).get(post.id).c;
   const comments = req.db.prepare(`
     SELECT c.id, c.post_id, c.content, c.author_id, c.created_at, u.nickname, u.avatar, u.class_number
     FROM comments c
     JOIN users u ON c.author_id = u.id
     WHERE c.post_id = ?
-    ORDER BY c.created_at ASC
-  `).all(post.id);
+    ORDER BY c.created_at ASC, c.id ASC
+    LIMIT ? OFFSET ?
+  `).all(post.id, commentsLimit, (commentsPage - 1) * commentsLimit);
 
   if (req.user) {
     const liked = req.db.prepare('SELECT id FROM likes WHERE post_id = ? AND user_id = ?')
@@ -239,7 +301,7 @@ router.get('/:id', authRequired, wallContext, (req, res) => {
     post.bookmarked = !!bm;
   }
 
-  res.json({ post, comments });
+  res.json({ post, comments, comments_total: commentsTotal, comments_page: commentsPage, comments_limit: commentsLimit });
 });
 
 // 删除帖子（作者或墙管理者）
@@ -254,10 +316,13 @@ router.delete('/:id', authRequired, wallContext, (req, res) => {
     return res.status(403).json({ error: '无权删除' });
   }
 
-  req.db.prepare('DELETE FROM comments WHERE post_id = ?').run(postId);
-  req.db.prepare('DELETE FROM likes WHERE post_id = ?').run(postId);
-  req.db.prepare('DELETE FROM post_reports WHERE post_id = ?').run(postId);
-  req.db.prepare('DELETE FROM posts WHERE id = ?').run(postId);
+  atomic(req.db, () => {
+    req.db.prepare('DELETE FROM comments WHERE post_id = ?').run(postId);
+    req.db.prepare('DELETE FROM likes WHERE post_id = ?').run(postId);
+    req.db.prepare('DELETE FROM post_reports WHERE post_id = ?').run(postId);
+    req.db.prepare('DELETE FROM bookmarks WHERE post_id = ?').run(postId);
+    req.db.prepare('DELETE FROM posts WHERE id = ?').run(postId);
+  });
   // 同时清掉只被这条帖子引用的图片，否则删帖后文件会永远留在磁盘上累积
   deletePostImages(req.db, post.content, postId);
   res.json({ message: '已删除' });
@@ -266,7 +331,7 @@ router.delete('/:id', authRequired, wallContext, (req, res) => {
 // 发评论
 router.post('/:id/comments', authRequired, wallContext, (req, res) => {
   const { content } = req.body;
-  if (!content || content.trim().length === 0) {
+  if (typeof content !== 'string' || content.trim().length === 0) {
     return res.status(400).json({ error: '评论不能为空' });
   }
   // 与前端 CommentBox 的 maxlength=500 对齐：此前评论无长度限制，
@@ -278,27 +343,30 @@ router.post('/:id/comments', authRequired, wallContext, (req, res) => {
   const post = req.db.prepare('SELECT id, author_id, content FROM posts WHERE id = ? AND wall_id = ?').get(parseInt(req.params.id), req.wallId);
   if (!post) return res.status(404).json({ error: '帖子不存在' });
 
-  const ip = req.ip || req.connection.remoteAddress;
+  const ip = req.ip || req.connection?.remoteAddress;
   const ipHash = crypto.createHash('sha256').update(ip || '').digest('hex').substring(0, 16);
-  const result = req.db.prepare(`
-    INSERT INTO comments (post_id, content, author_id, author_ip) VALUES (?, ?, ?, ?)
-  `).run(post.id, content.trim(), req.user.id, ipHash);
+  const result = atomic(req.db, () => {
+    const result = req.db.prepare(`
+      INSERT INTO comments (post_id, content, author_id, author_ip) VALUES (?, ?, ?, ?)
+    `).run(post.id, content.trim(), req.user.id, ipHash);
 
-  req.db.prepare('UPDATE posts SET comment_count = comment_count + 1 WHERE id = ?').run(post.id);
+    req.db.prepare('UPDATE posts SET comment_count = comment_count + 1 WHERE id = ?').run(post.id);
 
-  // 帖主可在设置里关掉「被评论时提醒我」，关掉就不写这条站内信
-  if (post.author_id && post.author_id !== req.user.id && readPrefs(req.db, post.author_id).notify_on_comment) {
-    const commenter = req.db.prepare('SELECT nickname FROM users WHERE id = ?').get(req.user.id);
-    const postPreview = post.content.substring(0, 30) + (post.content.length > 30 ? '...' : '');
-    // 匿名帖子也应隐藏评论者身份，避免通过评论者昵称反推匿名帖子的作者是谁
-    const isAnonymousPost = req.db.prepare('SELECT is_anonymous FROM posts WHERE id=?').get(post.id)?.is_anonymous === 1;
-    const senderName = isAnonymousPost ? '匿名用户' : (commenter.nickname || '用户');
-    const senderId = isAnonymousPost ? null : req.user.id;
-    req.db.prepare('INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(senderId, post.author_id, req.wallId, 'interaction', '新评论',
-        `${senderName} 评论了你的帖子"${postPreview}"：${content.trim().substring(0, 50)}`,
-        `/post/${post.id}`);
-  }
+    // 帖主可在设置里关掉「被评论时提醒我」，关掉就不写这条站内信
+    if (post.author_id && post.author_id !== req.user.id && readPrefs(req.db, post.author_id).notify_on_comment) {
+      const commenter = req.db.prepare('SELECT nickname FROM users WHERE id = ?').get(req.user.id);
+      const postPreview = post.content.substring(0, 30) + (post.content.length > 30 ? '...' : '');
+      // 匿名帖子也应隐藏评论者身份，避免通过评论者昵称反推匿名帖子的作者是谁
+      const isAnonymousPost = req.db.prepare('SELECT is_anonymous FROM posts WHERE id=?').get(post.id)?.is_anonymous === 1;
+      const senderName = isAnonymousPost ? '匿名用户' : (commenter.nickname || '用户');
+      const senderId = isAnonymousPost ? null : req.user.id;
+      req.db.prepare('INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(senderId, post.author_id, req.wallId, 'interaction', '新评论',
+          `${senderName} 评论了你的帖子"${postPreview}"：${content.trim().substring(0, 50)}`,
+          `/post/${post.id}`);
+    }
+    return result;
+  });
 
   const comment = req.db.prepare(`
     SELECT c.id, c.post_id, c.content, c.author_id, c.created_at, u.nickname, u.avatar, u.class_number
@@ -325,8 +393,10 @@ router.delete('/:postId/comments/:commentId', authRequired, wallContext, (req, r
     return res.status(403).json({ error: '无权删除' });
   }
 
-  req.db.prepare('DELETE FROM comments WHERE id = ?').run(commentId);
-  req.db.prepare('UPDATE posts SET comment_count = MAX(0, comment_count - 1) WHERE id = ?').run(postId);
+  atomic(req.db, () => {
+    req.db.prepare('DELETE FROM comments WHERE id = ?').run(commentId);
+    req.db.prepare('UPDATE posts SET comment_count = MAX(0, comment_count - 1) WHERE id = ?').run(postId);
+  });
   res.json({ message: '评论已删除' });
 });
 
@@ -336,18 +406,20 @@ router.post('/:id/like', authRequired, wallContext, (req, res) => {
   if (!post) return res.status(404).json({ error: '帖子不存在' });
 
   try {
-    req.db.prepare('INSERT INTO likes (post_id, user_id) VALUES (?, ?)').run(post.id, req.user.id);
-    req.db.prepare('UPDATE posts SET like_count = like_count + 1 WHERE id = ?').run(post.id);
+    atomic(req.db, () => {
+      req.db.prepare('INSERT INTO likes (post_id, user_id) VALUES (?, ?)').run(post.id, req.user.id);
+      req.db.prepare('UPDATE posts SET like_count = like_count + 1 WHERE id = ?').run(post.id);
 
-    // 同上：被点赞提醒由帖主的偏好决定
-    if (post.author_id && post.author_id !== req.user.id && readPrefs(req.db, post.author_id).notify_on_like) {
-      const liker = req.db.prepare('SELECT nickname FROM users WHERE id = ?').get(req.user.id);
-      const postPreview = post.content.substring(0, 30) + (post.content.length > 30 ? '...' : '');
-      req.db.prepare('INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(req.user.id, post.author_id, req.wallId, 'interaction', '新点赞',
-          `${liker.nickname || '用户'} 赞了你的帖子"${postPreview}"`,
-          `/post/${post.id}`);
-    }
+      // 同上：被点赞提醒由帖主的偏好决定
+      if (post.author_id && post.author_id !== req.user.id && readPrefs(req.db, post.author_id).notify_on_like) {
+        const liker = req.db.prepare('SELECT nickname FROM users WHERE id = ?').get(req.user.id);
+        const postPreview = post.content.substring(0, 30) + (post.content.length > 30 ? '...' : '');
+        req.db.prepare('INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(req.user.id, post.author_id, req.wallId, 'interaction', '新点赞',
+            `${liker.nickname || '用户'} 赞了你的帖子"${postPreview}"`,
+            `/post/${post.id}`);
+      }
+    });
 
     res.json({ liked: true });
   } catch (e) {
@@ -364,18 +436,20 @@ router.post('/:id/like', authRequired, wallContext, (req, res) => {
 router.delete('/:id/like', authRequired, wallContext, (req, res) => {
   const post = req.db.prepare('SELECT id FROM posts WHERE id = ? AND wall_id = ?').get(parseInt(req.params.id), req.wallId);
   if (!post) return res.status(404).json({ error: '帖子不存在' });
-  const result = req.db.prepare('DELETE FROM likes WHERE post_id = ? AND user_id = ?')
-    .run(post.id, req.user.id);
-  if (result.changes > 0) {
-    req.db.prepare('UPDATE posts SET like_count = MAX(0, like_count - 1) WHERE id = ?').run(post.id);
-  }
+  atomic(req.db, () => {
+    const result = req.db.prepare('DELETE FROM likes WHERE post_id = ? AND user_id = ?')
+      .run(post.id, req.user.id);
+    if (result.changes > 0) {
+      req.db.prepare('UPDATE posts SET like_count = MAX(0, like_count - 1) WHERE id = ?').run(post.id);
+    }
+  });
   res.json({ liked: false });
 });
 
 // 举报帖子（本墙管理者处理）
 router.post('/:id/report', authRequired, wallContext, (req, res) => {
   const { reason } = req.body;
-  if (!reason || reason.trim().length === 0) return res.status(400).json({ error: '请填写举报原因' });
+  if (typeof reason !== 'string' || reason.trim().length === 0) return res.status(400).json({ error: '请填写举报原因' });
   if (reason.length > 500) return res.status(400).json({ error: '举报原因不能超过500字' });
 
   const postId = parseInt(req.params.id);
@@ -385,17 +459,20 @@ router.post('/:id/report', authRequired, wallContext, (req, res) => {
   const existing = req.db.prepare("SELECT id FROM post_reports WHERE post_id = ? AND reporter_id = ? AND status = 'pending'").get(postId, req.user.id);
   if (existing) return res.status(400).json({ error: '你已举报过该帖子' });
 
-  req.db.prepare('INSERT INTO post_reports (wall_id, post_id, reporter_id, reason) VALUES (?,?,?,?)').run(req.wallId, postId, req.user.id, reason.trim());
+  atomic(req.db, () => {
+    req.db.prepare('INSERT INTO post_reports (wall_id, post_id, reporter_id, reason) VALUES (?,?,?,?)').run(req.wallId, postId, req.user.id, reason.trim());
 
-  // 通知本墙管理者 + 全局管理员
-  const mods = req.db.prepare(
-    "SELECT user_id as id FROM wall_members WHERE wall_id=? AND status='active' AND wall_role IN ('owner','admin')"
-  ).all(req.wallId);
-  const globalAdmins = req.db.prepare("SELECT id FROM users WHERE role IN ('admin','super_admin') AND status='active'").all();
-  const ids = [...new Set([...mods.map(m => m.id), ...globalAdmins.map(a => a.id)])];
-  const reporter = req.db.prepare('SELECT nickname FROM users WHERE id=?').get(req.user.id);
-  const ins = req.db.prepare("INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content, link) VALUES (NULL,?,?,'system',?,?,?)");
-  ids.forEach(id => ins.run(id, req.wallId, '帖子举报', `${reporter?.nickname || '用户'} 举报了帖子 #${postId}：${reason.trim().substring(0, 100)}`, '/admin?panel=postReports'));
+    // 通知本墙管理者 + 全局管理员
+    const mods = req.db.prepare(
+      "SELECT user_id as id FROM wall_members WHERE wall_id=? AND status='active' AND wall_role IN ('owner','admin')"
+    ).all(req.wallId);
+    const globalAdmins = req.db.prepare("SELECT id FROM users WHERE role IN ('admin','super_admin') AND status='active'").all();
+    const ids = [...new Set([...mods.map(m => m.id), ...globalAdmins.map(a => a.id)])]
+      .filter(id => userCan(req.db, id, 'wall.post.report', req.wallId));
+    const reporter = req.db.prepare('SELECT nickname FROM users WHERE id=?').get(req.user.id);
+    const ins = req.db.prepare("INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content, link) VALUES (NULL,?,?,'system',?,?,?)");
+    ids.forEach(id => ins.run(id, req.wallId, '帖子举报', `${reporter?.nickname || '用户'} 举报了帖子 #${postId}：${reason.trim().substring(0, 100)}`, '/admin?panel=postReports'));
+  });
 
   res.json({ message: '举报已提交' });
 });
@@ -416,6 +493,7 @@ router.get('/bookmarks/list', authRequired, (req, res) => {
     FROM bookmarks b
     JOIN posts p ON b.post_id = p.id
     JOIN wall_members wm ON wm.wall_id = p.wall_id AND wm.user_id = b.user_id AND wm.status = 'active'
+    JOIN walls w ON w.id = p.wall_id AND w.status = 'active'
     WHERE b.user_id = ?
   `).get(req.user.id).c;
 
@@ -424,9 +502,10 @@ router.get('/bookmarks/list', authRequired, (req, res) => {
     FROM bookmarks b
     JOIN posts p ON b.post_id = p.id
     JOIN wall_members wm ON wm.wall_id = p.wall_id AND wm.user_id = b.user_id AND wm.status = 'active'
+    JOIN walls w ON w.id = p.wall_id AND w.status = 'active'
     LEFT JOIN users u ON p.author_id = u.id
     WHERE b.user_id = ?
-    ORDER BY b.created_at DESC
+    ORDER BY b.created_at DESC, b.id DESC
     LIMIT ? OFFSET ?
   `).all(req.user.id, limit, offset);
 
@@ -460,6 +539,8 @@ router.post('/:id/bookmark', authRequired, wallContext, (req, res) => {
 // 取消收藏
 router.delete('/:id/bookmark', authRequired, wallContext, (req, res) => {
   const postId = parseInt(req.params.id);
+  const post = req.db.prepare('SELECT id FROM posts WHERE id = ? AND wall_id = ?').get(postId, req.wallId);
+  if (!post) return res.status(404).json({ error: '帖子不存在' });
   req.db.prepare('DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?').run(req.user.id, postId);
   res.json({ bookmarked: false });
 });

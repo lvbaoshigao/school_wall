@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, nextTick } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
@@ -10,6 +10,7 @@ import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import { useMarkdown } from '../composables/useMarkdown'
+import { useFocusTrap } from '../composables/useFocusTrap'
 
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -19,6 +20,12 @@ const route = useRoute()
 const toast = useToast()
 const { truncateText } = useMarkdown()
 const errorMsg = ref('')
+const settingsModal = ref(null)
+const permissionsModal = ref(null)
+let disposed = false
+let permLoadVersion = 0
+let redirectTimer = null
+const wipeBusy = ref(false)
 
 // 面板可见性。一律按具体权限判断，不再看名号 ——
 // 这样单独授予/收回某一项权限时，界面会跟着变。
@@ -66,6 +73,7 @@ const safetyStatusFilter = ref('')
 
 // 用户设置弹窗
 const showSettings = ref(false)
+useFocusTrap(() => showSettings.value, settingsModal, () => { showSettings.value = false })
 const settingsUser = ref(null)
 const settingsForm = ref({ role: 'user', ban_duration: 0, ban_reason: '', ban_level: 'login' })
 
@@ -92,16 +100,26 @@ const banReportDuration = ref('1440')
 // Bug 反馈
 const bugReports = ref([])
 const bugReportsLoading = ref(false)
+const bugBusy = ref(new Set())
+function reportImages(value) {
+  try {
+    const list = Array.isArray(value) ? value : JSON.parse(value || '[]')
+    return Array.isArray(list) ? list.filter(url => typeof url === 'string' && url.startsWith('/uploads/') && !url.includes(String.fromCharCode(92))).slice(0, 9) : []
+  } catch { return [] }
+}
 
 async function loadBugReports() {
   bugReportsLoading.value = true
   try {
-    bugReports.value = (await api.get('/bug-reports/admin')).data
+    const res = await api.get('/bug-reports/admin')
+    bugReports.value = (res.data || []).map(report => ({ ...report, _status: report.status, _reply: '' }))
   } catch { errorMsg.value = '加载 Bug 反馈失败' }
   bugReportsLoading.value = false
 }
 
 async function updateBugReportStatus(id, status, reply) {
+  if (bugBusy.value.has(id)) return
+  bugBusy.value.add(id)
   try {
     const body = { status }
     if (reply) body.reply = reply
@@ -109,6 +127,7 @@ async function updateBugReportStatus(id, status, reply) {
     loadBugReports()
     toast.success('已更新')
   } catch (e) { toast.error(e.response?.data?.error || '操作失败') }
+  finally { bugBusy.value.delete(id) }
 }
 
 const wallRoleLabel = (r) => ({ owner: '墙主', admin: '校园墙管理员', tree_hole: '树洞志愿者', member: '成员' })[r] || r
@@ -185,8 +204,11 @@ async function downloadBackup(name) {
 }
 
 async function wipePrepare() {
+  if (wipeBusy.value || disposed) return
+  wipeBusy.value = true
   try {
     const r = await api.post('/admin/db/wipe/prepare')
+    if (disposed) return
     wipeCode.value = r.data.code
     wipeStep.value = 1
     wipeInput.value = ''
@@ -198,20 +220,24 @@ async function wipePrepare() {
     }, 1000)
     toast.success('验证码已生成，等待 10 秒冷却后可执行')
   } catch (e) { toast.error(e.response?.data?.error || '生成验证码失败') }
+  finally { wipeBusy.value = false }
 }
 async function wipeExecute() {
+  if (wipeBusy.value || wipeCountdown.value > 0 || !wipeCode.value || disposed) return
   if (wipeInput.value.trim().toUpperCase() !== wipeCode.value) {
     toast.error('验证码不正确')
     return
   }
+  wipeBusy.value = true
   try {
     const r = await api.post('/admin/db/wipe/execute', { code: wipeInput.value.trim() })
     clearInterval(wipeTimer)
     toast.success(r.data.message || '数据库已清空')
     wipeStep.value = 0; wipeCode.value = ''; wipeInput.value = ''
     // 删库后当前账号已不存在，token 失效 —— 回到首页触发重新登录/初始化
-    setTimeout(() => { location.href = '/' }, 1500)
+    if (!disposed) redirectTimer = setTimeout(() => { location.href = '/' }, 1500)
   } catch (e) {
+    if (disposed) return
     const remain = e.response?.data?.error?.match(/等待 (\d+) 秒/)
     if (remain) {
       wipeCountdown.value = parseInt(remain[1])
@@ -222,7 +248,7 @@ async function wipeExecute() {
       }, 1000)
     }
     toast.error(e.response?.data?.error || '执行失败')
-  }
+  } finally { wipeBusy.value = false }
 }
 
 async function loadWhitelist() {
@@ -252,12 +278,18 @@ async function saveWhitelist() {
 
 // ========== 墙后台 ==========
 async function loadWallStats() {
-  try { wallStats.value = (await api.get('/admin/wall/stats')).data }
+  const wallId = wallStore.currentWallId
+  try {
+    const res = await api.get('/admin/wall/stats')
+    if (!disposed && wallId === wallStore.currentWallId) wallStats.value = res.data
+  }
   catch (e) { errorMsg.value = '加载墙统计失败: ' + (e.response?.data?.error || e.message) }
 }
 async function loadMembers() {
+  const wallId = wallStore.currentWallId
   try {
-    const all = (await api.get('/walls/' + wallStore.currentWallId + '/members')).data
+    const all = (await api.get('/walls/' + wallId + '/members')).data
+    if (disposed || wallId !== wallStore.currentWallId) return
     // 被墙内封禁的成员仍要留在列表里，否则管理员无从解封
     wallMembers.value = all.filter(m => m.status === 'active' || m.status === 'banned')
     pendingMembers.value = all.filter(m => m.status === 'pending')
@@ -357,11 +389,16 @@ async function doTransferOwner() {
 }
 
 async function loadAnnouncements() {
-  try { announcements.value = (await api.get('/admin/wall/announcements')).data }
+  const wallId = wallStore.currentWallId
+  try {
+    const res = await api.get('/admin/wall/announcements')
+    if (!disposed && wallId === wallStore.currentWallId) announcements.value = res.data
+  }
   catch (e) { errorMsg.value = '加载公告失败' }
 }
 async function publishAnnouncement() {
-  if (!annForm.value.title || !annForm.value.content) { toast.success('请填写标题和内容'); return }
+  if (annLoading.value) return
+  if (!annForm.value.title.trim() || !annForm.value.content.trim()) { toast.error('请填写标题和内容'); return }
   annLoading.value = true
   try {
     const res = await api.post('/admin/wall/announcements', annForm.value)
@@ -394,7 +431,11 @@ function renderAnn(content) { return DOMPurify.sanitize(marked.parse(content || 
 const renderedAnnPreview = computed(() => DOMPurify.sanitize(marked.parse(annForm.value.content || '*暂无内容*')))
 
 async function loadCategories() {
-  try { categories.value = (await api.get('/admin/wall/categories')).data }
+  const wallId = wallStore.currentWallId
+  try {
+    const res = await api.get('/admin/wall/categories')
+    if (!disposed && wallId === wallStore.currentWallId) categories.value = res.data
+  }
   catch { categories.value = [] }
 }
 async function deleteCategory(name) {
@@ -410,9 +451,11 @@ async function doDeleteCategory() {
 }
 
 async function loadPostReports() {
+  const wallId = wallStore.currentWallId
   try {
     const params = postReportStatusFilter.value ? `?status=${postReportStatusFilter.value}` : ''
-    postReports.value = (await api.get('/admin/wall/post-reports' + params)).data
+    const res = await api.get('/admin/wall/post-reports' + params)
+    if (!disposed && wallId === wallStore.currentWallId) postReports.value = res.data
   } catch { errorMsg.value = '加载帖子举报失败' }
 }
 async function reviewPostReport(id, action) {
@@ -422,10 +465,12 @@ async function reviewPostReport(id, action) {
 
 // 本墙安全举报（校园霸凌等）
 async function loadSafetyReports() {
+  const wallId = wallStore.currentWallId
   try {
     const params = new URLSearchParams({ wall_id: wallStore.currentWallId })
     if (safetyStatusFilter.value) params.set('status', safetyStatusFilter.value)
-    safetyReports.value = (await api.get('/reports?' + params.toString())).data.reports
+    const res = await api.get('/reports?' + params.toString())
+    if (!disposed && wallId === wallStore.currentWallId) safetyReports.value = res.data.reports
   } catch { errorMsg.value = '加载举报失败' }
 }
 async function updateSafetyStatus(report, status) {
@@ -437,6 +482,7 @@ async function updateSafetyStatus(report, status) {
 }
 
 async function doUpdateSafetyStatus() {
+  if (!confirmTarget.value) return
   const { report, status } = confirmTarget.value
   try { await api.put(`/reports/${report.id}/status`, { status, status_note: safetyNote.value }); loadSafetyReports() }
   catch (e) { toast.error(e.response?.data?.error || '更新失败') }
@@ -563,6 +609,7 @@ async function doReviewUserReport() {
 //   强制拒绝 —— 写一条 deny
 // 保存时只提交与「继承」不同的项，因此以后调整名号的默认集会自动对所有人生效。
 const showPerms = ref(false)
+useFocusTrap(() => showPerms.value, permissionsModal, () => { showPerms.value = false })
 const permUser = ref(null)
 const permCatalog = ref(null)       // { permissions, globalRolePerms, wallRolePerms }
 const permScope = ref(0)            // 0 = 全局；>0 = 指定墙
@@ -630,18 +677,24 @@ async function openPerms(u) {
 
 async function loadPermData() {
   if (!permUser.value) return
+  const version = ++permLoadVersion
+  const userId = permUser.value.id
+  const scope = permScope.value
   permLoading.value = true
+  permData.value = null
   try {
-    const res = await api.get(`/permissions/user/${permUser.value.id}`, { params: { wall_id: permScope.value } })
+    const res = await api.get(`/permissions/user/${userId}`, { params: { wall_id: scope } })
+    if (disposed || version !== permLoadVersion) return
     permData.value = res.data
     // 用已有的覆盖项还原三态，其余为「继承」
     const choice = {}
     for (const o of res.data.overrides || []) choice[o.perm] = o.effect
     permChoice.value = choice
   } catch (e) {
+    if (disposed || version !== permLoadVersion) return
     toast.error(e.response?.data?.error || '加载权限失败')
     permData.value = null
-  } finally { permLoading.value = false }
+  } finally { if (!disposed && version === permLoadVersion) permLoading.value = false }
 }
 
 function setPermChoice(perm, value) {
@@ -653,7 +706,7 @@ function setPermChoice(perm, value) {
 const choiceOf = (perm) => permChoice.value[perm] || 'inherit'
 
 async function savePerms() {
-  if (!permUser.value) return
+  if (!permUser.value || permLoading.value || permSaving.value || !permData.value) return
   permSaving.value = true
   try {
     // 提交本作用域下的全部权限：现在选了什么就是什么，
@@ -693,6 +746,7 @@ function resetWallForm() {
 }
 
 async function saveWallInfo() {
+  if (wallFormSaving.value) return
   wallFormSaving.value = true
   try {
     await api.put(`/walls/${wallStore.currentWallId}`, {
@@ -706,7 +760,7 @@ async function saveWallInfo() {
 }
 
 const PANEL_LOADERS = {
-  wallStats: () => { loadWallStats(); resetWallForm() },
+  wallStats: () => { if (canHere('wall.stats.view')) loadWallStats(); resetWallForm() },
   members: loadMembers,
   announcements: loadAnnouncements,
   categories: loadCategories,
@@ -722,19 +776,51 @@ const PANEL_LOADERS = {
   dbops: loadDbOps,
 }
 
+const PANEL_PERMISSIONS = {
+  wallStats: ['wall', 'wall.stats.view'], members: ['wall', 'wall.member.view'],
+  announcements: ['wall', 'wall.announcement'], categories: ['wall', 'wall.category'],
+  postReports: ['wall', 'wall.post.report'], safetyReports: ['wall', 'wall.safety.report'],
+  gStats: ['global', 'global.moderate'], users: ['global', 'global.user.manage'],
+  wallApps: ['global', 'global.wall.approve'], allWalls: ['global', 'global.wall.manage'],
+  userReports: ['global', 'global.report.handle'], banLogs: ['global', 'global.moderate'],
+  bugReports: ['global', 'global.bug.handle'], dbops: ['global', 'global.db.manage'],
+}
+function canOpenPanel(panel) {
+  if (panel === 'wallStats') return !!wallStore.currentWallId && (canHere('wall.stats.view') || canHere('wall.edit'))
+  const rule = Object.prototype.hasOwnProperty.call(PANEL_PERMISSIONS, panel) ? PANEL_PERMISSIONS[panel] : null
+  return !!rule && (rule[0] === 'wall' ? !!wallStore.currentWallId && canHere(rule[1]) : can(rule[1]))
+}
 function switchPanel(panel) {
+  if (!canOpenPanel(panel)) return
   activePanel.value = panel
   errorMsg.value = ''
   PANEL_LOADERS[panel]?.()
 }
-
-onMounted(() => {
-  // 收件箱里的通知带 ?panel=xxx 过来，直接打开对应面板。
-  // 用 hasOwn 而不是真值判断：?panel=constructor 也能在原型链上取到函数。
-  const wanted = String(route.query.panel || '')
-  if (Object.prototype.hasOwnProperty.call(PANEL_LOADERS, wanted)) return switchPanel(wanted)
-  if (hasWallContext.value) switchPanel('wallStats')
-  else if (hasGlobalPanel.value) switchPanel('gStats')
+function openDefaultPanel() {
+  const wanted = typeof route.query.panel === 'string' ? route.query.panel : ''
+  const panel = canOpenPanel(wanted) ? wanted : Object.keys(PANEL_PERMISSIONS).find(canOpenPanel)
+  if (panel) switchPanel(panel)
+  else activePanel.value = ''
+}
+watch(() => route.query.panel, openDefaultPanel)
+watch(() => wallStore.currentWallId, () => {
+  wallStats.value = null
+  wallMembers.value = []; pendingMembers.value = []; announcements.value = []
+  categories.value = []; postReports.value = []; safetyReports.value = []
+  confirmTarget.value = null
+  showRemoveConfirm.value = false; showTransferConfirm.value = false
+  showBanWallConfirm.value = false; showUnbanConfirm.value = false
+  showDeleteAnnConfirm.value = false; showDeleteCategoryConfirm.value = false
+  showSafetyNote.value = false; showPerms.value = false
+  if (canOpenPanel(activePanel.value)) switchPanel(activePanel.value)
+  else openDefaultPanel()
+})
+onMounted(openDefaultPanel)
+onBeforeUnmount(() => {
+  disposed = true
+  permLoadVersion++
+  clearInterval(wipeTimer)
+  clearTimeout(redirectTimer)
 })
 </script>
 
@@ -749,7 +835,7 @@ onMounted(() => {
         <template v-if="hasWallContext">
           <div class="side-group">
             <div class="side-group-title">本墙管理</div>
-            <button v-if="canHere('wall.stats.view')" class="side-item" :class="{ active: activePanel === 'wallStats' }" @click="switchPanel('wallStats')">本墙概况</button>
+            <button v-if="canHere('wall.stats.view') || canHere('wall.edit')" class="side-item" :class="{ active: activePanel === 'wallStats' }" @click="switchPanel('wallStats')">本墙概况</button>
             <button v-if="canHere('wall.member.view')" class="side-item" :class="{ active: activePanel === 'members' }" @click="switchPanel('members')">
               成员管理 <span v-if="pendingMembers.length" class="badge">{{ pendingMembers.length }}</span>
             </button>
@@ -777,8 +863,8 @@ onMounted(() => {
       <!-- 右侧内容面板 -->
     <div class="admin-panel" style="flex:1;min-width:0">
     <!-- ============ 墙概况 ============ -->
-    <div v-if="activePanel === 'wallStats' && wallStats">
-      <div class="stats-grid">
+    <div v-if="activePanel === 'wallStats'">
+      <div v-if="wallStats && canHere('wall.stats.view')" class="stats-grid">
         <div class="stat-card glass stat-blue">
           <div class="stat-head"><span class="stat-icon"><Icon name="users" :size="20" /></span></div>
           <div class="stat-value">{{ wallStats.members.total }}</div>
@@ -998,6 +1084,11 @@ onMounted(() => {
             <span class="report-status-badge" :class="r.status">{{ reportStatusLabel(r.status) }}</span>
           </div>
           <div class="report-body">{{ r.content }}</div>
+          <div v-if="reportImages(r.images).length" class="bug-report-images">
+            <a v-for="(image, i) in reportImages(r.images)" :key="image" :href="image" target="_blank" rel="noopener noreferrer" :aria-label="'在新标签页查看举报证据 ' + (i + 1)">
+              <img :src="image" :alt="'举报证据 ' + (i + 1)" class="bug-thumb" loading="lazy" referrerpolicy="no-referrer" />
+            </a>
+          </div>
           <div v-if="r.status_note" class="status-note-display">
             <span class="text-muted">备注: {{ r.status_note }}</span>
           </div>
@@ -1214,22 +1305,23 @@ onMounted(() => {
           </div>
           <div class="bug-report-title"><strong>{{ r.title }}</strong></div>
           <div class="bug-report-content">{{ r.content }}</div>
-          <div v-if="r.images" class="bug-report-images">
-            <img v-for="(img, i) in JSON.parse(r.images || '[]')" :key="i" :src="img" alt="截图" class="bug-thumb"
-                 @click="window.open(img, '_blank')" />
+          <div v-if="reportImages(r.images).length" class="bug-report-images">
+            <a v-for="(image, i) in reportImages(r.images)" :key="image" :href="image" target="_blank" rel="noopener noreferrer" :aria-label="'在新标签页查看问题截图 ' + (i + 1)">
+              <img :src="image" :alt="'问题截图 ' + (i + 1)" class="bug-thumb" loading="lazy" referrerpolicy="no-referrer" />
+            </a>
           </div>
           <div v-if="r.reply" class="bug-report-reply">
             <span class="text-muted">管理员回复：</span>{{ r.reply }}
           </div>
           <div class="bug-report-actions">
-            <select class="pref-select" v-model="r._status" @change="updateBugReportStatus(r.id, r._status)">
+            <select class="pref-select" aria-label="反馈处理状态" :disabled="bugBusy.has(r.id)" v-model="r._status" @change="updateBugReportStatus(r.id, r._status)">
               <option value="pending">待处理</option>
               <option value="processing">处理中</option>
               <option value="resolved">已处理</option>
               <option value="rejected">已驳回</option>
             </select>
-            <input v-model="r._reply" type="text" placeholder="回复内容（可选）" class="reply-input" />
-            <button class="btn btn-primary btn-sm" @click="updateBugReportStatus(r.id, r._status || r.status, r._reply)">回复</button>
+            <input v-model="r._reply" aria-label="回复反馈" type="text" placeholder="回复内容（可选）" class="reply-input" />
+            <button class="btn btn-primary btn-sm" :disabled="bugBusy.has(r.id)" @click="updateBugReportStatus(r.id, r._status || r.status, r._reply)">回复</button>
           </div>
         </div>
       </div>
@@ -1327,14 +1419,14 @@ onMounted(() => {
           执行前会自动生成 pre-wipe 备份；服务端强制 10 秒冷却，防止误触。
         </p>
         <template v-if="wipeStep === 0">
-          <button class="btn btn-danger" @click="wipePrepare">生成 6 位删库验证码</button>
+          <button class="btn btn-danger" @click="wipePrepare" :disabled="wipeBusy">生成 6 位删库验证码</button>
         </template>
         <template v-else>
           <div class="wipe-code mono">{{ wipeCode }}</div>
           <div class="wipe-exec-row">
             <input v-model="wipeInput" class="wipe-input mono" maxlength="6"
                    placeholder="输入上方 6 位验证码" />
-            <button class="btn btn-danger" :disabled="wipeCountdown > 0" @click="wipeExecute">
+            <button class="btn btn-danger" :disabled="wipeCountdown > 0 || wipeBusy || !wipeInput.trim()" @click="wipeExecute">
               {{ wipeCountdown > 0 ? `请等待 ${wipeCountdown} 秒…` : '确认删库' }}
             </button>
             <button class="btn btn-secondary" @click="wipeStep = 0; clearInterval(wipeTimer)">取消</button>
@@ -1349,7 +1441,7 @@ onMounted(() => {
     <!-- 用户设置弹窗 -->
     <!-- 权限编辑：名号带出默认权限，在其上逐条加减 -->
     <div v-if="showPerms" class="modal-overlay" @click.self="showPerms = false">
-      <div class="modal glass-strong perm-modal">
+      <div ref="permissionsModal" tabindex="-1" class="modal glass-strong perm-modal" role="dialog" aria-modal="true" aria-label="编辑用户权限">
         <div class="modal-header">
           <h3>权限 · {{ permUser?.nickname || permUser?.username }}</h3>
           <button class="close-btn" aria-label="关闭" @click="showPerms = false"><Icon name="close" :size="17" /></button>
@@ -1422,7 +1514,7 @@ onMounted(() => {
     </div>
 
     <div v-if="showSettings" class="modal-overlay" @click.self="showSettings = false">
-      <div class="modal glass-strong">
+      <div ref="settingsModal" tabindex="-1" class="modal glass-strong" role="dialog" aria-modal="true" aria-label="用户设置">
         <h3>用户设置 · {{ settingsUser?.username }}</h3>
         <div class="form-group">
           <label>全局角色</label>
@@ -1580,9 +1672,9 @@ onMounted(() => {
 <style scoped>
 .admin-page { animation: fadeIn 0.5s ease; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-h2 { font-size: 24px; margin-bottom: 16px; }
+h2 { font-size: 1.5rem; margin-bottom: 16px; }
 
-.error-banner { display: flex; align-items: center; gap: 8px; background: rgba(255,107,107,0.2); border: 1px solid rgba(255,107,107,0.3); color: #ffb8b8; padding: 12px 16px; border-radius: var(--radius-md); margin-bottom: 16px; }
+.error-banner { display: flex; align-items: center; gap: 8px; background: rgba(255,107,107,0.2); border: 1px solid rgba(255,107,107,0.3); color: var(--danger-light); padding: 12px 16px; border-radius: var(--radius-md); margin-bottom: 16px; }
 
 /* ===== 左侧栏 + 内容面板布局 ===== */
 .admin-layout {
@@ -1608,7 +1700,7 @@ h2 { font-size: 24px; margin-bottom: 16px; }
 .side-group { display: flex; flex-direction: column; gap: 2px; }
 
 .side-group-title {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -1626,7 +1718,7 @@ h2 { font-size: 24px; margin-bottom: 16px; }
   border: none;
   color: var(--text-secondary);
   padding: 9px 12px;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
   border-radius: var(--radius-sm);
@@ -1639,19 +1731,19 @@ h2 { font-size: 24px; margin-bottom: 16px; }
 }
 
 .side-item.active {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-1) 28%, transparent), rgba(118,75,162,0.22));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-1) 28%, transparent), var(--accent-soft));
   color: var(--text-primary);
   font-weight: 600;
   box-shadow: inset 3px 0 0 var(--primary);
 }
 
 body.light-theme .side-item.active {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-1) 16%, transparent), rgba(118,75,162,0.12));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-1) 16%, transparent), var(--accent-soft));
 }
 
 .admin-panel { flex: 1; min-width: 0; animation: fadeIn 0.3s ease; }
 
-.badge { background: #ff6b6b; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: var(--radius-md); }
+.badge { background: var(--danger); color: #fff; font-size: 0.6875rem; padding: 2px 6px; border-radius: var(--radius-md); }
 
 @media (max-width: 768px) {
   .admin-layout { flex-direction: column; }
@@ -1670,7 +1762,7 @@ body.light-theme .side-item.active {
 }
 
 .section { margin-bottom: 20px; }
-.section h2 { font-size: 18px; margin-bottom: 12px; }
+.section h2 { font-size: 1.125rem; margin-bottom: 12px; }
 
 .pending-card { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: rgba(255,200,0,0.08); border: 1px solid rgba(255,200,0,0.2); border-radius: var(--radius-md); margin-bottom: 8px; }
 
@@ -1699,14 +1791,14 @@ body.light-theme .side-item.active {
 .stat-blue::before { background: #667eea; }
 .stat-purple::before { background: #764ba2; }
 .stat-green::before { background: #2ed573; }
-.stat-red::before { background: #ff6b6b; }
+.stat-red::before { background: var(--danger); }
 .stat-cyan::before { background: #17c3b2; }
 .stat-orange::before { background: #ffa502; }
 
 .stat-blue { border-top-color: #667eea; }
 .stat-purple { border-top-color: #a855f7; }
 .stat-green { border-top-color: #2ed573; }
-.stat-red { border-top-color: #ff6b6b; }
+.stat-red { border-top-color: var(--danger); }
 .stat-cyan { border-top-color: #17c3b2; }
 .stat-orange { border-top-color: #ffa502; }
 
@@ -1721,23 +1813,23 @@ body.light-theme .side-item.active {
   border-radius: var(--radius-md);
   background: var(--bg-input);
 }
-.stat-value { font-size: 30px; font-weight: 800; line-height: 1.1; color: var(--text-primary); }
-.stat-label { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+.stat-value { font-size: 1.875rem; font-weight: 800; line-height: 1.1; color: var(--text-primary); }
+.stat-label { font-size: 0.8125rem; color: var(--text-muted); margin-top: 4px; }
 
 .stat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .chip {
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 3px 10px;
   border-radius: var(--radius-xl);
   font-weight: 600;
 }
-.chip-blue { background: color-mix(in srgb, var(--accent-1) 18%, transparent); color: #a8b8ff; }
+.chip-blue { background: color-mix(in srgb, var(--accent-1) 18%, transparent); color: var(--text-link); }
 .chip-purple { background: rgba(168,85,247,0.18); color: #d8b4fe; }
-.chip-green { background: rgba(46,213,115,0.18); color: #b8ffb8; }
-.chip-red { background: rgba(255,107,107,0.18); color: #ffb8b8; }
+.chip-green { background: rgba(46,213,115,0.18); color: var(--success); }
+.chip-red { background: rgba(255,107,107,0.18); color: var(--danger-light); }
 .chip-cyan { background: rgba(23,195,178,0.18); color: #9ef0e6; }
-.chip-orange { background: rgba(255,165,2,0.18); color: #ffeaa7; }
-.chip-warn { background: rgba(255,200,0,0.18); color: #ffeaa7; }
+.chip-orange { background: rgba(255,165,2,0.18); color: var(--warning); }
+.chip-warn { background: rgba(255,200,0,0.18); color: var(--warning); }
 
 .chip.pulse { animation: chipPulse 1.6s ease-in-out infinite; }
 @keyframes chipPulse {
@@ -1750,12 +1842,12 @@ body.light-theme .side-item.active {
 .user-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .actions { display: flex; gap: 8px; align-items: center; }
 
-.role-tag { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-xs); }
+.role-tag { font-size: 0.6875rem; padding: 2px 8px; border-radius: var(--radius-xs); }
 .role-tag.super_admin, .role-tag.owner { background: rgba(255,215,0,0.2); color: #ffd700; }
-.role-tag.admin { background: color-mix(in srgb, var(--accent-1) 20%, transparent); color: #a8b8ff; }
-.role-tag.tree_hole { background: rgba(46,213,115,0.2); color: #b8ffb8; }
-.role-tag.member, .role-tag.user { background: rgba(46,213,115,0.2); color: #b8ffb8; }
-.banned-tag { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-xs); background: rgba(255,107,107,0.2); color: #ffb8b8; }
+.role-tag.admin { background: color-mix(in srgb, var(--accent-1) 20%, transparent); color: var(--text-link); }
+.role-tag.tree_hole { background: rgba(46,213,115,0.2); color: var(--success); }
+.role-tag.member, .role-tag.user { background: rgba(46,213,115,0.2); color: var(--success); }
+.banned-tag { font-size: 0.6875rem; padding: 2px 8px; border-radius: var(--radius-xs); background: rgba(255,107,107,0.2); color: var(--danger-light); }
 
 /* 封禁日志 */
 .ban-log-list { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -1764,29 +1856,29 @@ body.light-theme .side-item.active {
   display: flex; align-items: center; gap: var(--space-2);
   flex-wrap: wrap; margin-bottom: var(--space-2);
 }
-.ban-log-action { font-size: 13px; font-weight: 600; }
+.ban-log-action { font-size: 0.8125rem; font-weight: 600; }
 .ban-log-action.ban { color: var(--danger-light); }
 .ban-log-action.unban { color: var(--success-light); }
 .ban-log-scope {
-  font-size: 11px; padding: 2px 8px; border-radius: var(--radius-pill);
+  font-size: 0.6875rem; padding: 2px 8px; border-radius: var(--radius-pill);
   background: var(--bg-input); color: var(--text-secondary);
 }
-.ban-log-time { margin-left: auto; font-size: 12px; }
+.ban-log-time { margin-left: auto; font-size: 0.75rem; }
 .ban-log-body {
   display: flex; flex-wrap: wrap; gap: var(--space-4);
-  font-size: 13px; color: var(--text-secondary);
+  font-size: 0.8125rem; color: var(--text-secondary);
 }
 .ban-log-reason {
   margin-top: var(--space-2); padding-top: var(--space-2);
   border-top: 1px solid var(--border);
-  font-size: 13px; color: var(--text-muted); word-break: break-word;
+  font-size: 0.8125rem; color: var(--text-muted); word-break: break-word;
 }
 .req { color: var(--danger); }
 
 .filter-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
 .filter-row input, .filter-row select { flex: 1; min-width: 100px; }
 
-select { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 6px 10px; border-radius: var(--radius-sm); font-size: 13px; }
+select { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 6px 10px; border-radius: var(--radius-sm); font-size: 0.8125rem; }
 select option { background: #333; color: #fff; }
 
 /* 成员管理按钮统一大小 */
@@ -1797,7 +1889,7 @@ select option { background: #333; color: #fff; }
 .actions select {
   min-height: 30px;
   box-sizing: border-box;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.4;
   border-radius: var(--radius-sm);
 }
@@ -1835,10 +1927,10 @@ select option { background: #333; color: #fff; }
 .ann-form h3 { margin-bottom: 12px; }
 .ann-form input, .ann-form textarea { margin-bottom: 10px; }
 .ann-options { display: flex; gap: 16px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
-.ann-delete-at { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.ann-delete-at { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; color: var(--text-secondary); }
 .ann-card { padding: 16px; border-radius: var(--radius-md); margin-bottom: 10px; }
 .ann-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.ann-body { font-size: 14px; line-height: 1.6; margin-bottom: 8px; }
+.ann-body { font-size: 0.875rem; line-height: 1.6; margin-bottom: 8px; }
 
 .empty { text-align: center; padding: 32px; color: var(--text-muted); }
 
@@ -1846,44 +1938,44 @@ select option { background: #333; color: #fff; }
 .modal { padding: 24px; border-radius: var(--radius-lg); width: 90%; max-width: 400px; }
 .modal h3 { margin-bottom: 16px; }
 .modal .form-group { margin-bottom: 12px; }
-.modal .form-group label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--text-secondary); }
+.modal .form-group label { display: block; margin-bottom: 4px; font-size: 0.8125rem; color: var(--text-secondary); }
 .modal .form-group input, .modal .form-group select { width: 100%; }
 .modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 18px; }
 
 .report-list { display: flex; flex-direction: column; gap: 10px; }
 .report-card { padding: 16px; border-radius: var(--radius-md); }
 .report-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
-.report-code { font-family: monospace; font-weight: 700; color: #c9b99a; letter-spacing: 1px; margin-right: 8px; }
-.report-type-tag { font-size: 12px; padding: 2px 8px; border-radius: var(--radius-xs); background: rgba(255,107,107,0.15); color: #ffb8b8; }
-.report-status-badge { font-size: 12px; padding: 3px 10px; border-radius: var(--radius-md); font-weight: 600; }
-.report-status-badge.pending { background: rgba(255,200,0,0.2); color: #ffeaa7; }
-.report-status-badge.processing { background: color-mix(in srgb, var(--accent-1) 20%, transparent); color: #a8b8ff; }
-.report-status-badge.resolved { background: rgba(46,213,115,0.2); color: #b8ffb8; }
-.report-status-badge.rejected { background: rgba(255,107,107,0.2); color: #ffb8b8; }
-.report-body { font-size: 14px; line-height: 1.5; color: var(--text-secondary); margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
+.report-code { font-family: monospace; font-weight: 700; color: var(--text-link); letter-spacing: 1px; margin-right: 8px; }
+.report-type-tag { font-size: 0.75rem; padding: 2px 8px; border-radius: var(--radius-xs); background: rgba(255,107,107,0.15); color: var(--danger-light); }
+.report-status-badge { font-size: 0.75rem; padding: 3px 10px; border-radius: var(--radius-md); font-weight: 600; }
+.report-status-badge.pending { background: rgba(255,200,0,0.2); color: var(--warning); }
+.report-status-badge.processing { background: color-mix(in srgb, var(--accent-1) 20%, transparent); color: var(--text-link); }
+.report-status-badge.resolved { background: rgba(46,213,115,0.2); color: var(--success); }
+.report-status-badge.rejected { background: rgba(255,107,107,0.2); color: var(--danger-light); }
+.report-body { font-size: 0.875rem; line-height: 1.5; color: var(--text-secondary); margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
 /* 帖子分类是中性信息，不能套用红底的 .report-type-tag（那个表示举报类型） */
-.post-cat-tag { font-size: 12px; padding: 2px 8px; margin: 0 4px; border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text-secondary); }
-.status-note-display { font-size: 13px; padding: 6px 10px; background: rgba(255,255,255,0.05); border-radius: var(--radius-sm); margin-bottom: 8px; }
+.post-cat-tag { font-size: 0.75rem; padding: 2px 8px; margin: 0 4px; border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text-secondary); }
+.status-note-display { font-size: 0.8125rem; padding: 6px 10px; background: rgba(255,255,255,0.05); border-radius: var(--radius-sm); margin-bottom: 8px; }
 .report-footer-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-.ur-count-badge { font-size: 11px; padding: 2px 8px; border-radius: var(--radius-md); background: rgba(255,107,107,0.2); color: #ffb8b8; margin-left: 8px; }
+.ur-count-badge { font-size: 0.6875rem; padding: 2px 8px; border-radius: var(--radius-md); background: rgba(255,107,107,0.2); color: var(--danger-light); margin-left: 8px; }
 .evidence-box { background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); padding: 10px 12px; margin-top: 6px; }
-.evidence-pre { font-size: 12px; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; max-height: 200px; overflow-y: auto; }
+.evidence-pre { font-size: 0.75rem; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; max-height: 200px; overflow-y: auto; }
 
 .md-editor { margin: 10px 0; border: 1px solid rgba(255,255,255,0.15); border-radius: var(--radius-md); overflow: hidden; }
 .md-toolbar { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px; background: rgba(0,0,0,0.2); border-bottom: 1px solid rgba(255,255,255,0.1); }
-.md-btn { background: none; border: none; color: var(--text-secondary); padding: 5px 9px; font-size: 13px; cursor: pointer; border-radius: var(--radius-sm); font-weight: 600; }
+.md-btn { background: none; border: none; color: var(--text-secondary); padding: 5px 9px; font-size: 0.8125rem; cursor: pointer; border-radius: var(--radius-sm); font-weight: 600; }
 .md-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
-.md-btn.active { background: color-mix(in srgb, var(--accent-1) 30%, transparent); color: #a8b8ff; }
+.md-btn.active { background: color-mix(in srgb, var(--accent-1) 30%, transparent); color: var(--text-link); }
 .md-spacer { flex: 1; }
 .md-body { display: flex; }
-.md-body textarea { flex: 1; border: none; background: rgba(255,255,255,0.05); color: #fff; padding: 12px; font-size: 14px; line-height: 1.6; resize: vertical; min-height: 150px; font-family: 'SF Mono', monospace; }
+.md-body textarea { flex: 1; border: none; background: rgba(255,255,255,0.05); color: #fff; padding: 12px; font-size: 0.875rem; line-height: 1.6; resize: vertical; min-height: 150px; font-family: 'SF Mono', monospace; }
 .md-preview { flex: 1; padding: 12px; border-left: 1px solid rgba(255,255,255,0.1); overflow-y: auto; max-height: 300px; min-height: 150px; }
 
-.markdown-body { font-size: 15px; line-height: 1.7; color: var(--text-primary); }
+.markdown-body { font-size: 0.9375rem; line-height: 1.7; color: var(--text-primary); }
 .markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 10px 0 6px; color: #fff; }
-.markdown-body code { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: var(--radius-xs); font-size: 13px; }
+.markdown-body code { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: var(--radius-xs); font-size: 0.8125rem; }
 .markdown-body pre { background: rgba(0,0,0,0.3); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto; }
-.markdown-body a { color: #a8b8ff; text-decoration: underline; }
+.markdown-body a { color: var(--text-link); text-decoration: underline; }
 .markdown-body strong { color: #fff; }
 
 /* 墙资料编辑。
@@ -1901,18 +1993,18 @@ select option { background: #333; color: #fff; }
   padding-bottom: 12px; margin-bottom: 14px;
   border-bottom: 1px solid var(--border);
 }
-.wall-edit-head h3 { font-size: 16px; margin: 0; }
+.wall-edit-head h3 { font-size: 1rem; margin: 0; }
 .wall-edit-actions { display: flex; gap: 10px; flex-shrink: 0; }
 
 .wall-edit-body { display: flex; flex-direction: column; gap: 16px; }
 
 .wf-field { display: block; position: relative; }
-.wf-label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }
+.wf-label { display: block; font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 6px; }
 .wf-field textarea {
   display: block; width: 100%; padding: 10px 12px;
   border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
   background: var(--bg-input); color: var(--text-primary);
-  font-size: 14px; line-height: 1.7; font-family: inherit;
+  font-size: 0.875rem; line-height: 1.7; font-family: inherit;
   resize: vertical; min-height: 90px;
   transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
@@ -1922,7 +2014,7 @@ select option { background: #333; color: #fff; }
 }
 .wf-count {
   display: block; text-align: right; margin-top: 5px;
-  font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+  font-size: 0.75rem; color: var(--text-muted); font-variant-numeric: tabular-nums;
 }
 .wf-count.near { color: var(--accent-1); }
 
@@ -1935,8 +2027,8 @@ select option { background: #333; color: #fff; }
 }
 .wf-check:hover { border-color: var(--border-strong); }
 .wf-check input { margin-top: 3px; flex-shrink: 0; }
-.wf-check-title { display: block; font-size: 14px; }
-.wf-check-hint { display: block; font-size: 12px; color: var(--text-muted); line-height: 1.6; margin-top: 3px; }
+.wf-check-title { display: block; font-size: 0.875rem; }
+.wf-check-hint { display: block; font-size: 0.75rem; color: var(--text-muted); line-height: 1.6; margin-top: 3px; }
 
 @media (max-width: 640px) {
   .wall-edit { padding: 14px 14px 16px; }
@@ -1957,7 +2049,7 @@ select option { background: #333; color: #fff; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding-bottom: 12px; margin-bottom: 14px; border-bottom: 1px solid var(--border);
 }
-.modal-header h3 { font-size: 17px; margin: 0; flex: 1; min-width: 0; }
+.modal-header h3 { font-size: 1.0625rem; margin: 0; flex: 1; min-width: 0; }
 .close-btn {
   flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; padding: 0; cursor: pointer;
@@ -1976,7 +2068,7 @@ select option { background: #333; color: #fff; }
   padding: 5px 9px; border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong); background: var(--bg-input); color: var(--text-primary);
 }
-.perm-role-hint { font-size: 12px; line-height: 1.6; }
+.perm-role-hint { font-size: 0.75rem; line-height: 1.6; }
 
 /* 工具条：搜索 + 只看已修改 + 计数 + 一键还原 */
 /* 刻意不做 position: sticky —— 弹窗本体是半透明玻璃，且亮暗主题各有一套
@@ -1987,20 +2079,20 @@ select option { background: #333; color: #fff; }
   padding: 2px 0 10px; margin-bottom: 6px; border-bottom: 1px solid var(--border);
 }
 .perm-search {
-  flex: 1; min-width: 160px; padding: 6px 10px; font-size: 13px;
+  flex: 1; min-width: 160px; padding: 6px 10px; font-size: 0.8125rem;
   border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
   background: var(--bg-input); color: var(--text-primary);
 }
-.perm-toggle { font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
-.perm-summary { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.perm-toggle { font-size: 0.75rem; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+.perm-summary { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
 .perm-summary.dirty { color: var(--accent-1); font-weight: 600; }
 .perm-reset {
-  font-size: 12px; padding: 4px 9px; cursor: pointer; white-space: nowrap;
+  font-size: 0.75rem; padding: 4px 9px; cursor: pointer; white-space: nowrap;
   border-radius: var(--radius-pill); border: 1px solid var(--border-strong);
   background: transparent; color: var(--text-secondary);
 }
 .perm-reset:hover { background: var(--bg-card-hover); color: var(--text-primary); }
-.perm-empty { padding: 20px 0; text-align: center; font-size: 13px; }
+.perm-empty { padding: 20px 0; text-align: center; font-size: 0.8125rem; }
 
 /* 分组：默认收起，点标题展开 */
 .perm-group { margin-bottom: 6px; }
@@ -2009,7 +2101,7 @@ select option { background: #333; color: #fff; }
   padding: 9px 10px; cursor: pointer; text-align: left;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-input); color: var(--text-primary);
-  font-size: 14px; font-weight: 600;
+  font-size: 0.875rem; font-weight: 600;
   transition: background 0.2s var(--ease), border-color 0.2s var(--ease);
 }
 .perm-group-head:hover { background: var(--bg-card-hover); border-color: var(--border-strong); }
@@ -2017,11 +2109,11 @@ select option { background: #333; color: #fff; }
 .perm-caret.open { transform: rotate(90deg); }
 .perm-group-name { flex: 1; }
 .perm-group-count {
-  font-size: 11px; font-weight: 500; color: var(--text-muted);
+  font-size: 0.6875rem; font-weight: 500; color: var(--text-muted);
   padding: 1px 7px; border-radius: var(--radius-pill); background: var(--bg-card-hover);
 }
 .perm-group-changed {
-  font-size: 11px; font-weight: 600; color: #fff;
+  font-size: 0.6875rem; font-weight: 600; color: #fff;
   padding: 1px 7px; border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--accent-1) 70%, transparent);
 }
@@ -2033,8 +2125,8 @@ select option { background: #333; color: #fff; }
 }
 .perm-row + .perm-row { border-top: 1px solid var(--border); }
 .perm-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.perm-label { font-size: 14px; }
-.perm-key { font-size: 11px; color: var(--text-muted); background: var(--bg-input); padding: 1px 5px; border-radius: 3px; }
+.perm-label { font-size: 0.875rem; }
+.perm-key { font-size: 0.6875rem; color: var(--text-muted); background: var(--bg-input); padding: 1px 5px; border-radius: 3px; }
 
 /* 三态分段控件。比三个 radio 紧凑，选中态用填充色而不是描边，
    授予/拒绝各自带语义色，扫一眼就能看出哪些被改过。 */
@@ -2045,13 +2137,13 @@ select option { background: #333; color: #fff; }
 }
 .seg-btn {
   border: none; background: transparent; cursor: pointer;
-  padding: 5px 12px; font-size: 12px; line-height: 1.3;
+  padding: 5px 12px; font-size: 0.75rem; line-height: 1.3;
   color: var(--text-secondary); white-space: nowrap;
   display: inline-flex; align-items: baseline; gap: 3px;
   transition: background 0.15s var(--ease), color 0.15s var(--ease);
 }
 .seg-btn + .seg-btn { border-left: 1px solid var(--border); }
-.seg-btn small { font-size: 10px; opacity: 0.65; }
+.seg-btn small { font-size: 0.625rem; opacity: 0.65; }
 .seg-btn:hover:not(.active) { background: var(--bg-card-hover); color: var(--text-primary); }
 .seg-btn.active { color: #fff; font-weight: 600; background: rgba(140, 140, 160, 0.55); }
 .seg-btn.seg-grant.active { background: var(--success-fill); }
@@ -2066,21 +2158,21 @@ select option { background: #333; color: #fff; }
 
 /* ===== 数据库管理面板 ===== */
 .mono { font-family: 'SF Mono', Consolas, monospace; }
-.db-sub-title { font-size: 14px; font-weight: 700; color: var(--text-primary); margin: 22px 0 10px; }
+.db-sub-title { font-size: 0.875rem; font-weight: 700; color: var(--text-primary); margin: 22px 0 10px; }
 .db-sub-title.danger { color: var(--danger-light, #ff8a8a); }
 .db-toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-md, 10px); }
 .admin-table { width: 100%; border-collapse: collapse; min-width: 480px; }
-.admin-table th, .admin-table td { padding: 9px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
-.admin-table th { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+.admin-table th, .admin-table td { padding: 9px 12px; text-align: left; font-size: 0.8125rem; border-bottom: 1px solid var(--border); }
+.admin-table th { color: var(--text-muted); font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
 .admin-table tbody tr:last-child td { border-bottom: none; }
 .admin-table tbody tr:hover { background: var(--bg-card-hover, rgba(255,255,255,0.04)); }
 
 .wl-mode-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .wl-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 12px; }
 .wl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px;
-  background: rgba(124, 140, 248, 0.14); border: 1px solid rgba(124, 140, 248, 0.3); font-size: 12px; }
-.wl-tag-x { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px;
+  background: var(--accent-soft); border: 1px solid var(--accent-line); font-size: 0.75rem; }
+.wl-tag-x { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.875rem;
   padding: 0; line-height: 1; }
 .wl-tag-x:hover { color: var(--danger-light, #ff8a8a); }
 .wl-add-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -2088,8 +2180,19 @@ select option { background: #333; color: #fff; }
 
 .danger-zone { margin-top: 26px; padding: 18px; border: 1px solid rgba(255, 107, 107, 0.4);
   border-radius: var(--radius-lg, 14px); background: rgba(255, 107, 107, 0.08); }
-.wipe-code { font-size: 30px; letter-spacing: 10px; font-weight: 800; color: var(--warning, #ffd166);
+.wipe-code { font-size: 1.875rem; letter-spacing: 10px; font-weight: 800; color: var(--warning, #ffd166);
   text-align: center; padding: 10px 0 6px; user-select: all; }
 .wipe-exec-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .wipe-input { width: 200px; letter-spacing: 4px; text-transform: uppercase; }
+.admin-panel { min-width: 0; }
+.modal { max-height: 88dvh; overflow-y: auto; }
+.side-item { min-height: 44px; }
+.perm-key, .report-content, .ann-body { overflow-wrap: anywhere; }
+.seg-btn { min-height: 40px; }
+@media (max-width: 640px) {
+  .admin-layout { min-width: 0; }
+  .admin-panel .glass { max-width: 100%; }
+  .modal { padding: 20px 16px; }
+  .stat-value { font-size: 1.75rem; }
+}
 </style>

@@ -1,124 +1,170 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, watch, onBeforeUnmount } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import api from '../api'
 import PostCard from '../components/PostCard.vue'
 import SkeletonCard from '../components/SkeletonCard.vue'
-import { useToast } from '../composables/useToast'
+import ErrorState from '../components/ErrorState.vue'
 import Icon from '../components/Icon.vue'
+import { useWallStore } from '../stores/wall'
 
 const route = useRoute()
-const toast = useToast()
-
+const router = useRouter()
+const wallStore = useWallStore()
 const query = ref('')
+const searchedQuery = ref('')
 const posts = ref([])
 const total = ref(0)
+const hasMore = ref(false)
 const loading = ref(false)
 const searched = ref(false)
+const error = ref('')
+const validation = ref('')
+let requestId = 0
+let controller
+let disposed = false
 
-async function doSearch(q) {
-  const keyword = (q ?? query.value).trim()
-  if (!keyword) { toast.info('请输入搜索关键词'); return }
+function syncQuery(keyword) {
+  if (route.query.q === keyword || !route.query.q && !keyword) return
+  const params = { ...route.query }
+  if (keyword) params.q = keyword
+  else delete params.q
+  router.replace({ query: params }).catch(() => {})
+}
+
+async function doSearch(q = query.value, updateUrl = true) {
+  const keyword = typeof q === 'string' ? q.trim() : ''
+  if (/^RPT-\d{4}(?:[A-Fa-f0-9]{8}|[A-Fa-f0-9]{4})$/i.test(keyword)) {
+    router.push('/report/status/' + keyword.toUpperCase())
+    return
+  }
+  const request = ++requestId
+  controller?.abort()
+  loading.value = false
+  error.value = ''
+  validation.value = ''
+  if (keyword.length < 2 || keyword.length > 50) {
+    posts.value = []
+    total.value = 0
+    searched.value = false
+    validation.value = '请输入 2–50 个字符的关键词'
+    return
+  }
+  controller = new AbortController()
+  const wallId = wallStore.currentWallId
   query.value = keyword
-  loading.value = true
+  searchedQuery.value = keyword
   searched.value = true
+  loading.value = true
+  posts.value = []
+  total.value = 0
+  hasMore.value = false
+  if (updateUrl) syncQuery(keyword)
   try {
-    const res = await api.get(`/posts/search?q=${encodeURIComponent(keyword)}`)
-    posts.value = res.data.posts
-    total.value = res.data.total
-    // 后端现在对 <2 字符的关键词直接返回空并带提示，不必再发一次请求
-    if (res.data.hint) toast.info(res.data.hint)
+    const res = await api.get('/posts/search', { params: { q: keyword }, signal: controller.signal })
+    if (disposed || request !== requestId || wallId !== wallStore.currentWallId) return
+    posts.value = Array.isArray(res.data.posts) ? res.data.posts : []
+    total.value = Math.max(0, Number(res.data.total) || 0)
+    hasMore.value = !!res.data.hasMore
   } catch (e) {
-    toast.error('搜索失败')
+    if (disposed || request !== requestId || wallId !== wallStore.currentWallId || e.code === 'ERR_CANCELED') return
+    error.value = '搜索失败，请检查网络后重试'
   } finally {
-    loading.value = false
+    if (request === requestId && !disposed) loading.value = false
   }
 }
 
-function clearSearch() {
+function clearSearch(updateUrl = true) {
+  requestId++
+  controller?.abort()
   query.value = ''
+  searchedQuery.value = ''
   posts.value = []
   total.value = 0
   searched.value = false
+  loading.value = false
+  hasMore.value = false
+  error.value = ''
+  validation.value = ''
+  if (updateUrl) syncQuery('')
 }
 
 function onPostDeleted(id) {
-  posts.value = posts.value.filter(p => p.id !== id)
-  total.value--
+  if (!posts.value.some(post => post.id === id)) return
+  posts.value = posts.value.filter(post => post.id !== id)
+  total.value = Math.max(0, total.value - 1)
 }
 
-onMounted(() => {
-  if (route.query.q) doSearch(route.query.q)
+watch(() => route.query.q, q => {
+  const keyword = typeof q === 'string' ? q.trim() : ''
+  if (!keyword) { clearSearch(false); return }
+  if (keyword !== searchedQuery.value || !searched.value) doSearch(keyword, false)
+}, { immediate: true })
+watch(() => wallStore.currentWallId, () => {
+  if (searchedQuery.value) doSearch(searchedQuery.value, false)
+  else clearSearch(false)
 })
-
-// 已经停留在 /search 时，从顶栏再次搜索只会变更 query，组件不会重新挂载，
-// 因此这里监听 query 变化以刷新结果
-watch(() => route.query.q, (q) => {
-  const keyword = (q || '').trim()
-  if (!keyword || keyword === query.value) return
-  doSearch(keyword)
-})
+onBeforeUnmount(() => { disposed = true; requestId++; controller?.abort() })
 </script>
 
 <template>
   <div class="search-page">
-    <div class="search-header glass">
-      <h2>搜索结果</h2>
-      <div class="search-form">
-        <input
-          v-model="query"
-          placeholder="搜索帖子内容..."
-          @keyup.enter="doSearch()"
-        />
-        <button class="btn btn-primary btn-sm" :disabled="loading" @click="doSearch()">
-          {{ loading ? '搜索中…' : '搜索' }}
-        </button>
-        <button v-if="searched" class="btn btn-secondary btn-sm" @click="clearSearch">清除</button>
-      </div>
-    </div>
+    <header class="search-header glass">
+      <h1>搜索校园</h1>
+      <p class="search-intro text-muted">在当前校园墙，找到你关心的话题</p>
+      <form class="search-form" role="search" @submit.prevent="doSearch()">
+        <label class="search-field" for="campus-search">
+          <span>关键词</span>
+          <input id="campus-search" v-model="query" type="search" placeholder="搜索帖子内容或举报追踪码" maxlength="50" :aria-invalid="!!validation" aria-describedby="search-help search-validation" />
+        </label>
+        <button class="btn btn-primary" type="submit">{{ loading ? '重新搜索' : '搜索' }}</button>
+        <button v-if="searched || query" class="btn btn-secondary" type="button" @click="clearSearch()">清除</button>
+      </form>
+      <p id="search-help" class="search-help text-muted">输入 2–50 个字符；也可输入完整 RPT 追踪码查看举报进度。</p>
+      <p id="search-validation" class="validation" role="status">{{ validation }}</p>
+    </header>
 
-    <template v-if="loading">
-      <div class="results-area">
+    <section class="results-area" :aria-busy="loading" aria-label="搜索结果">
+      <div v-if="loading" class="skeleton-stack" role="status" aria-label="正在搜索">
         <SkeletonCard v-for="i in 3" :key="i" :lines="3" />
       </div>
-    </template>
-
-    <template v-else-if="searched">
-      <div class="results-area">
+      <ErrorState v-else-if="error" role="alert" :title="error" @retry="doSearch(searchedQuery)" />
+      <template v-else-if="searched">
+        <p class="result-count text-muted" role="status">「{{ searchedQuery }}」{{ hasMore ? '已显示前' : '共' }} {{ total }} 条结果<span v-if="hasMore">，试试更具体的关键词</span></p>
         <div v-if="posts.length === 0" class="empty-state">
           <div class="icon"><Icon name="search" :size="34" /></div>
-          <p>没有找到与「{{ query }}」匹配的帖子</p>
+          <p>没有找到与「{{ searchedQuery }}」匹配的帖子</p>
+          <p class="text-muted">换个关键词，或缩短搜索内容后再试</p>
         </div>
         <div v-else class="results-list">
           <PostCard v-for="post in posts" :key="post.id" :post="post" @deleted="onPostDeleted" />
         </div>
-        <p v-if="posts.length > 0" class="result-count text-muted">
-          共 {{ total }} 条结果<span v-if="total > posts.length">（已显示前 {{ posts.length }} 条）</span>
-        </p>
-      </div>
-    </template>
-
-    <template v-else>
-      <div class="empty-state">
+      </template>
+      <div v-else class="empty-state">
         <div class="icon"><Icon name="search" :size="34" /></div>
-        <p>输入关键词，搜索当前校园墙的帖子</p>
-        <p class="text-muted" style="font-size:13px">也可输入追踪码 RPT-XXXX 查询举报处理进度</p>
+        <p>从一个关键词开始</p>
+        <p class="text-muted">搜索课程、活动或同学们正在讨论的话题</p>
       </div>
-    </template>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.search-page { animation: fadeIn 0.5s ease; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-.search-header { padding: 20px 24px; margin-bottom: 16px; }
-.search-header h2 { font-size: 20px; margin-bottom: 12px; }
-
-.search-form { display: flex; gap: 8px; }
-.search-form input { flex: 1; }
-
-.results-area { display: flex; flex-direction: column; gap: 12px; }
-.results-list { display: flex; flex-direction: column; gap: 12px; }
-.result-count { text-align: center; padding: 12px; }
+.search-page { max-width: 56rem; margin-inline: auto; }
+.search-header { padding: var(--space-5); margin-bottom: var(--space-5); }
+.search-header h1 { font-size: var(--font-2xl); letter-spacing: -.035em; margin-bottom: var(--space-1); }
+.search-intro { font-size: var(--font-sm); margin-bottom: var(--space-5); }
+.search-form { display: flex; align-items: flex-end; gap: var(--space-2); flex-wrap: wrap; }
+.search-field { display: grid; gap: var(--space-2); flex: 1 1 16rem; min-width: 0; color: var(--text-secondary); font-size: var(--font-sm); }
+.search-field input { min-width: 0; width: 100%; }
+.search-help { font-size: var(--font-xs); line-height: 1.7; margin-top: var(--space-3); }
+.validation { color: var(--danger-light); font-size: var(--font-sm); }
+.validation:empty { display: none; }
+.results-area, .results-list { display: flex; flex-direction: column; gap: var(--space-3); }
+.result-count { font-size: var(--font-sm); overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .search-header { padding: var(--space-4); }
+  .search-field { flex-basis: 100%; }
+  .search-form .btn { flex: 1; }
+}
 </style>

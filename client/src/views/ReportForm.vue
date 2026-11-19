@@ -27,13 +27,15 @@ function toggleType(type) {
 }
 
 function pickImage() {
+  if (uploading.value || loading.value) return
   const input = document.createElement('input')
   input.type = 'file'
   input.accept = 'image/jpeg,image/png,image/gif,image/webp'
   input.multiple = false
   input.onchange = async (e) => {
     const file = e.target.files[0]
-    if (!file) return
+    if (!file || uploading.value || loading.value || success.value) return
+    if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)) { toast.error('请选择 JPG、PNG、GIF 或 WebP 图片'); return }
     if (file.size > 2 * 1024 * 1024) { toast.error('图片不能超过2MB'); return }
     if (images.value.length >= 9) { toast.error('最多上传9张图片'); return }
 
@@ -45,7 +47,7 @@ function pickImage() {
         reader.onerror = reject
         reader.readAsDataURL(file)
       })
-      const res = await api.post('/upload/image', { image: dataUrl })
+      const res = await api.post('/upload/bug-image', { image: dataUrl })
       images.value.push(res.data.url)
     } catch (e) {
       toast.error(e.response?.data?.error || '上传失败')
@@ -61,6 +63,7 @@ function removeImage(idx) {
 }
 
 async function submit() {
+  if (loading.value || uploading.value || success.value) return
   error.value = ''
   if (reportTypes.value.length === 0) { error.value = '请选择至少一种举报类型'; return }
   if (!content.value.trim()) { error.value = '请填写举报详情'; return }
@@ -108,7 +111,7 @@ async function submit() {
       <h2>举报</h2>
       <p class="text-muted mb-3">维护校园安全环境</p>
 
-      <div v-if="error" class="error-msg">{{ error }}</div>
+      <div v-if="error" class="error-msg" role="alert">{{ error }}</div>
 
       <div class="warning-notice">
         本举报通道仅受理校园霸凌、校内抽烟等严重违规行为。<strong>不受理其他学生偷偷带手机等小事举报。</strong>请如实填写信息，虚假举报将承担相应责任。
@@ -125,8 +128,9 @@ async function submit() {
       </div>
 
       <div class="form-group">
-        <label>举报详情 <span class="required">*</span></label>
+        <label for="report-content">举报详情 <span class="required">*</span></label>
         <textarea
+          id="report-content"
           v-model="content"
           placeholder="请详细描述你所举报的事件，包括时间、地点、涉及人员等信息..."
           rows="6"
@@ -139,10 +143,10 @@ async function submit() {
         <label>图片证据（可选，最多 9 张）</label>
         <div class="image-list">
           <div v-for="(url, idx) in images" :key="url" class="image-preview">
-            <img :src="url" alt="" />
+            <img :src="url" :alt="'举报证据 ' + (idx + 1)" />
             <button class="remove-btn" @click="removeImage(idx)" aria-label="删除图片"><Icon name="close" :size="14" /></button>
           </div>
-          <button v-if="images.length < 9" class="add-image-btn" :disabled="uploading" @click="pickImage">
+          <button v-if="images.length < 9" class="add-image-btn" :disabled="uploading || loading" @click="pickImage">
             <Icon name="image" :size="20" />
             <span>{{ uploading ? '上传中…' : '添加图片' }}</span>
           </button>
@@ -166,7 +170,7 @@ async function submit() {
       <button
         class="btn btn-primary"
         style="width: 100%"
-        :disabled="loading || !agreed || reportTypes.length === 0 || !content.trim()"
+        :disabled="loading || uploading || !agreed || reportTypes.length === 0 || !content.trim()"
         @click="submit"
       >
         {{ loading ? '提交中…' : '确认举报' }}
@@ -180,10 +184,10 @@ async function submit() {
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
 .report-card, .success-card { padding: 28px; }
-.report-card h2 { font-size: 22px; margin-bottom: 4px; }
+.report-card h2 { font-size: 1.375rem; margin-bottom: 4px; }
 
 .success-card { text-align: center; padding: 48px 28px; }
-.success-icon { display: flex; justify-content: center; color: var(--success-light, #7bed9f); margin-bottom: 16px; }
+.success-icon { display: flex; justify-content: center; color: var(--success-light, var(--success)); margin-bottom: 16px; }
 
 .tracking-code-box {
   background: rgba(46, 213, 115, 0.1);
@@ -192,8 +196,8 @@ async function submit() {
   padding: 20px;
   margin: 20px 0;
 }
-.tracking-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
-.tracking-code { font-size: 32px; font-weight: 800; letter-spacing: 3px; color: #b8ffb8; font-family: monospace; }
+.tracking-label { font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 8px; }
+.tracking-code { font-size: 2rem; font-weight: 800; letter-spacing: 3px; color: var(--success); font-family: monospace; }
 
 .action-btns { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
 
@@ -203,11 +207,11 @@ async function submit() {
   color: var(--text-primary);
   padding: 14px 18px;
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: 0.875rem;
   margin-bottom: 20px;
   line-height: 1.6;
 }
-.warning-notice strong { color: #ffb8b8; }
+.warning-notice strong { color: var(--danger-light); }
 
 .type-checkboxes { display: flex; gap: 12px; flex-wrap: wrap; }
 .type-checkbox {
@@ -217,19 +221,19 @@ async function submit() {
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.2s;
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--text-secondary);
 }
 .type-checkbox.active {
   border-color: rgba(255,107,107,0.5);
   background: rgba(255,107,107,0.1);
-  color: #ffb8b8;
+  color: var(--danger-light);
 }
-.type-checkbox input { width: 16px; height: 16px; accent-color: #ff6b6b; }
+.type-checkbox input { width: 16px; height: 16px; accent-color: var(--danger); }
 
 textarea { resize: vertical; min-height: 150px; }
-.char-count { text-align: right; font-size: 12px; color: var(--text-muted); margin-top: 4px; }
-.required { color: #ff6b6b; }
+.char-count { text-align: right; font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+.required { color: var(--danger); }
 
 .agree-label { font-weight: 600; color: var(--text-primary); }
 
@@ -248,13 +252,21 @@ textarea { resize: vertical; min-height: 150px; }
   border: 2px dashed var(--border); border-radius: var(--radius-sm);
   background: var(--bg-input); cursor: pointer;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; color: var(--text-muted); font-size: 11px;
+  gap: 4px; color: var(--text-muted); font-size: 0.6875rem;
 }
 .add-image-btn:hover { border-color: var(--accent-line); color: var(--text-primary); }
 .add-image-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .error-msg {
   background: rgba(255,107,107,0.2); border: 1px solid rgba(255,107,107,0.3);
-  color: #ffb8b8; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 14px; margin-bottom: 16px;
+  color: var(--danger-light); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 0.875rem; margin-bottom: 16px;
 }
+
+/* 与校园墙主题保持一致，并为状态反馈留出可读空间。 */
+.state-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin: 12px 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--text-primary); line-height: 1.6; }
+.tracking-code { font-size: clamp(1.1rem, 5vw, 1.75rem); overflow-wrap: anywhere; letter-spacing: 0.08em; }
+.action-btns { flex-wrap: wrap; }
+.type-checkbox { min-height: 44px; }
+.remove-btn { min-width: 32px; min-height: 32px; }
+@media (max-width: 480px) { .report-card, .success-card { padding: 22px 16px; } .tracking-code-box { padding: 18px 10px; } }
 </style>

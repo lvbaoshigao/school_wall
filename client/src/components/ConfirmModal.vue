@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, useId } from 'vue'
 import { useFocusTrap } from '../composables/useFocusTrap'
 
 defineOptions({ inheritAttrs: false })
@@ -22,6 +22,7 @@ const emit = defineEmits(['confirm', 'cancel', 'update:show', 'update:promptValu
 const inputRef = ref(null)
 const inputVal = ref(props.promptValue)
 const modalRef = ref(null)
+const fieldId = useId()
 
 // 之前只有 role="dialog" 而没有真正的焦点管理：Esc 关不掉、Tab 会跑到弹层背后、
 // 打开时焦点停在触发按钮上。统一接到 useFocusTrap（与 Home 的话题抽屉同一套实现）。
@@ -52,26 +53,29 @@ function onCancel() {
 <template>
   <Teleport to="body">
     <div v-if="show" class="confirm-overlay" @click.self="onCancel">
-      <div class="confirm-modal glass-strong" role="dialog" aria-modal="true" :aria-label="title">
+      <div ref="modalRef" tabindex="-1" class="confirm-modal glass-strong" role="dialog" aria-modal="true" :aria-label="title" :aria-describedby="message ? fieldId + '-message' : undefined">
         <h3 class="confirm-title">{{ title }}</h3>
-        <p v-if="message" class="confirm-message">{{ message }}</p>
+        <p v-if="message" :id="fieldId + '-message'" class="confirm-message">{{ message }}</p>
 
         <slot />
 
         <div v-if="prompt" class="form-group">
+          <label :for="fieldId" class="sr-only">{{ promptPlaceholder || title }}</label>
           <input
+            :id="fieldId"
+            :data-focus-initial="prompt ? '' : undefined"
             ref="inputRef"
             v-model="inputVal"
             :placeholder="promptPlaceholder"
-            @keyup.enter="onConfirm"
+            @keydown.enter="!$event.isComposing && onConfirm()"
           />
         </div>
 
         <div class="confirm-actions">
-          <button class="btn" :class="danger ? 'btn-danger' : 'btn-primary'" @click="onConfirm">
+          <button type="button" class="btn" :class="danger ? 'btn-danger' : 'btn-primary'" @click="onConfirm">
             {{ confirmText }}
           </button>
-          <button class="btn btn-secondary" @click="onCancel">{{ cancelText }}</button>
+          <button type="button" :data-focus-initial="!prompt ? '' : undefined" class="btn btn-secondary" @click="onCancel">{{ cancelText }}</button>
         </div>
       </div>
     </div>
@@ -85,21 +89,25 @@ function onCancel() {
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 9999;
+  z-index: var(--z-modal);
+  padding: var(--space-4);
 }
 .confirm-modal {
   padding: 24px;
   border-radius: var(--radius-lg);
-  width: 90%;
+  width: 100%;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  background: var(--surface-raised);
   max-width: 380px;
   outline: none;
 }
 .confirm-title {
-  font-size: 18px;
+  font-size: var(--font-lg);
   margin-bottom: 12px;
 }
 .confirm-message {
-  font-size: 14px;
+  font-size: var(--font-base);
   line-height: 1.6;
   color: var(--text-secondary);
   margin-bottom: 16px;
@@ -108,6 +116,7 @@ function onCancel() {
 }
 .confirm-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
   margin-top: 16px;

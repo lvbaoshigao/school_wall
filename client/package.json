@@ -6,20 +6,25 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test test/*.test.js",
+    "audit:security": "npm audit --registry=https://registry.npmjs.org"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   },
   "dependencies": {
     "@jridgewell/sourcemap-codec": "^1.5.5",
-    "@vue/compiler-core": "^3.5.35",
-    "axios": "^1.17.0",
-    "dompurify": "^3.4.11",
+    "@vue/compiler-core": "^3.5.45",
+    "axios": "^1.21.1",
+    "dompurify": "^3.4.18",
     "marked": "^18.0.5",
     "pinia": "^3.0.4",
-    "vue": "^3.5.34",
+    "vue": "^3.5.45",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.6",
-    "vite": "^8.0.12"
+    "@vitejs/plugin-vue": "^6.0.7",
+    "vite": "^8.3.8"
   }
 }

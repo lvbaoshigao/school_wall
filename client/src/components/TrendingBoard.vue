@@ -21,8 +21,13 @@ async function load() {
   failed.value = false
   try {
     const res = await api.get('/posts/trending', { params: { days: 7, limit: 8 } })
-    trending.value = res.data.trending || []
-    days.value = res.data.days || 7
+    if (!Array.isArray(res.data?.trending)) throw new Error('Invalid trending response')
+    trending.value = res.data.trending.filter(item => item && typeof item.category === 'string').map(item => ({
+      ...item,
+      ratio: Math.max(0, Math.min(100, Number(item.ratio) || 0)),
+      post_count: Math.max(0, Math.trunc(Number(item.post_count) || 0)),
+    }))
+    days.value = Math.max(1, Math.trunc(Number(res.data.days) || 7))
   } catch (e) {
     failed.value = true
   } finally {
@@ -38,17 +43,17 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="trending-board glass" aria-label="话题热榜">
+  <section class="trending-board glass" aria-label="话题热榜" :aria-busy="loading">
     <div class="tb-header">
-      <span class="tb-title"><Icon name="flame" :size="15" /> 话题热榜</span>
+      <h2 class="tb-title"><Icon name="flame" :size="15" /> 话题热榜</h2>
       <span class="tb-days">近 {{ days }} 天</span>
     </div>
 
-    <div v-if="loading" class="tb-skeleton">
+    <div v-if="loading" class="tb-skeleton" role="status" aria-label="正在加载话题热榜">
       <div v-for="i in 4" :key="i" class="tb-skel-row"></div>
     </div>
 
-    <div v-else-if="failed" class="tb-empty">
+    <div v-else-if="failed" class="tb-empty" role="status">
       热榜暂时不可用
       <button class="btn btn-secondary btn-sm" @click="load">重试</button>
     </div>
@@ -59,10 +64,10 @@ onMounted(load)
 
     <ol v-else class="tb-list">
       <li v-for="(t, i) in visibleItems" :key="t.category">
-        <button class="tb-row" @click="pick(t.category)" :aria-label="`切换到话题 ${t.category}`">
+        <button class="tb-row" @click="pick(t.category)" :aria-label="`切换到话题 ${t.category}，${t.post_count} 条帖子`">
           <span class="tb-rank" :class="{ hot: i < 3 }">{{ i + 1 }}</span>
           <span class="tb-name">{{ t.category }}</span>
-          <span class="tb-bar">
+          <span class="tb-bar" aria-hidden="true">
             <span class="tb-bar-fill" :style="{ width: t.ratio + '%' }"></span>
           </span>
           <span class="tb-count">{{ t.post_count }} 帖</span>
@@ -106,7 +111,8 @@ onMounted(load)
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 8px;
+  padding: 10px 8px;
+  min-height: 44px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -162,6 +168,7 @@ onMounted(load)
   flex-shrink: 0;
   font-size: var(--font-xs);
   color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
   min-width: 36px;
   text-align: right;
 }

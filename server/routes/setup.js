@@ -1,7 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const { hashPassword } = require('../lib/password');
-const { getSetting, setSetting } = require('../db');
+const { hashPassword, isPasswordInput } = require('../lib/password');
+const { getSetting } = require('../db');
 // SECRET 必须从认证模块取同一份：原来这里既没 require jwt 也没 require SECRET，
 // 初始化成功路径走到 jwt.sign 必然抛 ReferenceError，首次部署永远 500。
 const { SECRET } = require('../middleware/auth');
@@ -24,12 +24,24 @@ module.exports = (setupLimiter) => {
       return res.status(400).json({ error: '系统已初始化，不能重复设置' });
     }
 
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: '请求数据必须是对象' });
+    }
     const { username, password, nickname, wall_name, wall_description } = req.body;
 
     // 校验超级管理员字段
-    if (!username || !password) return res.status(400).json({ error: '请填写用户名和密码' });
-    if (username.length < 3 || username.length > 20) return res.status(400).json({ error: '用户名长度3-20个字符' });
-    if (password.length < 6) return res.status(400).json({ error: '密码至少6个字符' });
+    if (typeof username !== 'string' || username.length < 3 || username.length > 20 ||
+        username.trim() !== username || /[\u0000-\u001f\u007f]/.test(username)) {
+      return res.status(400).json({ error: '用户名须为3-20个字符，且不能含首尾空白或控制字符' });
+    }
+    if (!isPasswordInput(password) || password.length < 6) return res.status(400).json({ error: '密码至少6个字符且不能超过1024字节' });
+    if (nickname != null && (typeof nickname !== 'string' || nickname.length > 30)) {
+      return res.status(400).json({ error: '昵称必须是最多30个字符的文本' });
+    }
+    if (typeof wall_name !== 'string' || (wall_description != null &&
+        (typeof wall_description !== 'string' || wall_description.length > 500))) {
+      return res.status(400).json({ error: '校园墙名称须为文本，描述最多500个字符' });
+    }
 
     // 校验第一个校园墙
     const wallName = (wall_name || '').trim();
@@ -52,10 +64,12 @@ module.exports = (setupLimiter) => {
       // 原先 const 声明在事务块内部，初始化必在最后一步抛 ReferenceError 回滚成 500。
       let userId = 0;
       let wallId = 0; // 同 userId：res.json 在事务块外引用它，必须提升作用域
+      let token;
       req.db.db.run('BEGIN');
       try {
         // 事务内再检查一次（理论不需要，但防御性编程）
-        if (req.db.prepare("SELECT COUNT(*) as c FROM users").get().c > 0) {
+        if (getSetting(req.db, 'initialized', '0') === '1' ||
+            req.db.prepare("SELECT COUNT(*) as c FROM users").get().c > 0) {
           req.db.db.run('ROLLBACK');
           return res.status(400).json({ error: '系统中已有用户，不能通过此接口设置' });
         }
@@ -80,18 +94,17 @@ module.exports = (setupLimiter) => {
           VALUES (?, ?, 'owner', 'active')
         `).run(wallId, userId);
 
+        // 初始化标记与账号/墙同一事务；直接写入以免 setSetting 吞掉失败。
+        req.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('initialized', '1')").run();
+        token = jwt.sign({ id: userId, username, role: 'super_admin', tv: 0 }, SECRET, { expiresIn: '7d' });
         req.db.db.run('COMMIT');
       } catch (e) {
         req.db.db.run('ROLLBACK');
         throw e;
       }
 
-      // 标记已初始化。首次设置必须确保落盘，这里走同步写而不是脏标记
-      setSetting(req.db, 'initialized', '1');
+      // 首次设置必须确保落盘，这里走同步写而不是脏标记。
       req.db.saveNow();
-
-      // 签发 token 自动登录
-      const token = jwt.sign({ id: userId, username, role: 'super_admin', tv: 0 }, SECRET, { expiresIn: '7d' });
 
       res.json({
         message: '初始化完成！',

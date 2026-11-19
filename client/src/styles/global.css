@@ -4,20 +4,30 @@
 
 /* ----- CSS 变量 (暗色主题 - 默认) ----- */
 :root {
-  --primary: #667eea;
-  --primary-light: #a8b8ff;
-  --primary-dark: #4a5fc8;
-  --accent: #764ba2;
-  --accent-light: #f093fb;
-  --danger: #ff6b6b;
-  --danger-light: #ffb8b8;
-  --success: #2ed573;
-  --success-light: #b8ffb8;
-  --warning: #ffa502;
-  --warning-light: #ffeaa7;
+  color-scheme: dark;
+  --primary: var(--accent-1);
+  --primary-light: var(--text-link);
+  --primary-dark: var(--accent-2);
+  --accent: var(--accent-1);
+  --accent-light: var(--text-link);
+  --danger: #edaaa4;
+  --danger-light: var(--danger);
+  --success: #a7d4b8;
+  --success-light: var(--success);
+  --warning: #e2c18a;
+  --warning-light: var(--warning);
 
-  --bg-deep: #0f0f23;
-  --bg-main: #1a1a2e;
+  --bg-deep: #142521;
+  --bg-main: #1b302b;
+  --surface-card: rgba(27, 48, 42, 0.96);
+  --surface-raised: #203a32;
+  --surface-nav: rgba(20, 37, 33, 0.96);
+  --page-ambient: #1e3931;
+  --overlay: rgba(8, 23, 17, 0.64);
+  --z-nav: 1000;
+  --z-floating: 1500;
+  --z-modal: 9999;
+  --z-toast: 10000;
   --bg-card: rgba(255, 255, 255, 0.05);
   --bg-card-hover: rgba(255, 255, 255, 0.08);
   --bg-input: rgba(255, 255, 255, 0.1);
@@ -25,17 +35,19 @@
 
   --border: rgba(255, 255, 255, 0.1);
   --border-strong: rgba(255, 255, 255, 0.2);
-  --border-accent: rgba(201, 185, 154, 0.2);
+  --control-border: #789787;
+  /* 原为 rgba(201,185,154,.2) —— 旧米色主题残留，不随主题色变化 */
+  --border-accent: color-mix(in srgb, var(--accent-1) 20%, transparent);
 
-  --text-primary: #fff;
-  --text-secondary: rgba(255, 255, 255, 0.8);
-  /* 0.5 在卡片底上约 3.5:1，未达 WCAG AA 正文 4.5:1，提到 0.62 */
-  --text-muted: rgba(255, 255, 255, 0.62);
-  --text-link: #a8b8ff;
+  --text-primary: #edf5ef;
+  --text-secondary: #d1e0d6;
+  /* 辅助文字也保持正文 AA 对比度，不以降低透明度制造层级。 */
+  --text-muted: #aec6b8;
+  --text-link: #acd8c3;
 
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.1);
-  --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.15);
-  --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.25);
+  --shadow-sm: 0 2px 8px rgba(6, 28, 17, 0.1);
+  --shadow-md: 0 8px 32px rgba(6, 28, 17, 0.15);
+  --shadow-lg: 0 12px 48px rgba(6, 28, 17, 0.25);
 
   /* 圆角刻度：全站只用这 6 档，不再出现 3/6/10/14px 之类的散值 */
   --radius-xs: 4px;
@@ -57,13 +69,13 @@
      原先全站字号靠手写 px（Admin 60 处、Inbox 17 处、Profile 19 处），
      h2(20) 与 h3(18) 只差 2px、h3 与正文(15)只差 1px，层级只能靠字重硬撑。
      这里定一套 7 档阶梯，正文 15、标题至少与正文差 3px，保证层级可读。 */
-  --font-xs: 12px;    /* 标签、时间戳 */
-  --font-sm: 13px;    /* 辅助说明 */
-  --font-base: 15px;  /* 正文 */
-  --font-md: 16px;    /* 强调正文 */
-  --font-lg: 18px;    /* 小标题 / 卡片标题 */
-  --font-xl: 22px;    /* 区块标题 */
-  --font-2xl: 28px;   /* 页面标题 */
+  --font-xs: 0.75rem;    /* 标签、时间戳 */
+  --font-sm: 0.8125rem;    /* 辅助说明 */
+  --font-base: 0.9375rem;  /* 正文 */
+  --font-md: 1rem;    /* 强调正文 */
+  --font-lg: 1.125rem;    /* 小标题 / 卡片标题 */
+  --font-xl: 1.375rem;    /* 区块标题 */
+  --font-2xl: 1.75rem;   /* 页面标题 */
 
   --leading-tight: 1.35;
   --leading-normal: 1.6;
@@ -83,26 +95,26 @@
 
   /* 主题色：由 stores/settings.js 写到 <html> 上，未登录时用这里的默认值。
      全站的主按钮、选中态、焦点环都从这两个色标派生，换主题色只需改这里。 */
-  --accent-1: #7183f0;
-  --accent-2: #5a68d8;
-  --accent-shadow-rgb: 72, 92, 210;
+  --accent-1: #397d72;
+  --accent-2: #2d655c;
+  --accent-shadow-rgb: 28, 72, 56;
 
-  /* 主按钮配色：同色系纵向微渐变（替代原靛蓝→紫的双色斜向渐变） */
-  --btn-fill: linear-gradient(180deg, var(--accent-1) 0%, var(--accent-2) 100%);
-  --btn-fill-hover: linear-gradient(180deg, color-mix(in srgb, var(--accent-1) 85%, #fff) 0%, color-mix(in srgb, var(--accent-2) 85%, #fff) 100%);
+  /* 主操作采用稳定的实心主题色；悬停压深，保持白字对比度。 */
+  --btn-fill: var(--accent-1);
+  --btn-fill-hover: var(--accent-2);
   --btn-ring: rgba(255, 255, 255, 0.16);
   --btn-shadow: 0 2px 8px rgba(var(--accent-shadow-rgb), 0.3);
   --btn-shadow-hover: 0 6px 18px rgba(var(--accent-shadow-rgb), 0.42);
   /* 焦点环 / 选中态底色，同样跟随主题色 */
-  --focus-ring: color-mix(in srgb, var(--accent-1) 75%, transparent);
+  --focus-ring: #8bc7ae;
   --accent-soft: color-mix(in srgb, var(--accent-1) 18%, transparent);
   --accent-line: color-mix(in srgb, var(--accent-1) 50%, transparent);
 
-  --danger-fill: linear-gradient(180deg, #ff7d7d 0%, #ec5a52 100%);
-  --danger-fill-hover: linear-gradient(180deg, #ff8f8f 0%, #f26a61 100%);
+  --danger-fill: #ae4744;
+  --danger-fill-hover: #923c39;
 
-  --success-fill: linear-gradient(180deg, #4ad07f 0%, #2fae63 100%);
-  --success-fill-hover: linear-gradient(180deg, #5cdc8d 0%, #3cbc71 100%);
+  --success-fill: #39744e;
+  --success-fill-hover: #2e6040;
 }
 
 /* ----- 外观偏好（设置页写到 <html> 的 data-* 上） ----- */
@@ -206,8 +218,18 @@ html[data-high-contrast='on'] .glass-strong { border-width: 1.5px; }
 
 /* ----- 亮色主题 ----- */
 body.light-theme {
-  --bg-deep: #f0f2f5;
-  --bg-main: #ffffff;
+  color-scheme: light;
+  --bg-deep: #f1f5f0;
+  --bg-main: #fbfcf9;
+  --surface-card: rgba(255, 255, 252, 0.96);
+  --surface-raised: #fffffc;
+  --surface-nav: rgba(249, 252, 247, 0.97);
+  --page-ambient: #e4eee5;
+  --overlay: rgba(21, 43, 33, 0.52);
+  --focus-ring: #266b59;
+  --danger: #a4403f;
+  --success: #2d6f48;
+  --warning: #8c6228;
   --bg-card: rgba(0, 0, 0, 0.03);
   --bg-card-hover: rgba(0, 0, 0, 0.05);
   --bg-input: rgba(0, 0, 0, 0.04);
@@ -215,12 +237,13 @@ body.light-theme {
 
   --border: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.15);
+  --control-border: #768d7d;
   --border-accent: color-mix(in srgb, var(--accent-1) 15%, transparent);
 
-  --text-primary: #1a1a2e;
-  --text-secondary: rgba(0, 0, 0, 0.75);
-  --text-muted: rgba(0, 0, 0, 0.55);
-  --text-link: #4a5fc8;
+  --text-primary: #1c342c;
+  --text-secondary: #405c50;
+  --text-muted: #5a7063;
+  --text-link: #2b6c5e;
 
   --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
@@ -239,17 +262,44 @@ html {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: var(--font-base);
+  line-height: var(--leading-normal);
   color: var(--text-primary);
   background: var(--bg-deep);
   min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
+/* 公共输入与键盘规范；沿用原有组件 API 与字号偏好。 */
+button, input, textarea, select { font-family: inherit; }
+button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
+button { touch-action: manipulation; }
+button:not(:disabled), a[href], input, textarea, select { scroll-margin-block: 90px; }
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+button:disabled { cursor: not-allowed; }
+input, textarea, select { min-width: 0; }
+h1, h2, h3, h4 { letter-spacing: -0.02em; text-wrap: balance; }
+p { overflow-wrap: anywhere; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.btn { min-height: 44px; }
+.btn-sm { min-height: 36px; }
+html[data-blur='off'] .glass { background: var(--surface-raised); }
+html[data-reduce-motion='on'], html[data-reduce-motion='on'] *, html[data-reduce-motion='on'] *::before, html[data-reduce-motion='on'] *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  html, *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+}
+@media (forced-colors: active) {
+  :focus-visible { outline-color: Highlight; }
+  input[type='checkbox'], input[type='radio'] { appearance: auto; }
+  .btn, .glass, .glass-strong { border: 1px solid CanvasText; }
+}
+
 /* ----- 毛玻璃卡片 ----- */
 .glass {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--surface-card);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--border);
@@ -259,7 +309,7 @@ body {
 }
 
 .glass-strong {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--surface-raised);
   backdrop-filter: blur(30px);
   -webkit-backdrop-filter: blur(30px);
   border: 1px solid var(--border-strong);
@@ -269,13 +319,13 @@ body {
 
 /* 亮色主题下的 glass 调整 */
 body.light-theme .glass {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--surface-card);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
 
 body.light-theme .glass-strong {
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--surface-raised);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
 }
@@ -283,11 +333,11 @@ body.light-theme .glass-strong {
 /* ----- 输入框 ----- */
 input, textarea, select {
   background: var(--bg-input);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   padding: 12px 16px;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--font-base);
   outline: none;
   width: 100%;
   transition: all var(--transition-slow);
@@ -304,13 +354,13 @@ input:focus, textarea:focus, select:focus {
 }
 
 select option {
-  background: #1a1a2e;
+  background: var(--bg-main);
   color: var(--text-primary);
 }
 
 body.light-theme select option {
-  background: #fff;
-  color: #1a1a2e;
+  background: var(--bg-main);
+  color: var(--text-primary);
 }
 
 /* ----- 按钮 ----- */
@@ -327,7 +377,7 @@ body.light-theme select option {
   background: var(--bg-input);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--font-base);
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease), background 0.25s var(--ease), opacity 0.25s var(--ease);
@@ -500,7 +550,7 @@ h4 { font-size: var(--font-md); line-height: var(--leading-normal); font-weight:
 .form-group label {
   display: block;
   margin-bottom: 6px;
-  font-size: 14px;
+  font-size: var(--font-base);
   color: var(--text-secondary);
 }
 
@@ -519,7 +569,7 @@ h4 { font-size: var(--font-md); line-height: var(--leading-normal); font-weight:
   transform: translateX(-50%);
   padding: 12px 24px;
   border-radius: 10px;
-  font-size: 14px;
+  font-size: var(--font-base);
   z-index: 10000;
   animation: slideDown 0.3s ease;
 }
@@ -554,13 +604,13 @@ h4 { font-size: var(--font-md); line-height: var(--leading-normal); font-weight:
 .empty-state .btn {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-1) 80%, transparent) 0%, rgba(90, 104, 216, 0.75) 100%);
+  background: var(--btn-fill);
   border: 1px solid var(--btn-ring);
   box-shadow: var(--btn-shadow);
   color: #fff;
 }
 .empty-state .btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(131, 148, 246, 0.92) 0%, rgba(102, 116, 230, 0.88) 100%);
+  background: var(--btn-fill-hover);
   box-shadow: var(--btn-shadow-hover);
 }
 
@@ -570,7 +620,7 @@ h4 { font-size: var(--font-md); line-height: var(--leading-normal); font-weight:
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--font-base);
   color: var(--text-secondary);
 }
 
@@ -592,7 +642,7 @@ input[type="radio"] {
   display: inline-block;
   padding: 0;
   margin: 0;
-  border: 2px solid var(--border-strong);
+  border: 2px solid var(--control-border);
   border-radius: 3px;
   background: var(--bg-input);
   cursor: pointer;
@@ -742,7 +792,7 @@ body.light-theme ::-webkit-scrollbar-thumb:hover {
   display: inline-block;
   width: 20px;
   height: 20px;
-  border: 2px solid rgba(255, 255, 255, 0.2);
+  border: 2px solid var(--border-strong);
   border-top-color: var(--text-primary);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -869,7 +919,7 @@ body.light-theme .ok-msg {
    ========================================== */
 
 .md-body {
-  font-size: 15px;
+  font-size: var(--font-base);
   line-height: 1.75;
   color: var(--text-secondary);
   white-space: normal;
@@ -885,7 +935,7 @@ body.light-theme .ok-msg {
   background: rgba(255, 255, 255, 0.08);
   padding: 2px 6px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: var(--font-sm);
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .md-body pre {
@@ -897,7 +947,7 @@ body.light-theme .ok-msg {
 }
 .md-body pre code { background: none; padding: 0; }
 .md-body blockquote {
-  border-left: 3px solid rgba(201, 185, 154, 0.5);
+  border-left: 3px solid var(--accent-line);
   padding-left: 14px;
   color: var(--text-muted);
   margin: 10px 0;

@@ -1,8 +1,8 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
-import api from '../api'
+import api, { getApiErrorMessage } from '../api'
 import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
 
@@ -13,34 +13,45 @@ const toast = useToast()
 
 const user = ref(null)
 const loading = ref(true)
-const isFriend = ref(false)
+const loadError = ref('')
+const addingFriend = ref(false)
+let controller = null
 const friendPending = ref(false)
 
 async function loadUser() {
+  controller?.abort()
+  controller = new AbortController()
+  const signal = controller.signal
+  const id = String(route.params.id)
   loading.value = true
+  user.value = null
+  loadError.value = ''
+  friendPending.value = false
+  addingFriend.value = false
   try {
-    const res = await api.get(`/auth/user/${route.params.id}`)
-    user.value = res.data
-  } catch (e) {
-    toast.error('用户不存在')
-    router.push('/')
-  } finally {
-    loading.value = false
-  }
+    if (!/^[1-9][0-9]*$/.test(id)) { loadError.value = '用户不存在或已注销'; return }
+    const res = await api.get('/auth/user/' + id, { signal })
+    if (!signal.aborted) user.value = res.data
+  } catch (error) {
+    if (!signal.aborted) loadError.value = getApiErrorMessage(error, error.response?.status === 404 ? '用户不存在或已注销' : '用户资料加载失败，请重试')
+  } finally { if (!signal.aborted) loading.value = false }
 }
 
 async function addFriend() {
+  if (addingFriend.value || friendPending.value || !user.value) return
   if (!userStore.isLoggedIn) {
     router.push('/login')
     return
   }
+  const targetId = user.value.id
+  addingFriend.value = true
   try {
-    await api.post('/friends/add', { friend_id: user.value.id })
-    friendPending.value = true
+    await api.post('/friends/add', { friend_id: targetId })
+    if (user.value?.id === targetId) friendPending.value = true
     toast.success('好友请求已发送')
   } catch (e) {
-    toast.error(e.response?.data?.error || '操作失败')
-  }
+    toast.error(getApiErrorMessage(e, '好友请求发送失败，请重试'))
+  } finally { if (user.value?.id === targetId) addingFriend.value = false }
 }
 
 const genderDisplay = (g) => {
@@ -48,7 +59,8 @@ const genderDisplay = (g) => {
   return map[g] || ''
 }
 
-onMounted(() => loadUser())
+watch(() => route.params.id, loadUser, { immediate: true })
+onUnmounted(() => controller?.abort())
 </script>
 
 <template>
@@ -58,11 +70,11 @@ onMounted(() => loadUser())
     <div class="profile-card glass-strong">
       <div class="profile-header">
         <div class="avatar-wrapper">
-          <img v-if="user.avatar" :src="user.avatar" class="avatar-lg" />
+          <img v-if="user.avatar" :src="user.avatar" class="avatar-lg" :alt="(user.nickname || user.username) + '的头像'" />
           <div v-else class="avatar-placeholder">{{ (user.nickname || user.username)[0] }}</div>
         </div>
         <div class="profile-info">
-          <h2>{{ user.nickname || user.username }}</h2>
+          <h1>{{ user.nickname || user.username }}</h1>
           <p class="text-muted">@{{ user.username }}</p>
           <div class="profile-tags">
             <span v-if="genderDisplay(user.gender)" class="tag">{{ genderDisplay(user.gender) }}</span>
@@ -114,17 +126,21 @@ onMounted(() => loadUser())
         <button
           v-if="userStore.isLoggedIn && userStore.user?.id !== user.id"
           class="btn btn-primary"
-          :disabled="friendPending"
+          :disabled="friendPending || addingFriend"
           @click="addFriend"
         >
-          {{ friendPending ? '已发送请求' : '添加好友' }}
+          {{ addingFriend ? '发送中…' : friendPending ? '已发送请求' : '添加好友' }}
         </button>
         <button class="btn btn-secondary" @click="router.push('/')">返回首页</button>
       </div>
     </div>
   </div>
 
-  <div v-else class="loading">加载中</div>
+  <div v-else class="empty-state" :role="loadError ? 'alert' : 'status'" :aria-busy="loading">
+    <p>{{ loadError || '正在加载用户资料…' }}</p>
+    <button v-if="loadError" class="btn btn-primary" @click="loadUser">重新加载</button>
+    <router-link v-if="loadError" class="btn btn-secondary" to="/">返回首页</router-link>
+  </div>
 </template>
 
 <style scoped>
@@ -233,4 +249,15 @@ onMounted(() => loadUser())
   display: flex;
   gap: 12px;
 }
+.profile-view { max-width: 45rem; margin-inline: auto; }
+.profile-card { border-top: 3px solid var(--accent-1); padding: clamp(1.25rem, 4vw, 2rem); }
+.profile-info { min-width: 0; overflow-wrap: anywhere; }
+.profile-info h1 { font-size: 1.65rem; line-height: 1.35; letter-spacing: -.025em; }
+.avatar-lg, .avatar-placeholder { border-radius: var(--radius-lg); }
+.tag { color: var(--text-link); background: var(--accent-soft); }
+.contact-label { color: var(--text-secondary); flex-shrink: 0; }
+.contact-item, .profile-bio p { overflow-wrap: anywhere; }
+.profile-actions { flex-wrap: wrap; }
+@media (max-width: 400px) { .profile-header { gap: 1rem; } .avatar-lg, .avatar-placeholder { width: 4rem; height: 4rem; } }
+@media (prefers-reduced-motion: reduce) { .profile-view { animation: none; } }
 </style>

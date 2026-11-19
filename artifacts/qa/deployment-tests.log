@@ -1,0 +1,148 @@
+(node:71138) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:71145) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: each shell entry point parses independently
+ok 1 - each shell entry point parses independently
+  ---
+  duration_ms: 68.146884
+  type: 'test'
+  ...
+# Subtest: server installer check mode never invokes privilege, service or firewall commands
+ok 2 - server installer check mode never invokes privilege, service or firewall commands
+  ---
+  duration_ms: 102.950977
+  type: 'test'
+  ...
+# Subtest: Node guard rejects unsupported versions before any application work
+ok 3 - Node guard rejects unsupported versions before any application work
+  ---
+  duration_ms: 14.404716
+  type: 'test'
+  ...
+# Subtest: prepare rebuilds existing dependencies and dist, including native optional packages
+ok 4 - prepare rebuilds existing dependencies and dist, including native optional packages
+  ---
+  duration_ms: 43.363498
+  type: 'test'
+  ...
+# Subtest: installation, native decoding and build failures stop before application startup
+    # Subtest: server
+    ok 1 - server
+      ---
+      duration_ms: 24.893418
+      type: 'test'
+      ...
+    # Subtest: native
+    ok 2 - native
+      ---
+      duration_ms: 24.280266
+      type: 'test'
+      ...
+    # Subtest: client
+    ok 3 - client
+      ---
+      duration_ms: 38.744994
+      type: 'test'
+      ...
+    # Subtest: build
+    ok 4 - build
+      ---
+      duration_ms: 50.1787
+      type: 'test'
+      ...
+    1..4
+ok 5 - installation, native decoding and build failures stop before application startup
+  ---
+  duration_ms: 140.753437
+  type: 'test'
+  ...
+# Subtest: read-only check does not install, build or launch
+ok 6 - read-only check does not install, build or launch
+  ---
+  duration_ms: 32.926198
+  type: 'test'
+  ...
+# Subtest: invalid ports are rejected before installing or launching
+    # Subtest: 0
+    ok 1 - 0
+      ---
+      duration_ms: 16.935249
+      type: 'test'
+      ...
+    # Subtest: 65536
+    ok 2 - 65536
+      ---
+      duration_ms: 23.061995
+      type: 'test'
+      ...
+    # Subtest: -1
+    ok 3 - -1
+      ---
+      duration_ms: 27.631855
+      type: 'test'
+      ...
+    # Subtest: 3000x
+    ok 4 - 3000x
+      ---
+      duration_ms: 26.326892
+      type: 'test'
+      ...
+    # Subtest: 1;touch invalid
+    ok 5 - 1;touch invalid
+      ---
+      duration_ms: 13.32919
+      type: 'test'
+      ...
+    # Subtest: 99999999999999999
+    ok 6 - 99999999999999999
+      ---
+      duration_ms: 9.302577
+      type: 'test'
+      ...
+    1..6
+ok 7 - invalid ports are rejected before installing or launching
+  ---
+  duration_ms: 119.507859
+  type: 'test'
+  ...
+# Subtest: foreground startup normalizes port, binds locally, and prevents accidental rebuild
+ok 8 - foreground startup normalizes port, binds locally, and prevents accidental rebuild
+  ---
+  duration_ms: 26.773789
+  type: 'test'
+  ...
+# Subtest: service data config preserves legacy default and accepts a private external data directory
+ok 9 - service data config preserves legacy default and accepts a private external data directory
+  ---
+  duration_ms: 378.362542
+  type: 'test'
+  ...
+# Subtest: service preflight rejects overrides, shared source paths and symlink traversal
+ok 10 - service preflight rejects overrides, shared source paths and symlink traversal
+  ---
+  duration_ms: 1588.45369
+  type: 'test'
+  ...
+# Subtest: nginx upload config delegates tickets and private cache/referrer policy to the backend
+ok 11 - nginx upload config delegates tickets and private cache/referrer policy to the backend
+  ---
+  duration_ms: 1.12059
+  type: 'test'
+  ...
+# Subtest: Windows entry points remain ASCII/CRLF and preserve PowerShell failure exit codes
+ok 12 - Windows entry points remain ASCII/CRLF and preserve PowerShell failure exit codes
+  ---
+  duration_ms: 1.062587
+  type: 'test'
+  ...
+1..12
+# tests 22
+# suites 0
+# pass 22
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2941.359679

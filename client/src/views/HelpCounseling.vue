@@ -12,6 +12,7 @@ const success = ref(false)
 const conversationId = ref('')
 
 async function submit() {
+  if (loading.value || success.value) return
   if (!content.value.trim()) {
     error.value = '请填写倾诉内容'
     return
@@ -53,15 +54,16 @@ async function submit() {
       <h2>匿名倾诉</h2>
       <p class="text-muted mb-3">向树洞志愿者倾诉你的烦恼</p>
 
-      <div v-if="error" class="error-msg">{{ error }}</div>
+      <div v-if="error" class="error-msg" role="alert">{{ error }}</div>
 
       <div class="info-notice">
         你的消息将匿名发送给一位树洞志愿者，双方身份完全保密。树洞志愿者会在收到消息后尽快回复你。
       </div>
 
       <div class="form-group">
-        <label>你想说什么？</label>
+        <label for="counseling-content">你想说什么？</label>
         <textarea
+          id="counseling-content"
           v-model="content"
           placeholder="写下你的心里话..."
           rows="8"
@@ -82,10 +84,10 @@ async function submit() {
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
 .counseling-card, .success-card { padding: 28px; }
-.counseling-card h2, .success-card h2 { font-size: 22px; margin-bottom: 4px; }
+.counseling-card h2, .success-card h2 { font-size: 1.375rem; margin-bottom: 4px; }
 
 .success-card { text-align: center; padding: 48px 28px; }
-.success-icon { display: flex; justify-content: center; color: var(--success-light, #7bed9f); margin-bottom: 16px; }
+.success-icon { display: flex; justify-content: center; color: var(--success-light, var(--success)); margin-bottom: 16px; }
 .action-btns { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
 
 .info-notice {
@@ -94,16 +96,21 @@ async function submit() {
   color: var(--text-primary);
   padding: 14px 18px;
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: 0.875rem;
   margin-bottom: 20px;
   line-height: 1.6;
 }
 
 textarea { resize: vertical; min-height: 180px; }
-.char-count { text-align: right; font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.char-count { text-align: right; font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
 
 .error-msg {
   background: rgba(255,107,107,0.2); border: 1px solid rgba(255,107,107,0.3);
-  color: #ffb8b8; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 14px; margin-bottom: 16px;
+  color: var(--danger-light); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 0.875rem; margin-bottom: 16px;
 }
+
+/* 与校园墙主题保持一致，并为状态反馈留出可读空间。 */
+.state-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin: 12px 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--text-primary); line-height: 1.6; }
+.action-btns { flex-wrap: wrap; }
+@media (max-width: 480px) { .counseling-card, .success-card { padding: 22px 16px; } }
 </style>

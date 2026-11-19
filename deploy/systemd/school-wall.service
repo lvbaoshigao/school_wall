@@ -7,9 +7,11 @@
 
 [Unit]
 Description=School Wall backend (Node.js)
-Documentation=https://github.com/
 After=network.target
 Wants=network-online.target
+# 5 分钟内重启超过 5 次就停止重试，避免错误配置无限刷日志。
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
@@ -17,6 +19,7 @@ User=server
 Group=server
 WorkingDirectory=/home/server/school_wall/server
 
+UMask=0077
 Environment=NODE_ENV=production
 Environment=PORT=3000
 # 只监听回环。对外由 nginx 在 11451 反代 ——
@@ -27,9 +30,13 @@ Environment=HOST=127.0.0.1
 Environment=TRUST_PROXY=1
 # 不重建数据库（db.js 里 KEEP_DB=0 才重建，这里显式写上防手滑）
 Environment=KEEP_DB=1
-# 密钥等敏感配置放这个文件，前面的减号表示文件不存在也不报错
+# 密钥、DATA_DIR 等配置放这里；使用简单 KEY=value，不写 shell 替换。
+# 默认数据根仍为 server/，自定义 DATA_DIR 需重新运行安装器更新可写路径。
+# 不得覆盖 HOST/PORT/TRUST_PROXY/KEEP_DB/NODE_ENV 的模板值。
+# 前面的减号表示文件不存在也不报错。
 EnvironmentFile=-/home/server/school_wall/server/.env
 
+# 安装器通过 50-runtime.conf 覆盖为当前检查通过的 Node >=22.12.0 绝对路径。
 ExecStart=/usr/bin/node index.js
 
 # 应用自己实现了 SIGTERM 优雅关闭（落盘数据库后退出），给它 15 秒
@@ -38,9 +45,6 @@ TimeoutStopSec=15
 
 Restart=on-failure
 RestartSec=3
-# 5 分钟内重启超过 5 次就不再重试，避免配置错误时无限重启刷日志
-StartLimitBurst=5
-StartLimitIntervalSec=300
 
 StandardOutput=journal
 StandardError=journal
@@ -53,7 +57,7 @@ PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=read-only
 # strict 之后整个文件系统只读，只有这里列出的路径可写：
-# 数据库、上传目录、日志都在 server/ 下面
+# 数据库、JWT 密钥、uploads、backups 默认在 server/；外部 DATA_DIR 由安装器写入 drop-in。
 ReadWritePaths=/home/server/school_wall/server
 ProtectKernelTunables=true
 ProtectKernelModules=true

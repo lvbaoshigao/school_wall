@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWallStore } from '../stores/wall'
 import { useTimeAgo } from '../composables/useTimeAgo'
@@ -26,6 +26,14 @@ const loading = ref(true)
 const showDeleteAllConfirm = ref(false)
 const showDeleteMsgConfirm = ref(false)
 const deleteMsgTarget = ref(null)
+const deleteAllFilter = ref('all')
+const loadError = ref('')
+const approvalsError = ref('')
+const bulkBusy = ref(false)
+const reading = new Set()
+let listVersion = 0
+let listController = null
+let disposed = false
 
 // ===== 待处理申请 =====
 const approvals = ref({ friend: [], wall_join: [], wall_create: [] })
@@ -59,6 +67,7 @@ function itemDesc(groupKey, it) {
 
 async function loadApprovals() {
   approvalsLoading.value = true
+  approvalsError.value = ''
   try {
     const res = await api.get('/messages/approvals')
     approvals.value = {
@@ -67,7 +76,7 @@ async function loadApprovals() {
       wall_create: res.data.wall_create || [],
     }
   } catch (e) {
-    // 无权限或接口不可用时静默降级为「没有待办」
+    approvalsError.value = '待处理申请加载失败，可重试'
   } finally {
     approvalsLoading.value = false
   }
@@ -120,78 +129,104 @@ const filters = [
   { key: 'report_notification', label: '举报' },
 ]
 
-async function loadInbox() {
+async function loadList(tab) {
+  if (disposed) return
+  const version = ++listVersion
+  listController?.abort()
+  const controller = new AbortController()
+  listController = controller
+  const filter = activeFilter.value
   loading.value = true
+  loadError.value = ''
   try {
-    const params = activeFilter.value !== 'all' ? `?type=${activeFilter.value}` : ''
-    const res = await api.get(`/messages/inbox${params}`)
-    messages.value = res.data.messages
-    unreadCounts.value = res.data.unreadCounts
-    totalUnread.value = res.data.totalUnread
-  } catch (e) {} finally { loading.value = false }
+    const res = await api.get(tab === 'inbox' ? '/messages/inbox' : '/messages/sent', {
+      params: tab === 'inbox' && filter !== 'all' ? { type: filter } : {},
+      signal: controller.signal,
+    })
+    if (disposed || version !== listVersion) return
+    if (tab === 'inbox') {
+      messages.value = res.data.messages || []
+      unreadCounts.value = res.data.unreadCounts || {}
+      totalUnread.value = Number(res.data.totalUnread) || 0
+    } else sentMessages.value = res.data || []
+  } catch (e) {
+    if (!disposed && version === listVersion && !controller.signal.aborted) loadError.value = '消息加载失败，请重试'
+  } finally {
+    if (!disposed && version === listVersion) loading.value = false
+  }
 }
-
-async function loadSent() {
-  loading.value = true
-  try {
-    const res = await api.get('/messages/sent')
-    sentMessages.value = res.data
-  } catch (e) {} finally { loading.value = false }
+function loadInbox() { return loadList('inbox') }
+function loadSent() { return loadList('sent') }
+function recountUnread() {
+  totalUnread.value = Object.values(unreadCounts.value).reduce((sum, n) => sum + (Number(n) || 0), 0)
 }
 
 async function markRead(msg) {
-  if (msg.is_read) return
+  if (msg.is_read || reading.has(msg.id) || bulkBusy.value) return
+  reading.add(msg.id)
+  const version = listVersion
   try {
     await api.put(`/messages/${msg.id}/read`)
+    if (version !== listVersion) {
+      if (activeTab.value === 'inbox') await loadInbox()
+      return
+    }
+    if (msg.is_read) return
     msg.is_read = 1
     if (unreadCounts.value[msg.type] > 0) unreadCounts.value[msg.type]--
-    totalUnread.value = Math.max(0, totalUnread.value - 1)
-  } catch (e) {}
+    recountUnread()
+  } catch (e) { toast.error('标记已读失败，请重试') }
+  finally { reading.delete(msg.id) }
 }
 
 async function markAllRead() {
+  if (bulkBusy.value || loading.value || activeTab.value !== 'inbox') return
+  const type = activeFilter.value !== 'all' ? activeFilter.value : undefined
+  bulkBusy.value = true
   try {
-    const type = activeFilter.value !== 'all' ? activeFilter.value : undefined
     await api.put('/messages/read-all', { type })
-    messages.value.forEach(m => { m.is_read = 1 })
-    if (type) { unreadCounts.value[type] = 0 }
-    else { unreadCounts.value = { private: 0, confession: 0, system: 0, announcement: 0, interaction: 0 } }
-    totalUnread.value = 0
-    toast.success('已全部标记为已读')
-  } catch (e) { toast.error('操作失败') }
+    messages.value.filter(m => !type || m.type === type).forEach(m => { m.is_read = 1 })
+    if (type) unreadCounts.value[type] = 0
+    else unreadCounts.value = Object.fromEntries(Object.keys(unreadCounts.value).map(key => [key, 0]))
+    recountUnread()
+    toast.success(type ? '该分类已标记为已读' : '已全部标记为已读')
+    if (activeTab.value === 'inbox') await loadInbox()
+  } catch (e) { toast.error('操作失败，请重试') }
+  finally { bulkBusy.value = false }
 }
-
-async function deleteAll() {
-  const typeName = activeFilter.value !== 'all' ? filters.find(f => f.key === activeFilter.value)?.label : '全部'
+function deleteAll() {
+  deleteAllFilter.value = activeFilter.value
   showDeleteAllConfirm.value = true
 }
-
 async function doDeleteAll() {
+  if (bulkBusy.value) return
+  bulkBusy.value = true
   try {
-    const res = await api.delete(`/messages/inbox/all?type=${activeFilter.value}`)
+    const res = await api.delete('/messages/inbox/all', { params: { type: deleteAllFilter.value } })
     toast.success(res.data.message)
-    loadInbox()
-  } catch (e) { toast.error('删除失败') }
+    if (activeTab.value === 'inbox') await loadInbox()
+  } catch (e) { toast.error('删除失败，请重试') }
+  finally { bulkBusy.value = false }
 }
-
-async function deleteMsg(msg, list) {
-  deleteMsgTarget.value = msg
+function deleteMsg(msg) {
+  deleteMsgTarget.value = { msg, tab: activeTab.value }
   showDeleteMsgConfirm.value = true
 }
-
 async function doDeleteMsg() {
-  const msg = deleteMsgTarget.value
-  if (!msg) return
+  const target = deleteMsgTarget.value
+  if (!target || bulkBusy.value) return
+  bulkBusy.value = true
   try {
-    await api.delete(`/messages/${msg.id}`)
-    const idx = messages.value.indexOf(msg)
-    if (idx > -1) messages.value.splice(idx, 1)
-    if (!msg.is_read) {
+    const { msg, tab } = target
+    await api.delete('/messages/' + msg.id)
+    const list = tab === 'inbox' ? messages : sentMessages
+    list.value = list.value.filter(item => item.id !== msg.id)
+    if (tab === 'inbox' && !msg.is_read) {
       if (unreadCounts.value[msg.type] > 0) unreadCounts.value[msg.type]--
-      totalUnread.value = Math.max(0, totalUnread.value - 1)
+      recountUnread()
     }
-  } catch (e) { toast.error('删除失败') }
-  deleteMsgTarget.value = null
+  } catch (e) { toast.error('删除失败，请重试') }
+  finally { bulkBusy.value = false; deleteMsgTarget.value = null }
 }
 
 function switchTab(tab) { activeTab.value = tab; tab === 'inbox' ? loadInbox() : loadSent() }
@@ -274,6 +309,7 @@ const inboxItems = computed(() => messages.value.map(msg => ({ msg, to: msgLink(
 const sentItems = computed(() => sentMessages.value.map(msg => ({ msg, to: sentLink(msg) })))
 
 onMounted(() => { loadInbox(); loadApprovals() })
+onBeforeUnmount(() => { disposed = true; listVersion++; listController?.abort() })
 </script>
 
 <template>
@@ -281,11 +317,12 @@ onMounted(() => { loadInbox(); loadApprovals() })
     <div class="page-header">
       <h2 class="page-title">收件箱</h2>
       <div class="header-actions" v-if="activeTab === 'inbox'">
-        <button class="btn btn-sm btn-secondary" @click="markAllRead">全部已读</button>
-        <button class="btn btn-sm btn-danger" @click="deleteAll">全部删除</button>
+        <button class="btn btn-sm btn-secondary" @click="markAllRead" :disabled="loading || bulkBusy || totalUnread === 0">全部已读</button>
+        <button class="btn btn-sm btn-danger" @click="deleteAll" :disabled="loading || bulkBusy || messages.length === 0">全部删除</button>
       </div>
     </div>
 
+    <p v-if="approvalsError" class="state-error" role="alert">{{ approvalsError }} <button class="btn btn-secondary btn-sm" @click="loadApprovals">重试</button></p>
     <!-- 待处理申请：按类型分组，可在此直接同意/拒绝，也可跳到对应页面处理 -->
     <section v-if="approvalsLoading || approvalTotal > 0" class="approvals" aria-labelledby="approvals-title">
       <div class="approvals-head">
@@ -338,7 +375,7 @@ onMounted(() => { loadInbox(); loadApprovals() })
     </div>
 
     <div v-if="activeTab === 'inbox'" class="filter-bar">
-      <button v-for="f in filters" :key="f.key" class="filter-btn" :class="{ active: activeFilter === f.key }" @click="switchFilter(f.key)">
+      <button v-for="f in filters" :key="f.key" class="filter-btn" :aria-pressed="activeFilter === f.key" :class="{ active: activeFilter === f.key }" @click="switchFilter(f.key)">
         {{ f.label }}
         <span v-if="f.key !== 'all' && unreadCounts[f.key] > 0" class="filter-badge">{{ unreadCounts[f.key] }}</span>
       </button>
@@ -348,6 +385,7 @@ onMounted(() => { loadInbox(); loadApprovals() })
       <SkeletonCard v-for="i in 4" :key="i" :lines="2" />
     </div>
 
+    <p v-else-if="loadError" class="state-error" role="alert">{{ loadError }} <button class="btn btn-secondary btn-sm" @click="activeTab === 'inbox' ? loadInbox() : loadSent()">重试</button></p>
     <template v-else-if="activeTab === 'inbox'">
       <div v-if="messages.length === 0" class="empty-state">
         <div class="icon"><Icon name="inbox" :size="34" /></div>
@@ -370,7 +408,8 @@ onMounted(() => { loadInbox(); loadApprovals() })
             <button v-if="to" class="btn btn-sm btn-primary go-btn" @click.stop="openMsg(msg, to)">
               {{ linkLabel(to) }}<Icon name="chevron-right" :size="14" />
             </button>
-            <button class="btn btn-sm btn-secondary" @click.stop="deleteMsg(msg, messages)">删除</button>
+            <button v-if="!msg.is_read" class="btn btn-sm btn-secondary" :disabled="bulkBusy" @click.stop="markRead(msg)">标为已读</button>
+            <button class="btn btn-sm btn-secondary" :disabled="bulkBusy" @click.stop="deleteMsg(msg)">删除</button>
           </div>
         </div>
       </div>
@@ -390,7 +429,7 @@ onMounted(() => { loadInbox(); loadApprovals() })
             <button v-if="to" class="btn btn-sm btn-primary go-btn" @click.stop="openMsg(msg, to)">
               {{ linkLabel(to) }}<Icon name="chevron-right" :size="14" />
             </button>
-            <button class="btn btn-sm btn-secondary" @click.stop="deleteMsg(msg, sentMessages)">删除</button>
+            <button class="btn btn-sm btn-secondary" :disabled="bulkBusy" @click.stop="deleteMsg(msg)">删除</button>
           </div>
         </div>
       </div>
@@ -400,7 +439,7 @@ onMounted(() => { loadInbox(); loadApprovals() })
     <ConfirmModal
       :show="showDeleteAllConfirm"
       title="删除消息"
-      :message="`确定删除${activeFilter !== 'all' ? filters.find(f => f.key === activeFilter)?.label : '全部'}消息吗？`"
+      :message="`确定删除${deleteAllFilter !== 'all' ? filters.find(f => f.key === deleteAllFilter)?.label : '全部'}消息吗？`"
       confirm-text="删除"
       cancel-text="取消"
       :danger="true"
@@ -426,20 +465,20 @@ onMounted(() => { loadInbox(); loadApprovals() })
 .skeleton-wrap { display: flex; flex-direction: column; gap: var(--space-3); }
 .inbox-page { animation: fadeIn 0.5s ease; }
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
-.page-title { font-size: 24px; }
+.page-title { font-size: 1.5rem; }
 .header-actions { display: flex; gap: 8px; }
 
 /* 待处理申请 */
 .approvals { margin-bottom: var(--space-5); }
 .approvals-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
-.approvals-head h3 { font-size: 16px; }
+.approvals-head h3 { font-size: 1rem; }
 .approvals-count {
   min-width: 20px;
   padding: 1px 7px;
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--accent-1) 25%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent-1) 45%, transparent);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   text-align: center;
 }
@@ -454,8 +493,8 @@ onMounted(() => { loadInbox(); loadApprovals() })
   border-bottom: 1px solid var(--border);
   margin-bottom: var(--space-2);
 }
-.group-title { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
-.group-count { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+.group-title { display: inline-flex; align-items: center; gap: 6px; font-size: 0.875rem; font-weight: 600; }
+.group-count { font-size: 0.75rem; color: var(--text-muted); font-weight: 500; }
 .group-link {
   display: inline-flex;
   align-items: center;
@@ -463,7 +502,7 @@ onMounted(() => { loadInbox(); loadApprovals() })
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   padding: 4px 6px;
   border-radius: var(--radius-sm);
@@ -487,7 +526,7 @@ onMounted(() => { loadInbox(); loadApprovals() })
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
@@ -495,34 +534,34 @@ onMounted(() => { loadInbox(); loadApprovals() })
 }
 .avatar-img { width: 100%; height: 100%; object-fit: cover; }
 .approval-meta { flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 2px; }
-.approval-name { font-size: 14px; font-weight: 600; }
-.approval-desc { font-size: 12px; word-break: break-word; }
-.approval-time { font-size: 12px; flex-shrink: 0; }
+.approval-name { font-size: 0.875rem; font-weight: 600; }
+.approval-desc { font-size: 0.75rem; word-break: break-word; }
+.approval-time { font-size: 0.75rem; flex-shrink: 0; }
 .approval-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }
 
 .tabs { display: flex; padding: 4px; margin-bottom: 12px; gap: 4px; }
-.tab { flex: 1; background: none; border: none; color: var(--text-secondary); padding: 10px 16px; font-size: 14px; font-weight: 600; cursor: pointer; border-radius: var(--radius-md); transition: all 0.3s; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.tab { flex: 1; background: none; border: none; color: var(--text-secondary); padding: 10px 16px; font-size: 0.875rem; font-weight: 600; cursor: pointer; border-radius: var(--radius-md); transition: all 0.3s; display: flex; align-items: center; justify-content: center; gap: 6px; }
 .tab.active { background: rgba(255,255,255,0.2); color: #fff; }
-.badge { background: #ff6b6b; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: var(--radius-md); min-width: 18px; text-align: center; }
+.badge { background: var(--danger); color: #fff; font-size: 0.6875rem; padding: 2px 6px; border-radius: var(--radius-md); min-width: 18px; text-align: center; }
 .filter-bar { display: flex; gap: 8px; margin-bottom: 16px; overflow-x: auto; padding-bottom: 4px; }
-.filter-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15); color: var(--text-secondary); padding: 6px 14px; border-radius: var(--radius-pill); font-size: 13px; cursor: pointer; transition: all 0.2s; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
-.filter-btn.active { background: rgba(169,155,134,0.25); border-color: rgba(201,185,154,0.4); color: #d4c5b0; }
+.filter-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15); color: var(--text-secondary); padding: 6px 14px; border-radius: var(--radius-pill); font-size: 0.8125rem; cursor: pointer; transition: all 0.2s; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+.filter-btn.active { background: rgba(169,155,134,0.25); border-color: rgba(201,185,154,0.4); color: var(--text-link); }
 .filter-btn:hover { background: rgba(255,255,255,0.2); }
-.filter-badge { background: #ff6b6b; color: #fff; font-size: 10px; padding: 1px 5px; border-radius: var(--radius-sm); }
+.filter-badge { background: var(--danger); color: #fff; font-size: 0.625rem; padding: 1px 5px; border-radius: var(--radius-sm); }
 .msg-card { padding: 16px; margin-bottom: 12px; cursor: pointer; transition: all 0.3s; border-left: 3px solid transparent; }
 .msg-card:hover { transform: translateY(-2px); }
-.msg-card.unread { border-left-color: #c9b99a; }
+.msg-card.unread { border-left-color: var(--text-link); }
 .msg-card.type-confession.unread { border-left-color: #e8a87c; }
 .msg-card.type-system.unread { border-left-color: #95afc0; }
 .msg-card.type-private.unread { border-left-color: #a29bfe; }
-.msg-card.type-interaction.unread { border-left-color: #ff6b6b; }
+.msg-card.type-interaction.unread { border-left-color: var(--danger); }
 .msg-card.type-tree-hole.unread { border-left-color: #2ed573; }
 .msg-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .msg-meta { display: flex; align-items: center; gap: 8px; }
-.msg-type { font-size: 13px; font-weight: 600; }
-.unread-dot { width: 7px; height: 7px; border-radius: 50%; background: #c9b99a; }
-.msg-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
-.msg-content { font-size: 14px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; margin-bottom: 10px; }
+.msg-type { font-size: 0.8125rem; font-weight: 600; }
+.unread-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-link); }
+.msg-title { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+.msg-content { font-size: 0.875rem; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; margin-bottom: 10px; }
 /* 公告预览已经被 truncateText 抹平成单行纯文本，不需要保留换行 */
 .msg-content.msg-preview { white-space: normal; }
 .msg-footer { display: flex; justify-content: space-between; align-items: center; }
@@ -534,4 +573,12 @@ onMounted(() => { loadInbox(); loadApprovals() })
   .approval-time { display: none; }
   .approval-actions { width: 100%; justify-content: flex-end; }
 }
+
+/* 与校园墙主题保持一致，并为状态反馈留出可读空间。 */
+.state-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin: 12px 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--text-primary); line-height: 1.6; }
+.msg-content { overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.65; }
+.msg-footer, .msg-actions { flex-wrap: wrap; gap: 8px; }
+.msg-meta, .approval-meta { min-width: 0; overflow-wrap: anywhere; }
+.filter-btn[aria-pressed="true"] { border-color: var(--accent-line); color: var(--text-primary); }
+@media (max-width: 480px) { .msg-card { padding: 16px; } .msg-actions { width: 100%; justify-content: flex-end; } .approval-item { flex-wrap: wrap; } .approval-actions { margin-left: auto; } }
 </style>

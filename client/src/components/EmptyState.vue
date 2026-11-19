@@ -19,11 +19,11 @@ const emit = defineEmits(['action'])
 </script>
 
 <template>
-  <div class="state-block empty-state-block" :class="{ compact }">
+  <div class="state-block empty-state-block" :class="{ compact }" role="status" aria-live="polite">
     <div class="state-icon"><Icon :name="icon" :size="compact ? 26 : 34" /></div>
     <p class="state-title">{{ title }}</p>
     <p v-if="desc" class="state-desc">{{ desc }}</p>
-    <button v-if="actionText" class="btn btn-primary btn-sm mt-2" @click="emit('action')">
+    <button v-if="actionText" type="button" class="btn btn-primary btn-sm mt-2" @click="emit('action')">
       {{ actionText }}
     </button>
     <!-- 默认插槽：放自定义操作区 -->

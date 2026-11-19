@@ -1,12 +1,12 @@
 <script setup>
-import { ref, watch, onMounted, computed } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import PostCard from '../components/PostCard.vue'
 import SkeletonCard from '../components/SkeletonCard.vue'
 import EmptyState from '../components/EmptyState.vue'
+import ErrorState from '../components/ErrorState.vue'
 import TrendingBoard from '../components/TrendingBoard.vue'
-import { useToast } from '../composables/useToast'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import { useTimeAgo } from '../composables/useTimeAgo'
 import { useSettingsStore } from '../stores/settings'
@@ -15,7 +15,6 @@ import Icon from '../components/Icon.vue'
 
 const router = useRouter()
 const { timeAgo } = useTimeAgo()
-const toast = useToast()
 const wallStore = useWallStore()
 
 const posts = ref([])
@@ -27,21 +26,38 @@ const sortMode = ref(settingsStore.prefs.feed_sort) // 'latest' | 'hot'
 // 用户手动切过分类/排序后，就不再被后到的偏好覆盖
 let touchedByUser = false
 const loading = ref(true)
+const loadError = ref('')
+const requestedPage = ref(1)
+let postsRequest = 0
+let postsController
+let wallRequest = 0
+let disposed = false
 const page = ref(1)
 const total = ref(0)
 const limit = 20
 const showCategorySidebar = ref(true)
 const showTopicDrawer = ref(false)
+const mobileTopics = ref(false)
+function updateViewport() {
+  mobileTopics.value = window.innerWidth <= 768
+  if (!mobileTopics.value) showTopicDrawer.value = false
+}
 
 const drawerRef = ref(null)
 useFocusTrap(showTopicDrawer, drawerRef, () => { showTopicDrawer.value = false })
 
 async function loadPosts(p = 1, category = null, sort = null) {
+  const request = ++postsRequest
+  postsController?.abort()
+  postsController = new AbortController()
+  const wallId = wallStore.currentWallId
+  requestedPage.value = Math.max(1, Number(p) || 1)
   loading.value = true
+  loadError.value = ''
   try {
     const sm = sort || sortMode.value
     const cat = category || activeCategory.value
-    const params = new URLSearchParams({ page: p, limit })
+    const params = new URLSearchParams({ page: requestedPage.value, limit })
 
     if (sm === 'hot') {
       params.set('sort', 'hot')
@@ -49,19 +65,23 @@ async function loadPosts(p = 1, category = null, sort = null) {
       params.set('category', cat)
     }
 
-    const res = await api.get(`/posts?${params.toString()}`)
-    posts.value = res.data.posts
-    total.value = res.data.total
-    page.value = p
+    const res = await api.get(`/posts?${params.toString()}`, { signal: postsController.signal })
+    if (disposed || request !== postsRequest || wallId !== wallStore.currentWallId) return
+    posts.value = Array.isArray(res.data.posts) ? res.data.posts : []
+    total.value = Math.max(0, Number(res.data.total) || 0)
+    const lastPage = Math.max(1, Math.ceil(total.value / limit))
+    if (p > lastPage) return loadPosts(lastPage, cat, sm)
+    page.value = requestedPage.value
 
-    if (res.data.categories) {
+    if (Array.isArray(res.data.categories)) {
       const allCats = ['全部', ...new Set([...res.data.categories.filter(c => c !== '全部'), '吐槽', '分享', '求助', '讨论', '其他'])]
       categories.value = allCats
     }
   } catch (e) {
-    toast.error('加载帖子失败')
+    if (disposed || request !== postsRequest || wallId !== wallStore.currentWallId || e.code === 'ERR_CANCELED') return
+    loadError.value = '帖子加载失败，请检查网络后重试'
   } finally {
-    loading.value = false
+    if (request === postsRequest && !disposed) loading.value = false
   }
 }
 
@@ -82,7 +102,8 @@ function switchSort(sort) {
 }
 
 function toggleCategorySidebar() {
-  if (window.innerWidth <= 600) {
+  updateViewport()
+  if (mobileTopics.value) {
     showTopicDrawer.value = !showTopicDrawer.value
   } else {
     showCategorySidebar.value = !showCategorySidebar.value
@@ -90,8 +111,10 @@ function toggleCategorySidebar() {
 }
 
 function onPostDeleted(id) {
+  if (!posts.value.some(p => p.id === id)) return
   posts.value = posts.value.filter(p => p.id !== id)
-  total.value--
+  total.value = Math.max(0, total.value - 1)
+  if (!posts.value.length && page.value > 1) loadPosts(page.value - 1)
 }
 
 
@@ -108,20 +131,35 @@ const myRoleLabel = computed(() => WALL_ROLE_LABEL[wallInfo.value?.my_role] || '
 
 async function loadWallInfo() {
   const id = wallStore.currentWallId
-  if (!id) { wallInfo.value = null; return }
+  const request = ++wallRequest
+  wallInfo.value = null
+  if (!id) { wallInfoLoading.value = false; return }
   wallInfoLoading.value = true
   try {
-    wallInfo.value = (await api.get(`/walls/${id}`)).data
+    const res = await api.get(`/walls/${id}`)
+    if (disposed || request !== wallRequest || id !== wallStore.currentWallId) return
+    wallInfo.value = res.data
   } catch {
+    if (disposed || request !== wallRequest) return
     // 右栏是补充信息，拉不到就整块不显示，不打断主信息流也不弹错误提示
     wallInfo.value = null
   } finally {
-    wallInfoLoading.value = false
+    if (request === wallRequest && !disposed) wallInfoLoading.value = false
   }
 }
 
 // 顶栏切换校园墙后要跟着换，否则右栏还停在上一个墙
-watch(() => wallStore.currentWallId, loadWallInfo)
+watch(() => wallStore.currentWallId, () => {
+  posts.value = []
+  total.value = 0
+  loadPosts(1)
+  loadWallInfo()
+})
+
+onBeforeUnmount(() => {
+  disposed = true; postsRequest++; wallRequest++; postsController?.abort()
+  if (typeof window !== 'undefined') window.removeEventListener('resize', updateViewport)
+})
 
 
 // 偏好可能晚于本组件挂载才从服务端拉回来；到了之后重新对齐默认排序/分类并重载一次。
@@ -137,6 +175,8 @@ watch(() => settingsStore.loaded, (ok) => {
 })
 
 onMounted(() => {
+  updateViewport()
+  window.addEventListener('resize', updateViewport)
   loadPosts()
   loadWallInfo()
 })
@@ -146,8 +186,9 @@ onMounted(() => {
   <div class="home">
     <!-- 话题分类入口（桌面收起左栏 / 移动弹出抽屉） -->
     <div class="home-topbar">
+      <div class="feed-heading"><h1>校园动态</h1><p class="text-muted">分享近况，也听听身边的声音</p></div>
       <button class="btn btn-secondary btn-sm topic-toggle" @click="toggleCategorySidebar"
-              :aria-expanded="showCategorySidebar || showTopicDrawer" aria-controls="topic-panel"
+              :aria-expanded="mobileTopics ? showTopicDrawer : showCategorySidebar" :aria-controls="mobileTopics ? 'topic-drawer' : 'topic-panel'"
               title="话题分类">
         话题
       </button>
@@ -183,13 +224,18 @@ onMounted(() => {
       </aside>
 
       <!-- 右侧帖子列表 -->
-      <div class="posts-area">
+      <section class="posts-area" :aria-busy="loading" aria-label="校园帖子">
         <!-- 骨架屏加载 -->
         <template v-if="loading">
-          <SkeletonCard v-for="i in 4" :key="i" :lines="3" />
-          <div style="height: 8px" v-for="i in 4" :key="'g'+i"></div>
+          <!-- 骨架屏间距统一走 .skeleton-stack（gap 12px，与帖子列表一致）。
+               原先卡片与 8px 垫片是两个并列 v-for：4 张卡片先全部零间距堆叠，
+               32px 垫片全落在列表末尾 —— 加载期布局与加载后对不上。 -->
+          <div class="skeleton-stack">
+            <SkeletonCard v-for="i in 4" :key="i" :lines="3" />
+          </div>
         </template>
 
+        <ErrorState v-else-if="loadError" role="alert" :title="loadError" @retry="loadPosts(requestedPage)" />
         <template v-else>
           <div v-if="posts.length === 0">
             <EmptyState
@@ -216,7 +262,7 @@ onMounted(() => {
             <button class="btn btn-secondary btn-sm" :disabled="page >= totalPages" @click="loadPosts(page + 1)">下一页</button>
           </div>
         </template>
-      </div>
+      </section>
 
       <!-- 右栏：校园墙介绍 + 话题热榜 -->
       <aside v-if="wallInfo || wallInfoLoading" class="wall-sidebar" aria-label="校园墙介绍">
@@ -274,7 +320,7 @@ onMounted(() => {
   <!-- 话题分类抽屉（移动端 / 顶栏「话题」按钮） -->
   <Transition name="drawer">
     <div v-if="showTopicDrawer" class="topic-drawer-overlay" @click.self="showTopicDrawer = false">
-      <div ref="drawerRef" class="topic-drawer glass-strong" role="dialog" aria-modal="true" aria-label="话题分类">
+      <div id="topic-drawer" ref="drawerRef" class="topic-drawer glass-strong" role="dialog" aria-modal="true" aria-label="话题分类">
         <div class="drawer-header">
           <span>话题分类</span>
           <button class="close-btn" aria-label="关闭话题分类" @click="showTopicDrawer = false"><Icon name="close" :size="17" /></button>
@@ -305,7 +351,9 @@ onMounted(() => {
 .home { animation: fadeIn 0.5s ease; }
 
 /* 话题分类入口：与它控制的左栏同侧 */
-.home-topbar { display: flex; justify-content: flex-start; margin-bottom: var(--space-2); }
+.home-topbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-bottom: var(--space-5); }
+.feed-heading h1 { font-size: var(--font-2xl); letter-spacing: -.035em; margin-bottom: var(--space-1); }
+.feed-heading p { font-size: var(--font-sm); }
 .topic-toggle { border-radius: var(--radius-pill); }
 
 /* 搜索栏（已移除，功能迁移至顶栏与 /search 页） */
@@ -380,8 +428,8 @@ onMounted(() => {
 }
 .cat-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
 .cat-btn.active { background: var(--accent-soft); color: var(--text-primary); font-weight: 600; border-left: 3px solid var(--accent-1); }
-.hot-btn.active { background: color-mix(in srgb, var(--danger) 15%, transparent); border-left: 3px solid var(--danger); color: var(--danger-light); }
-.posts-area { flex: 1; min-width: 0; }
+.hot-btn.active { background: var(--accent-soft); border-left: 3px solid var(--accent-1); color: var(--text-link); }
+.posts-area { flex: 1; min-width: 0; width: 100%; }
 
 /* 右栏：校园墙介绍 + 话题热榜。与左分类栏一样 sticky，跟随滚动停在顶栏下方 */
 .wall-sidebar {
@@ -439,7 +487,7 @@ onMounted(() => {
   display: inline-flex; align-items: center; background: none; border: none;
   color: var(--text-secondary); cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
 }
-.close-btn:hover { background: rgba(255,255,255,0.1); }
+.close-btn:hover { background: var(--bg-card-hover); }
 
 /* 放不下三栏时（小笔记本 / 平板），右栏整块换行到帖子下方而不是直接隐藏，
    墙介绍在窄屏依然可读，只是不再单独占一列。
@@ -458,14 +506,16 @@ onMounted(() => {
   .wall-meta { max-width: 420px; }
 }
 
-@media (max-width: 600px) {
+@media (max-width: 768px) {
   .main-layout { flex-direction: column; }
   .wall-sidebar { flex-direction: column; }
+  .wall-sidebar-card, .wall-sidebar :deep(.trending-board) { min-width: 0; width: 100%; }
+  .category-sidebar { display: none; }
   .category-sidebar { width: 100%; position: static; padding: 12px; }
   .category-list { flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; }
   .cat-btn { padding: 8px 14px; white-space: nowrap; border-left: none; border-bottom: 3px solid transparent; }
   .cat-btn.active { border-left: none; border-bottom: 3px solid var(--accent-1); }
-  .hot-btn.active { border-left: none; border-bottom: 3px solid var(--danger); }
+  .hot-btn.active { border-left: none; border-bottom: 3px solid var(--accent-1); }
   .sidebar-divider { display: none; }
 }
 </style>

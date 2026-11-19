@@ -1,5 +1,6 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch } from 'vue'
+import { useFocusTrap } from '../composables/useFocusTrap'
 import Icon from './Icon.vue'
 
 const props = defineProps({
@@ -12,16 +13,37 @@ const emit = defineEmits(['update:modelValue', 'close'])
 
 const visible = ref(false)
 const currentIndex = ref(0)
+const overlayRef = ref(null)
+const imageFailed = ref(false)
+useFocusTrap(visible, overlayRef, close)
 
-function open(index = 0) {
-  currentIndex.value = Math.max(0, Math.min(index, props.images.length - 1))
+watch(currentIndex, index => {
+  imageFailed.value = false
+  emit('update:modelValue', index)
+})
+watch(() => props.modelValue, index => {
+  if (visible.value) currentIndex.value = normalizeIndex(index)
+})
+watch(() => props.images.length, length => {
+  if (!visible.value) return
+  if (!length) close()
+  else currentIndex.value = normalizeIndex(currentIndex.value)
+})
+
+function normalizeIndex(index) {
+  return Math.max(0, Math.min(Number.isFinite(index) ? Math.trunc(index) : 0, props.images.length - 1))
+}
+
+function open(index = props.modelValue) {
+  if (!props.images.length) return
+  currentIndex.value = normalizeIndex(index)
+  imageFailed.value = false
   visible.value = true
-  document.body.style.overflow = 'hidden'
 }
 
 function close() {
+  if (!visible.value) return
   visible.value = false
-  document.body.style.overflow = ''
   emit('close')
 }
 
@@ -35,16 +57,12 @@ function next() {
 
 function onKeydown(e) {
   if (!visible.value) return
-  if (e.key === 'Escape') close()
-  if (e.key === 'ArrowLeft') prev()
-  if (e.key === 'ArrowRight') next()
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault()
+    if (e.key === 'ArrowLeft') prev()
+    else next()
+  }
 }
-
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onUnmounted(() => {
-  window.removeEventListener('keydown', onKeydown)
-  document.body.style.overflow = ''
-})
 
 defineExpose({ open, close })
 </script>
@@ -52,31 +70,34 @@ defineExpose({ open, close })
 <template>
   <Teleport to="body">
     <Transition name="lightbox">
-      <div v-if="visible" class="lightbox-overlay" @click.self="close">
+      <div v-if="visible" ref="overlayRef" tabindex="-1" class="lightbox-overlay" role="dialog" aria-modal="true" aria-label="图片预览" @keydown="onKeydown" @click.self="close">
         <button class="lightbox-close" aria-label="关闭图片" @click="close"><Icon name="close" :size="20" /></button>
 
-        <button v-if="currentIndex > 0" class="lightbox-nav lightbox-prev" @click.stop="prev">
+        <button v-if="currentIndex > 0" class="lightbox-nav lightbox-prev" aria-label="上一张图片" @click.stop="prev">
           ‹
         </button>
 
         <div class="lightbox-content">
-          <img :src="images[currentIndex]" alt="" class="lightbox-img" />
+          <p v-if="imageFailed" class="lightbox-error" role="status">图片加载失败，请关闭后重试。</p>
+          <img v-else :key="images[currentIndex]" :src="images[currentIndex]" :alt="`第 ${currentIndex + 1} 张图片，共 ${images.length} 张`" class="lightbox-img" @error="imageFailed = true" />
         </div>
 
-        <button v-if="currentIndex < images.length - 1" class="lightbox-nav lightbox-next" @click.stop="next">
+        <button v-if="currentIndex < images.length - 1" class="lightbox-nav lightbox-next" aria-label="下一张图片" @click.stop="next">
           ›
         </button>
 
-        <div v-if="images.length > 1" class="lightbox-counter">
+        <div v-if="images.length > 1" class="lightbox-counter" aria-live="polite" aria-atomic="true">
           {{ currentIndex + 1 }} / {{ images.length }}
         </div>
 
-        <div v-if="images.length > 1" class="lightbox-dots">
+        <div v-if="images.length > 1" class="lightbox-dots" role="group" aria-label="选择图片">
           <button
             v-for="(img, i) in images"
             :key="i"
             class="lightbox-dot"
             :class="{ active: i === currentIndex }"
+            :aria-label="`查看第 ${i + 1} 张图片`"
+            :aria-current="i === currentIndex ? 'true' : undefined"
             @click="currentIndex = i"
           />
         </div>
@@ -90,7 +111,8 @@ defineExpose({ open, close })
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
   background: rgba(0, 0, 0, 0.92);
-  z-index: 9000;
+  z-index: var(--z-modal);
+  outline: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -142,7 +164,7 @@ defineExpose({ open, close })
 
 .lightbox-content {
   max-width: 90vw;
-  max-height: 85vh;
+  max-height: calc(100dvh - 160px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -150,7 +172,7 @@ defineExpose({ open, close })
 
 .lightbox-img {
   max-width: 90vw;
-  max-height: 85vh;
+  max-height: calc(100dvh - 160px);
   object-fit: contain;
   border-radius: var(--radius-xs);
   user-select: none;
@@ -171,23 +193,31 @@ defineExpose({ open, close })
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 8px;
+  gap: 0;
+  max-width: 90vw;
+  overflow-x: auto;
 }
 
 .lightbox-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  background: transparent;
+  width: 36px;
+  height: 44px;
+  border-radius: 0;
+  border: none;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.45) 4px, transparent 5px);
   cursor: pointer;
   padding: 0;
   transition: all 0.2s;
 }
 
 .lightbox-dot.active {
-  background: #fff;
-  border-color: #fff;
+  background: radial-gradient(circle, #fff 4px, transparent 5px);
+}
+
+.lightbox-error { color: #fff; padding: 24px; text-align: center; }
+.lightbox-overlay :focus-visible { outline-color: #acd8c3; }
+@media (max-width: 480px) {
+  .lightbox-nav { width: 44px; height: 64px; font-size: 36px; }
+  .lightbox-close { top: max(12px, env(safe-area-inset-top)); }
 }
 
 /* 过渡动画 */

@@ -1,7 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+const { UPLOADS_DIR } = require('./paths');
+const crypto = require('crypto');
+const sharp = require('sharp');
+sharp.concurrency(2);
 
 // 上传配额。
 //
@@ -118,11 +121,13 @@ const MAX_IMAGES = 9;
 
 function sanitizeImageList(images, subdir) {
   if (!Array.isArray(images)) return '';
-  const re = new RegExp(`^/uploads/${subdir}/[\\w.-]+$`);
+  const dirs = Array.isArray(subdir) ? subdir : [subdir];
+  const allowedDirs = dirs.filter(dir => ['avatars', 'images', 'bug-reports'].includes(dir));
+  const re = new RegExp(`^/uploads/(?:${allowedDirs.join('|')})/[\\w.-]+$`);
   const out = [];
   for (const item of images) {
     if (typeof item !== 'string') continue;
-    const s = item.trim();
+    const s = item.trim().split('?')[0];
     if (s.length > 256 || s.includes('..')) continue;
     if (!re.test(s)) continue;
     if (!out.includes(s)) out.push(s);
@@ -155,9 +160,147 @@ const SIGS = {
  * @returns {boolean}
  */
 function verifyImageMagic(buffer, ext) {
-  const check = SIGS[ext];
-  if (!check) return false;
-  return check(buffer);
+  if (!Buffer.isBuffer(buffer) || !SIGS[ext]?.(buffer)) return false;
+  const safeSize = (w, h) => w > 0 && h > 0 && w <= 8192 && h <= 8192 && w * h <= 32000000;
+  try {
+    if (ext === 'png') {
+      let offset = 8;
+      let imageData = false;
+      let header = false;
+      while (offset + 12 <= buffer.length) {
+        const length = buffer.readUInt32BE(offset);
+        if (length > buffer.length - offset - 12) return false;
+        const type = buffer.toString('ascii', offset + 4, offset + 8);
+        if (!header) {
+          if (type !== 'IHDR' || length !== 13 || !safeSize(buffer.readUInt32BE(offset + 8), buffer.readUInt32BE(offset + 12))) return false;
+          header = true;
+        }
+        if (type === 'IDAT' && length > 0) imageData = true;
+        offset += length + 12;
+        if (type === 'IEND') return length === 0 && imageData && offset === buffer.length;
+      }
+      return false;
+    }
+    if (ext === 'gif') return buffer.length >= 14 && safeSize(buffer.readUInt16LE(6), buffer.readUInt16LE(8)) && buffer[buffer.length - 1] === 0x3b;
+    if (ext === 'webp') {
+      if (buffer.length < 30 || buffer.readUInt32LE(4) + 8 !== buffer.length) return false;
+      const kind = buffer.toString('ascii', 12, 16);
+      if (!['VP8 ', 'VP8L', 'VP8X'].includes(kind) || buffer.readUInt32LE(16) > buffer.length - 20) return false;
+      if (kind === 'VP8X') return safeSize(buffer.readUIntLE(24, 3) + 1, buffer.readUIntLE(27, 3) + 1);
+      if (kind === 'VP8L') return buffer[20] === 0x2f && safeSize(1 + (buffer.readUInt32LE(21) & 0x3fff), 1 + ((buffer.readUInt32LE(21) >>> 14) & 0x3fff));
+      return buffer[23] === 0x9d && buffer[24] === 1 && buffer[25] === 0x2a && safeSize(buffer.readUInt16LE(26) & 0x3fff, buffer.readUInt16LE(28) & 0x3fff);
+    }
+    if (buffer[buffer.length - 2] !== 0xff || buffer[buffer.length - 1] !== 0xd9) return false;
+    let offset = 2;
+    let dimensions = false;
+    while (offset + 4 <= buffer.length) {
+      if (buffer[offset++] !== 0xff) return false;
+      while (buffer[offset] === 0xff) offset++;
+      const marker = buffer[offset++];
+      if (marker === 0xda) return dimensions;
+      if (marker === 0xd9) return false;
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+      const length = buffer.readUInt16BE(offset);
+      if (length < 2 || offset + length > buffer.length) return false;
+      if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+        if (length < 8 || !safeSize(buffer.readUInt16BE(offset + 5), buffer.readUInt16BE(offset + 3))) return false;
+        dimensions = true;
+      }
+      offset += length;
+    }
+  } catch { return false; }
+  return false;
 }
 
-module.exports = { checkQuota, getUploadsUsage, noteWritten, extractLocalImages, deletePostImages, sanitizeImageList, verifyImageMagic };
+let activeDecodes = 0;
+
+// Fully decode and rebuild raster uploads, dropping EXIF, text chunks and trailing payloads.
+async function encodeValidatedImage(buffer, ext, maximumBytes = 2 * 1024 * 1024) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > maximumBytes || !verifyImageMagic(buffer, ext)) return null;
+  if (activeDecodes >= 2) {
+    const error = new Error('图片处理繁忙，请稍后重试');
+    error.code = 'IMAGE_BUSY';
+    throw error;
+  }
+  activeDecodes++;
+  try {
+    const options = { failOn: 'warning', limitInputPixels: 32000000, animated: ext === 'gif' || ext === 'webp' };
+    const image = sharp(buffer, options).timeout({ seconds: 5 });
+    const metadata = await image.metadata();
+    const expected = ext === 'jpg' ? 'jpeg' : ext;
+    if (metadata.format !== expected || !metadata.width || !metadata.height || metadata.width > 8192 ||
+        (metadata.pageHeight || metadata.height) > 8192 || metadata.width * metadata.height > 32000000 || (metadata.pages || 1) > 120) return null;
+    const output = await image.rotate().toFormat(expected).toBuffer();
+    return output.length <= maximumBytes ? { buffer: output, ext } : null;
+  } catch (error) {
+    if (error.code === 'IMAGE_BUSY') throw error;
+    return null;
+  } finally { activeDecodes--; }
+}
+
+// Image capabilities are purpose-specific HMACs, never reusable as login tokens.
+function imageSignature(payload) {
+  const { SECRET } = require('../middleware/auth');
+  return crypto.createHmac('sha256', SECRET).update(`private-upload:${payload}`).digest('base64url');
+}
+
+function signImageUrl(url, req) {
+  const pathname = typeof url === 'string' ? url.split('?')[0] : '';
+  if (!/^\/uploads\/(?:images|bug-reports)\/[\w.-]+$/.test(pathname) || pathname.includes('..')) return '';
+  const user = req.db.prepare('SELECT token_version FROM users WHERE id=?').get(req.user.id);
+  if (!user) return '';
+  const payload = Buffer.from(JSON.stringify({ p: pathname, u: req.user.id, t: user.token_version || 0, e: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
+  return `${pathname}?ticket=${payload}.${imageSignature(payload)}`;
+}
+
+function signPrivateImages(images, req) {
+  let values = images;
+  try { if (typeof values === 'string') values = JSON.parse(values || '[]'); } catch { return ''; }
+  if (!Array.isArray(values)) return '';
+  const urls = values.slice(0, MAX_IMAGES).map(url => signImageUrl(url, req)).filter(Boolean);
+  return urls.length ? JSON.stringify(urls) : '';
+}
+
+function verifyImageTicket(ticket, pathname, db) {
+  if (typeof ticket !== 'string' || ticket.length > 2048) return false;
+  const parts = ticket.split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) return false;
+  const expected = Buffer.from(imageSignature(parts[0]));
+  const actual = Buffer.from(parts[1]);
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return false;
+  try {
+    const data = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    const now = Math.floor(Date.now() / 1000);
+    if (data.p !== pathname || !Number.isSafeInteger(data.u) || !Number.isSafeInteger(data.e) || data.e <= now || data.e > now + 300) return false;
+    const user = db.prepare('SELECT token_version, status FROM users WHERE id=?').get(data.u);
+    if (!user || user.status !== 'active' || (user.token_version || 0) !== data.t) return false;
+    if (pathname.startsWith(`/uploads/bug-reports/bug_${data.u}_`)) return true;
+    const containsPath = row => { try { return JSON.parse(row.images || '[]').some(url => typeof url === 'string' && url.split('?')[0] === pathname); } catch { return false; } };
+    const { userCan } = require('./permissions');
+    const reports = db.prepare('SELECT reporter_id, wall_id, images FROM reports WHERE images LIKE ?').all(`%${pathname}%`).filter(containsPath);
+    if (reports.some(row => row.reporter_id === data.u || userCan(db, data.u, 'global.safety.handle', 0) || userCan(db, data.u, 'wall.safety.report', row.wall_id))) return true;
+    const bugs = db.prepare('SELECT reporter_id, images FROM bug_reports WHERE images LIKE ?').all(`%${pathname}%`).filter(containsPath);
+    return bugs.some(row => row.reporter_id === data.u || userCan(db, data.u, 'global.bug.handle', 0));
+  } catch { return false; }
+}
+
+function privateUploadGuard(req, res, next) {
+  let relativePath;
+  try { relativePath = path.posix.normalize(decodeURIComponent(req.path)); } catch { return res.status(400).json({ error: '无效图片路径' }); }
+  if (relativePath.includes('\0') || !/^\/(?:avatars|images|bug-reports)\/[\w.-]+$/.test(relativePath) || relativePath.includes('..')) return res.status(404).json({ error: '图片不存在' });
+  const pathname = `/uploads${relativePath}`;
+  res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; sandbox");
+  let restricted = relativePath.startsWith('/bug-reports/');
+  if (!restricted && relativePath.startsWith('/images/')) {
+    const rows = req.db.prepare('SELECT images FROM reports WHERE images LIKE ?').all(`%${pathname}%`);
+    restricted = rows.some(row => { try { return JSON.parse(row.images).some(url => typeof url === 'string' && url.split('?')[0] === pathname); } catch { return false; } });
+  }
+  if (!restricted) return next();
+  res.locals.privateUpload = true;
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  if (!verifyImageTicket(req.query.ticket, pathname, req.db)) return res.status(404).json({ error: '图片不存在或访问链接已过期，请刷新页面' });
+  next();
+}
+
+module.exports = { checkQuota, getUploadsUsage, noteWritten, extractLocalImages, deletePostImages, sanitizeImageList, verifyImageMagic, encodeValidatedImage, signImageUrl, signPrivateImages, verifyImageTicket, privateUploadGuard };

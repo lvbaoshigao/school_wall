@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
@@ -21,7 +21,7 @@ const props = defineProps({
   post: { type: Object, required: true }
 })
 
-const emit = defineEmits(['like-changed', 'deleted'])
+const emit = defineEmits(['like-changed', 'bookmark-changed', 'deleted'])
 const router = useRouter()
 const userStore = useUserStore()
 const wallStore = useWallStore()
@@ -54,22 +54,28 @@ const showDeleteConfirm = ref(false)
 const showReportConfirm = ref(false)
 const reportReason = ref('')
 const isLiking = ref(false)
+const isBookmarking = ref(false)
+const isDeleting = ref(false)
+const isReporting = ref(false)
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
+function postConfig(post = props.post) {
+  return { headers: { 'X-Wall-Id': post.wall_id || wallStore.currentWallId } }
+}
 
 async function toggleLike() {
   if (!userStore.isLoggedIn) { router.push('/login'); return }
   if (isLiking.value) return
   isLiking.value = true
+  const target = props.post
+  const liked = !!target.liked
   try {
-    if (props.post.liked) {
-      await api.delete(`/posts/${props.post.id}/like`)
-      props.post.liked = false
-      props.post.like_count--
-    } else {
-      await api.post(`/posts/${props.post.id}/like`)
-      props.post.liked = true
-      props.post.like_count++
-    }
-    emit('like-changed', props.post)
+    if (liked) await api.delete(`/posts/${target.id}/like`, postConfig(target))
+    else await api.post(`/posts/${target.id}/like`, {}, postConfig(target))
+    if (disposed || target !== props.post) return
+    target.liked = !liked
+    target.like_count = Math.max(0, (Number(target.like_count) || 0) + (liked ? -1 : 1))
+    emit('like-changed', target)
   } catch (e) {
     toast.error(e.response?.data?.error || '操作失败')
   } finally {
@@ -82,33 +88,46 @@ async function deletePost() {
 }
 
 async function doDeletePost() {
+  if (isDeleting.value) return
+  isDeleting.value = true
+  const target = props.post
   try {
-    await api.delete(`/posts/${props.post.id}`)
+    await api.delete(`/posts/${target.id}`, postConfig(target))
+    if (disposed || target !== props.post) return
     toast.success('已删除')
-    emit('deleted', props.post.id)
+    emit('deleted', target.id)
   } catch (e) {
     toast.error(e.response?.data?.error || '删除失败')
-  }
+  } finally { isDeleting.value = false }
 }
 
 async function toggleBookmark() {
   if (!userStore.isLoggedIn) { router.push('/login'); return }
+  if (isBookmarking.value) return
+  isBookmarking.value = true
+  const target = props.post
+  const bookmarked = !!target.bookmarked
   try {
-    if (props.post.bookmarked) {
-      await api.delete(`/posts/${props.post.id}/bookmark`)
-      props.post.bookmarked = false
+    if (bookmarked) {
+      await api.delete(`/posts/${target.id}/bookmark`, postConfig(target))
+      if (disposed || target !== props.post) return
+      target.bookmarked = false
       toast.success('已取消收藏')
     } else {
-      await api.post(`/posts/${props.post.id}/bookmark`)
-      props.post.bookmarked = true
+      await api.post(`/posts/${target.id}/bookmark`, {}, postConfig(target))
+      if (disposed || target !== props.post) return
+      target.bookmarked = true
       toast.success('已收藏')
     }
+    emit('bookmark-changed', target)
   } catch (e) {
     toast.error(e.response?.data?.error || '操作失败')
-  }
+  } finally { isBookmarking.value = false }
 }
 
-function goToDetail() {
+function goToDetail(event) {
+  if (event?.target?.closest('a, button, input, textarea, select') && event.currentTarget === event.target.closest('.post-card')) return
+  if (props.post.wall_id && props.post.wall_id !== wallStore.currentWallId) wallStore.switchWall(props.post.wall_id)
   router.push(`/post/${props.post.id}`)
 }
 
@@ -126,7 +145,7 @@ function openLightbox(index) {
 }
 
 const canDelete = computed(() => {
-  return wallStore.canHere('wall.post.delete') || (userStore.user && userStore.user.id === props.post.author_id)
+  return userStore.canInWall('wall.post.delete', props.post.wall_id || wallStore.currentWallId) || (userStore.user && userStore.user.id === props.post.author_id)
 })
 
 async function reportPost() {
@@ -136,13 +155,16 @@ async function reportPost() {
 }
 
 async function doReportPost() {
-  if (!reportReason.value.trim()) { toast.error('请填写举报原因'); return }
+  if (isReporting.value) return
+  const reason = reportReason.value.trim()
+  if (!reason || reason.length > 500) { toast.error('请填写 1–500 字的举报原因'); return }
+  isReporting.value = true
   try {
-    await api.post(`/posts/${props.post.id}/report`, { reason: reportReason.value.trim() })
+    await api.post(`/posts/${props.post.id}/report`, { reason }, postConfig())
     toast.success('举报已提交，管理员会尽快处理')
   } catch (e) {
     toast.error(e.response?.data?.error || '举报失败')
-  }
+  } finally { isReporting.value = false }
 }
 </script>
 
@@ -154,8 +176,8 @@ async function doReportPost() {
     tabindex="0"
     :aria-label="`${authorDisplay} 的帖子，回车打开详情`"
     @click="goToDetail"
-    @keydown.enter="goToDetail"
-    @keydown.space.prevent="goToDetail"
+    @keydown.enter.self="goToDetail"
+    @keydown.space.self.prevent="goToDetail"
   >
     <div class="post-header">
       <div class="post-author">
@@ -193,29 +215,27 @@ async function doReportPost() {
         <Icon name="image" :size="18" />
         {{ postImages.length }} 张图片 · 点击加载
       </button>
-      <img
-        v-for="(img, i) in (showImages ? postImages : [])" :key="i" :src="img" alt=""
-        class="post-img" loading="lazy"
-        @click="openLightbox(i)"
-      />
+      <button v-for="(img, i) in (showImages ? postImages : [])" :key="img" class="post-image-button" :aria-label="`放大查看第 ${i + 1} 张图片`" @click="openLightbox(i)">
+        <img :src="img" :alt="`帖子配图 ${i + 1}`" class="post-img" loading="lazy" referrerpolicy="no-referrer" />
+      </button>
     </div>
 
-    <div class="post-actions" @click.stop>
+    <div class="post-actions" @click.stop @keydown.stop>
       <button class="action-btn" :class="{ active: post.liked }"
-              :aria-label="post.liked ? '取消点赞' : '点赞'" :aria-pressed="!!post.liked" @click="toggleLike">
+              :aria-label="post.liked ? '取消点赞' : '点赞'" :aria-pressed="!!post.liked" :disabled="isLiking" @click="toggleLike">
         <Icon name="heart" :size="16" />{{ post.like_count || 0 }}
       </button>
       <button class="action-btn" :aria-label="`查看 ${post.comment_count || 0} 条评论`" @click="goToDetail">
         <Icon name="message" :size="16" />{{ post.comment_count || 0 }}
       </button>
-      <button class="action-btn" :class="{ active: post.bookmarked }"
-              :aria-label="post.bookmarked ? '取消收藏' : '收藏'" :aria-pressed="!!post.bookmarked" @click="toggleBookmark">
+      <button class="action-btn bookmark" :class="{ active: post.bookmarked }"
+              :aria-label="post.bookmarked ? '取消收藏' : '收藏'" :aria-pressed="!!post.bookmarked" :disabled="isBookmarking" @click="toggleBookmark">
         <Icon name="bookmark" :size="16" />
       </button>
-      <button v-if="canDelete" class="action-btn danger" aria-label="删除帖子" @click="deletePost">
+      <button v-if="canDelete" class="action-btn danger" aria-label="删除帖子" :disabled="isDeleting" @click="deletePost">
         <Icon name="trash" :size="16" />
       </button>
-      <button v-if="userStore.isLoggedIn" class="action-btn" aria-label="举报帖子" @click="reportPost" title="举报">
+      <button v-if="userStore.isLoggedIn" class="action-btn" aria-label="举报帖子" :disabled="isReporting" @click="reportPost" title="举报">
         <Icon name="alert-triangle" :size="16" />
       </button>
     </div>
@@ -269,8 +289,8 @@ async function doReportPost() {
 }
 
 .post-card:hover {
-  transform: translateY(-2px) scale(1.01);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-sm);
+  background: var(--bg-card-hover);
 }
 
 .post-header {
@@ -354,9 +374,11 @@ async function doReportPost() {
 
 .post-actions {
   display: flex;
-  gap: 16px;
+  gap: var(--space-2);
+  flex-wrap: wrap;
   padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  /* 原写死 rgba(255,255,255,.1)，亮色主题下分隔线不可见 */
+  border-top: 1px solid var(--border);
 }
 
 .action-btn {
@@ -366,6 +388,8 @@ async function doReportPost() {
   font-size: 14px;
   cursor: pointer;
   padding: 4px 8px;
+  min-height: 32px;
+  justify-content: center;
   border-radius: var(--radius-sm);
   transition: transform 0.25s var(--ease), background 0.25s var(--ease), color 0.25s var(--ease);
   display: flex;
@@ -374,7 +398,8 @@ async function doReportPost() {
 }
 
 .action-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  /* 跟随主题变量：亮色主题下悬停底自动换为深色半透明 */
+  background: var(--bg-card-hover);
   transform: scale(1.08);
 }
 
@@ -387,11 +412,27 @@ async function doReportPost() {
   fill: currentColor;
 }
 
-.action-btn.active:nth-child(3) {
-  color: var(--warning);
+/* 收藏高亮走显式 class，不再用 nth-child(3) 数位置 ——
+   删除/举报按钮带 v-if，按钮顺序一变高亮就会串到别的按钮上 */
+.action-btn.bookmark.active {
+  color: var(--text-link);
 }
 
 .action-btn.danger:hover {
   color: var(--danger);
 }
+
+/* 触屏上把操作按钮抬高到 40px，降低点赞/收藏的误触率（桌面维持 32px 密度） */
+@media (max-width: 768px) {
+  .action-btn {
+    min-height: 40px;
+    padding: 8px 10px;
+  }
+}
+.post-image-button { display: block; min-width: 0; padding: 0; border: 0; border-radius: var(--radius-md); background: var(--bg-input); overflow: hidden; cursor: zoom-in; }
+.post-image-button img { display: block; }
+.post-content.md-body { white-space: normal; overflow-wrap: anywhere; }
+.post-header { gap: var(--space-3); align-items: flex-start; flex-wrap: wrap; }
+.post-header > .text-muted { font-size: var(--font-xs); flex-shrink: 0; }
+@media (prefers-reduced-motion: reduce) { .post-card { animation: none; opacity: 1; } }
 </style>

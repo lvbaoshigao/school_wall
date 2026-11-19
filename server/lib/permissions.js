@@ -120,14 +120,14 @@ const WALL_ROLE_PERMS = {
 //   3. 墙内名号默认集（仅当 wallId > 0）
 //   4. 全局名号默认集
 function effectivePerms({ globalRole, wallRole, overrides = [], wallId = 0 }) {
-  const base = new Set(GLOBAL_ROLE_PERMS[globalRole] || []);
+  const base = new Set(Object.prototype.hasOwnProperty.call(GLOBAL_ROLE_PERMS, globalRole) ? GLOBAL_ROLE_PERMS[globalRole] : []);
   if (wallId > 0) {
-    (WALL_ROLE_PERMS[wallRole] || []).forEach(p => base.add(p));
+    (Object.prototype.hasOwnProperty.call(WALL_ROLE_PERMS, wallRole) ? WALL_ROLE_PERMS[wallRole] : []).forEach(p => base.add(p));
   }
 
   const apply = (scopeId) => {
     for (const o of overrides) {
-      if (o.wall_id !== scopeId) continue;
+      if (o.wall_id !== scopeId || !isKnownPerm(o.perm) || (scopeId > 0 && !isWallPerm(o.perm))) continue;
       // 全局作用域下不处理墙级权限的授予结果之外的事：wall.* 在 wall_id=0 授予时
       // 表示「对所有墙生效」，这里照常并入即可。
       if (o.effect === 'grant') base.add(o.perm);
@@ -147,14 +147,10 @@ function effectivePerms({ globalRole, wallRole, overrides = [], wallId = 0 }) {
 
 // 读取某人的全部覆盖项（一次请求查一次，挂到 req 上复用）
 function loadOverrides(db, userId) {
-  try {
-    return db.prepare(
-      'SELECT wall_id, perm, effect FROM user_permissions WHERE user_id = ?'
-    ).all(userId);
-  } catch {
-    // 迁移尚未跑完时不要让整站 500
-    return [];
-  }
+  // 查询失败必须拒绝访问；回退到角色默认权限会恢复已被 deny 的管理能力。
+  return db.prepare(
+    'SELECT wall_id, perm, effect FROM user_permissions WHERE user_id = ?'
+  ).all(userId);
 }
 
 const isWallPerm = (perm) => PERMISSIONS[perm]?.scope === 'wall';
@@ -167,8 +163,9 @@ const isKnownPerm = (perm) => Object.prototype.hasOwnProperty.call(PERMISSIONS, 
 // 每次调用要查 2~3 条，只适合在小集合上循环（一个墙的成员量级）。
 // 如果将来要在大列表上按权限过滤，应改成批量取 overrides 后在内存里算。
 function userCan(db, userId, perm, wallId = 0) {
-  const u = db.prepare('SELECT role FROM users WHERE id=?').get(userId);
-  if (!u) return false;
+  if (!isKnownPerm(perm)) return false;
+  const u = db.prepare('SELECT role, status FROM users WHERE id=?').get(userId);
+  if (!u || u.status !== 'active') return false;
   let wallRole = null;
   if (wallId > 0) {
     const m = db.prepare(

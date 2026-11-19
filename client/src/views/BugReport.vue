@@ -13,13 +13,15 @@ const submitting = ref(false)
 const success = ref(false)
 
 function pickImage() {
+  if (uploading.value || submitting.value) return
   const input = document.createElement('input')
   input.type = 'file'
   input.accept = 'image/jpeg,image/png,image/gif,image/webp'
   input.multiple = false
   input.onchange = async (e) => {
     const file = e.target.files[0]
-    if (!file) return
+    if (!file || uploading.value || submitting.value || success.value) return
+    if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)) { toast.error('请选择 JPG、PNG、GIF 或 WebP 图片'); return }
     if (file.size > 2 * 1024 * 1024) { toast.error('图片不能超过2MB'); return }
     if (images.value.length >= 9) { toast.error('最多上传9张图片'); return }
 
@@ -47,6 +49,7 @@ function removeImage(idx) {
 }
 
 async function submit() {
+  if (submitting.value || uploading.value || success.value) return
   if (!title.value.trim()) { toast.error('请填写标题'); return }
   if (!content.value.trim()) { toast.error('请填写反馈内容'); return }
   submitting.value = true
@@ -73,19 +76,19 @@ async function submit() {
   </div>
   <div v-else class="bug-report-form">
     <div class="form-group">
-      <label>标题</label>
-      <input v-model="title" type="text" placeholder="简要描述问题" maxlength="100" />
+      <label for="bug-title">标题</label>
+      <input id="bug-title" v-model="title" type="text" placeholder="简要描述问题" maxlength="100" />
     </div>
     <div class="form-group">
-      <label>详细描述</label>
-      <textarea v-model="content" placeholder="请详细描述你遇到的问题..." rows="4" maxlength="5000"></textarea>
+      <label for="bug-content">详细描述</label>
+      <textarea id="bug-content" v-model="content" placeholder="请详细描述你遇到的问题..." rows="4" maxlength="5000"></textarea>
       <div class="char-count">{{ content.length }}/5000</div>
     </div>
     <div class="form-group">
       <label>截图（可选，最多 9 张）</label>
       <div class="image-list">
         <div v-for="(url, idx) in images" :key="url" class="image-preview">
-          <img :src="url" alt="" />
+          <img :src="url" :alt="'问题截图 ' + (idx + 1)" />
           <button class="remove-btn" @click="removeImage(idx)" aria-label="删除图片"><Icon name="close" :size="14" /></button>
         </div>
         <button v-if="images.length < 9" class="add-image-btn" :disabled="uploading" @click="pickImage">
@@ -94,7 +97,7 @@ async function submit() {
         </button>
       </div>
     </div>
-    <button class="btn btn-primary" :disabled="!title.trim() || !content.trim() || submitting" @click="submit">
+    <button class="btn btn-primary" :disabled="!title.trim() || !content.trim() || submitting || uploading" @click="submit">
       {{ submitting ? '提交中…' : '提交反馈' }}
     </button>
   </div>
@@ -103,11 +106,11 @@ async function submit() {
 <style scoped>
 .success-state { text-align: center; padding: 24px; }
 .success-state .icon { margin-bottom: 12px; color: var(--success); }
-.success-state h3 { font-size: 18px; margin-bottom: 8px; }
+.success-state h3 { font-size: 1.125rem; margin-bottom: 8px; }
 
 .bug-report-form { display: flex; flex-direction: column; gap: 14px; }
-.form-group label { font-size: 14px; font-weight: 600; margin-bottom: 4px; display: block; }
-.char-count { font-size: 12px; color: var(--text-muted); text-align: right; margin-top: 2px; }
+.form-group label { font-size: 0.875rem; font-weight: 600; margin-bottom: 4px; display: block; }
+.char-count { font-size: 0.75rem; color: var(--text-muted); text-align: right; margin-top: 2px; }
 textarea { resize: vertical; min-height: 100px; }
 
 .image-list { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -125,8 +128,13 @@ textarea { resize: vertical; min-height: 100px; }
   border: 2px dashed var(--border); border-radius: var(--radius-sm);
   background: var(--bg-input); cursor: pointer;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; color: var(--text-muted); font-size: 11px;
+  gap: 4px; color: var(--text-muted); font-size: 0.6875rem;
 }
 .add-image-btn:hover { border-color: var(--accent-line); color: var(--text-primary); }
 .add-image-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 与校园墙主题保持一致，并为状态反馈留出可读空间。 */
+.state-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin: 12px 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--text-primary); line-height: 1.6; }
+.remove-btn { min-width: 32px; min-height: 32px; }
+.image-preview { width: 96px; height: 96px; }
 </style>

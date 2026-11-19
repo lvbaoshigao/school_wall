@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import Icon from '../components/Icon.vue'
@@ -19,21 +19,41 @@ const error = ref('')
 const success = ref(false)
 
 let searchTimer = null
+let redirectTimer = null
+let searchVersion = 0
+let searchController = null
+let disposed = false
+const searching = ref(false)
+const searchError = ref('')
 
 watch(searchQuery, (val) => {
   clearTimeout(searchTimer)
-  if (!val || val.length < 1) {
-    searchResults.value = []
-    return
-  }
+  searchController?.abort()
+  const version = ++searchVersion
+  const query = val.trim()
+  searchResults.value = []
+  searchError.value = ''
+  searching.value = !!query
+  if (!query) return
   searchTimer = setTimeout(async () => {
+    const controller = new AbortController()
+    searchController = controller
     try {
-      const res = await api.get(`/users/search?q=${encodeURIComponent(val)}`)
-      searchResults.value = res.data
+      const res = await api.get('/users/search', { params: { q: query }, signal: controller.signal })
+      if (!disposed && version === searchVersion) searchResults.value = res.data
     } catch (e) {
-      searchResults.value = []
+      if (!disposed && version === searchVersion && !controller.signal.aborted) searchError.value = '搜索失败，请重新输入或稍后重试'
+    } finally {
+      if (!disposed && version === searchVersion) searching.value = false
     }
   }, 300)
+})
+onBeforeUnmount(() => {
+  disposed = true
+  searchVersion++
+  clearTimeout(searchTimer)
+  clearTimeout(redirectTimer)
+  searchController?.abort()
 })
 
 function selectUser(user) {
@@ -47,6 +67,7 @@ function clearUser() {
 }
 
 async function submit() {
+  if (loading.value || success.value) return
   if (!selectedUser.value) {
     error.value = '请选择收件人'
     return
@@ -67,7 +88,7 @@ async function submit() {
       is_anonymous: isAnonymous.value
     })
     success.value = true
-    setTimeout(() => router.push('/inbox'), 2000)
+    if (!disposed) redirectTimer = setTimeout(() => router.push('/inbox'), 2000)
   } catch (e) {
     error.value = e.response?.data?.error || '发送失败'
   } finally {
@@ -91,11 +112,11 @@ async function submit() {
       <h2>撰写表白信</h2>
       <p class="text-muted mb-3">把你的心意传达给TA</p>
 
-      <div v-if="error" class="error-msg">{{ error }}</div>
+      <div v-if="error" class="error-msg" role="alert">{{ error }}</div>
 
       <!-- 选择收件人 -->
       <div class="form-group">
-        <label>收件人</label>
+        <label for="confession-recipient">收件人</label>
         <div v-if="selectedUser" class="selected-user">
           <span class="avatar-sm">{{ (selectedUser.real_name || selectedUser.nickname || selectedUser.username)[0] }}</span>
           <div>
@@ -107,11 +128,13 @@ async function submit() {
         </div>
         <div v-else class="search-box">
           <input
+            id="confession-recipient"
             v-model="searchQuery"
             placeholder="输入真实姓名搜索收件人..."
           />
           <div v-if="searchResults.length > 0" class="search-results glass">
-            <div
+            <button
+              type="button"
               v-for="user in searchResults"
               :key="user.id"
               class="search-item"
@@ -123,9 +146,11 @@ async function submit() {
                 <span v-if="user.real_name" class="text-muted"> · {{ user.nickname }}</span>
                 <span v-if="user.class_number" class="text-muted"> · {{ user.class_number }}班</span>
               </div>
-            </div>
+            </button>
           </div>
-          <div v-else-if="searchQuery.length > 0" class="search-empty text-muted">
+          <p v-if="searching" role="status" class="search-empty text-muted">正在搜索收件人…</p>
+          <p v-else-if="searchError" role="alert" class="state-error">{{ searchError }}</p>
+          <div v-else-if="searchQuery.trim().length > 0 && searchResults.length === 0" class="search-empty text-muted">
             未找到用户
           </div>
         </div>
@@ -133,14 +158,15 @@ async function submit() {
 
       <!-- 标题 -->
       <div class="form-group">
-        <label>标题 <span class="text-muted">(可选)</span></label>
-        <input v-model="title" placeholder="给信起个标题..." />
+        <label for="confession-title">标题 <span class="text-muted">(可选)</span></label>
+        <input id="confession-title" maxlength="100" v-model="title" placeholder="给信起个标题..." />
       </div>
 
       <!-- 内容 -->
       <div class="form-group">
-        <label>内容</label>
+        <label for="confession-content">内容</label>
         <textarea
+          id="confession-content"
           v-model="content"
           placeholder="写下你想对TA说的话..."
           rows="6"
@@ -183,7 +209,7 @@ async function submit() {
 }
 
 .confession-card h2, .success-card h2 {
-  font-size: 22px;
+  font-size: 1.375rem;
   margin-bottom: 4px;
 }
 
@@ -192,7 +218,7 @@ async function submit() {
   padding: 48px 28px;
 }
 
-.success-icon { display: flex; justify-content: center; color: var(--success-light, #7bed9f); margin-bottom: 16px; }
+.success-icon { display: flex; justify-content: center; color: var(--success-light, var(--success)); margin-bottom: 16px; }
 
 .selected-user {
   display: flex;
@@ -211,7 +237,7 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
@@ -261,7 +287,7 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
@@ -272,13 +298,13 @@ async function submit() {
 }
 
 .search-item strong {
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .search-empty {
   padding: 12px;
   text-align: center;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 textarea {
@@ -288,7 +314,7 @@ textarea {
 
 .char-count {
   text-align: right;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-muted);
   margin-top: 4px;
 }
@@ -299,7 +325,7 @@ textarea {
   color: var(--text-secondary);
   padding: 12px 16px;
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: 0.8125rem;
   margin-bottom: 16px;
   line-height: 1.5;
 }
@@ -307,10 +333,17 @@ textarea {
 .error-msg {
   background: rgba(255, 107, 107, 0.2);
   border: 1px solid rgba(255, 107, 107, 0.3);
-  color: #ffb8b8;
+  color: var(--danger-light);
   padding: 10px 14px;
   border-radius: var(--radius-sm);
-  font-size: 14px;
+  font-size: 0.875rem;
   margin-bottom: 16px;
 }
+
+/* 与校园墙主题保持一致，并为状态反馈留出可读空间。 */
+.state-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin: 12px 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--text-primary); line-height: 1.6; }
+.search-item { width: 100%; border: 0; color: var(--text-primary); font: inherit; text-align: left; background: transparent; }
+.selected-user { flex-wrap: wrap; }
+.selected-user > div { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .confession-card, .success-card { padding: 22px 16px; } }
 </style>

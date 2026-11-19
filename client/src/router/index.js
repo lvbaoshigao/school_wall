@@ -11,8 +11,8 @@ async function ensureSetupChecked() {
   try {
     const res = await api.get('/setup/status')
     systemInitialized = res.data.initialized
-  } catch { systemInitialized = true } // 网络错误默认放行
-  setupChecked = true
+    setupChecked = true
+  } catch { return true } // 网络错误允许表单展示，下次导航重新检查
   return systemInitialized
 }
 
@@ -49,8 +49,8 @@ const routes = [
   { path: '/help/report', name: 'ReportForm', component: () => import('../views/ReportForm.vue'), meta: { auth: true, wall: true } },
   { path: '/report/status/:code', name: 'ReportStatus', component: () => import('../views/ReportStatus.vue'), meta: { auth: true } },
   { path: '/bug-report', name: 'BugReport', component: () => import('../views/BugReport.vue'), meta: { auth: true } },
-  { path: '/tree-hole/chat/:conversationId', name: 'TreeHoleChat', component: () => import('../views/TreeHoleChat.vue'), meta: { auth: true } },
-  { path: '/tree-hole/list', name: 'TreeHoleConversations', component: () => import('../views/TreeHoleConversations.vue'), meta: { auth: true } },
+  { path: '/tree-hole/chat/:conversationId', name: 'TreeHoleChat', component: () => import('../views/TreeHoleChat.vue'), meta: { auth: true, wall: true } },
+  { path: '/tree-hole/list', name: 'TreeHoleConversations', component: () => import('../views/TreeHoleConversations.vue'), meta: { auth: true, wall: true } },
 ]
 
 const router = createRouter({
@@ -61,6 +61,8 @@ const router = createRouter({
 router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
   const wallStore = useWallStore()
+  // 首次导航先恢复账户/权限，避免刷新后界面闪错状态。
+  if (userStore.isLoggedIn && !userStore.user && to.path !== '/banned') await userStore.fetchUser()
 
   // 系统未初始化时，只允许 /login（显示首次设置表单）
   const initialized = await ensureSetupChecked()
@@ -69,7 +71,7 @@ router.beforeEach(async (to, from, next) => {
   }
 
   if (to.meta.auth && !userStore.isLoggedIn) {
-    return next('/login')
+    return next({ path: '/login', query: { redirect: to.fullPath } })
   }
   if (to.meta.guest && userStore.isLoggedIn) {
     return next('/')
@@ -82,11 +84,18 @@ router.beforeEach(async (to, from, next) => {
     if (!wallStore.loaded) {
       try { await wallStore.fetchMyWalls() } catch {}
     }
-    if (!wallStore.currentWallId) {
+    if (!wallStore.currentWall) {
       return next('/walls')
     }
   }
   next()
 })
+
+export function safeLoginRedirect(value, fallback = '/') {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return fallback
+  const target = router.resolve(value)
+  if (!target.matched.length || target.meta.guest || target.path === '/banned') return fallback
+  return target.fullPath
+}
 
 export default router

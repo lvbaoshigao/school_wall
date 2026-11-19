@@ -17,9 +17,13 @@ const showDeleteConfirm = ref(false)
 const showBlockConfirm = ref(false)
 const deleteTarget = ref(null)
 const blockTarget = ref(null)
+const busy = ref(new Set())
+const actionBusy = ref(false)
+const loadError = ref('')
 
 async function loadFriends() {
   loading.value = true
+  loadError.value = ''
   try {
     const [friendsRes, pendingRes] = await Promise.all([
       api.get('/friends'),
@@ -28,7 +32,7 @@ async function loadFriends() {
     friends.value = friendsRes.data
     pendingRequests.value = pendingRes.data
   } catch (e) {
-    console.error('加载好友失败', e)
+    loadError.value = '好友列表加载失败，请重试'
   } finally {
     loading.value = false
   }
@@ -45,13 +49,15 @@ const sortedFriends = computed(() => {
 })
 
 async function respondToRequest(requestId, action) {
+  if (busy.value.has(requestId)) return
+  busy.value.add(requestId)
   try {
     const res = await api.put(`/friends/${requestId}/respond`, { action })
     toast.success(res.data.message)
     loadFriends()
   } catch (e) {
     toast.error(e.response?.data?.error || '操作失败')
-  }
+  } finally { busy.value.delete(requestId) }
 }
 
 async function deleteFriend(friend) {
@@ -60,13 +66,15 @@ async function deleteFriend(friend) {
 }
 
 async function doDeleteFriend() {
-  if (!deleteTarget.value) return
+  if (!deleteTarget.value || actionBusy.value) return
+  actionBusy.value = true
   try {
     await api.delete(`/friends/${deleteTarget.value.id}`)
     loadFriends()
   } catch (e) {
     toast.error(e.response?.data?.error || '操作失败')
   }
+  actionBusy.value = false
   deleteTarget.value = null
 }
 
@@ -76,7 +84,8 @@ async function blockUser(friend) {
 }
 
 async function doBlockUser() {
-  if (!blockTarget.value) return
+  if (!blockTarget.value || actionBusy.value) return
+  actionBusy.value = true
   try {
     await api.post('/friends/block', { user_id: blockTarget.value.friend_id })
     toast.success('已拉黑')
@@ -84,6 +93,7 @@ async function doBlockUser() {
   } catch (e) {
     toast.error(e.response?.data?.error || '操作失败')
   }
+  actionBusy.value = false
   blockTarget.value = null
 }
 
@@ -116,6 +126,7 @@ onMounted(() => loadFriends())
       <SkeletonCard v-for="i in 3" :key="i" :lines="1" />
     </div>
 
+    <p v-else-if="loadError" class="state-error" role="alert">{{ loadError }} <button class="btn btn-secondary btn-sm" @click="loadFriends">重试</button></p>
     <template v-else>
       <!-- 好友请求 -->
       <div v-if="pendingRequests.length > 0" class="section">
@@ -133,8 +144,8 @@ onMounted(() => loadFriends())
               </div>
             </div>
             <div class="request-actions">
-              <button class="btn btn-sm btn-primary" @click="respondToRequest(req.id, 'accept')">同意</button>
-              <button class="btn btn-sm btn-secondary" @click="respondToRequest(req.id, 'reject')">拒绝</button>
+              <button class="btn btn-sm btn-primary" :disabled="busy.has(req.id)" @click="respondToRequest(req.id, 'accept')">同意</button>
+              <button class="btn btn-sm btn-secondary" :disabled="busy.has(req.id)" @click="respondToRequest(req.id, 'reject')">拒绝</button>
             </div>
           </div>
         </div>
@@ -217,7 +228,7 @@ onMounted(() => loadFriends())
 .chat-page { animation: fadeIn 0.5s ease; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-h2 { font-size: 24px; margin-bottom: 20px; }
+h2 { font-size: 1.5rem; margin-bottom: 20px; }
 
 .skeleton-wrap { display: flex; flex-direction: column; gap: var(--space-3); }
 
@@ -238,7 +249,7 @@ h2 { font-size: 24px; margin-bottom: 20px; }
   border: none;
   color: var(--text-secondary);
   padding: 10px 12px;
-  font-size: 14px;
+  font-size: 0.875rem;
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: background 0.2s var(--ease), color 0.2s var(--ease);
@@ -247,7 +258,7 @@ h2 { font-size: 24px; margin-bottom: 20px; }
 .find-entry .entry-arrow { margin-left: auto; opacity: 0.5; }
 
 .section { margin-bottom: 24px; }
-.section h3 { font-size: 18px; margin-bottom: 12px; }
+.section h3 { font-size: 1.125rem; margin-bottom: 12px; }
 
 .section-header {
   display: flex;
@@ -269,7 +280,7 @@ h2 { font-size: 24px; margin-bottom: 20px; }
   border: none;
   color: var(--text-muted);
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   border-radius: var(--radius-sm);
   transition: all 0.2s;
@@ -296,7 +307,7 @@ h2 { font-size: 24px; margin-bottom: 20px; }
   align-items: center;
   padding: 12px 16px;
   border-radius: var(--radius-md);
-  border-left: 3px solid #c9b99a;
+  border-left: 3px solid var(--text-link);
 }
 
 .request-info {
@@ -313,7 +324,7 @@ h2 { font-size: 24px; margin-bottom: 20px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
@@ -361,7 +372,7 @@ h2 { font-size: 24px; margin-bottom: 20px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
@@ -375,13 +386,13 @@ h2 { font-size: 24px; margin-bottom: 20px; }
 }
 
 .friend-info { flex: 1; }
-.friend-name { font-weight: 600; font-size: 15px; }
+.friend-name { font-weight: 600; font-size: 0.9375rem; }
 
 .chat-hint {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-muted);
 }
 
@@ -396,7 +407,7 @@ h2 { font-size: 24px; margin-bottom: 20px; }
 .action-btn {
   background: none;
   border: none;
-  font-size: 14px;
+  font-size: 0.875rem;
   cursor: pointer;
   padding: 6px 12px;
   border-radius: var(--radius-sm);
@@ -413,10 +424,16 @@ h2 { font-size: 24px; margin-bottom: 20px; }
 
 .action-btn.danger:hover {
   background: rgba(255, 107, 107, 0.15);
-  color: #ff6b6b;
+  color: var(--danger);
 }
 
 .action-label {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
+
+/* 与校园墙主题保持一致，并为状态反馈留出可读空间。 */
+.state-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin: 12px 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--text-primary); line-height: 1.6; }
+.request-item, .friend-item { gap: var(--space-3); }
+.request-info, .friend-info { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .request-item { flex-wrap: wrap; } .request-actions { margin-left: auto; } }
 </style>

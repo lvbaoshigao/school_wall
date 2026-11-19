@@ -52,7 +52,7 @@ const PREF_SCHEMA = {
   disable_blur:      { type: 'bool', def: false },
 
   // ===== 主题色 =====
-  accent: { type: 'enum', values: ['indigo', 'teal', 'forest', 'amber', 'rose', 'slate'], def: 'indigo' },
+  accent: { type: 'enum', values: ['indigo', 'teal', 'forest', 'amber', 'rose', 'slate'], def: 'teal' },
 };
 
 // 把存储值 + 默认值合并成完整、类型正确的偏好对象
@@ -79,8 +79,8 @@ function sanitizePrefs(input) {
   for (const [key, spec] of Object.entries(PREF_SCHEMA)) {
     if (!(key in src)) continue;
     const raw = src[key];
-    if (spec.type === 'bool') {
-      out[key] = !!raw;
+    if (spec.type === 'bool' && typeof raw === 'boolean') {
+      out[key] = raw;
     } else if (spec.type === 'enum' && spec.values.includes(raw)) {
       out[key] = raw;
     }

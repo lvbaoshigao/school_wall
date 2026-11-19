@@ -120,26 +120,66 @@
 
 ---
 
-## 🚀 部署方式
+## 🚀 运行、配置与验证
 
-### Linux 一键部署
+需要 **Node.js >=22.12.0** 和 npm。安装使用已提交的两个 package-lock.json，每次都执行 npm ci 并重新构建前端，已有 node_modules 或 dist 不会跳过更新。后端使用 sharp 进行真实图片解码和重编码，必须在目标操作系统/CPU 上安装其原生依赖；不要跨平台复制 node_modules，也不要禁用 optional 依赖。
 
-```bash
-chmod +x deploy.sh
-./deploy.sh
-```
+### Linux 本地运行
 
-### Windows 部署
+~~~bash
+# 安装锁定依赖、重建前端、前台启动；Ctrl+C 停止
+bash deploy.sh
+bash deploy.sh --port 8080
 
-```bash
+# 只安装/构建，不启动应用
+bash deploy.sh --prepare-only
+# 只检查现有 Node、sharp 原生编码/解码与构建是否存在，不安装或启动
+bash deploy.sh --check
+~~~
+
+默认只监听 127.0.0.1。首次启动后在本机完成初始化向导，系统没有默认管理员账号。需要局域网直连时，可在完成初始化后显式设置 HOST=0.0.0.0；公网运行应使用 HTTPS 与反向代理，生产模板及运维步骤见 [部署说明](deploy/README.md)。
+
+### Windows
+
+~~~bat
+REM 安装锁定依赖、重建并打开后端窗口
 deploy.bat
-```
-
-### 自定义端口
-
-```bash
 deploy.bat --port 8080
-```
+REM 开发模式：后端 3000 + 仅本机 Vite 5173
+start.bat
+REM 仅停止端口上经验证属于本项目的后端
+stop.bat --port 8080
+~~~
+
+Windows 入口使用随系统提供的 PowerShell、NetTCPIP 与 CIM。停止脚本会核对精确本地端口、Node 可执行程序和本项目绝对入口路径；遇到其他项目的进程会报错退出。开发前端在自己的窗口用 Ctrl+C 停止。Windows 进程终止可能中断未落盘写入，维护前请备份数据。
+
+### 配置与持久化
+
+| 变量 | 默认值 / 用途 |
+|------|--------------|
+| PORT | 3000；监听端口，范围 1–65535 |
+| HOST | 启动脚本默认 127.0.0.1；显式设置 0.0.0.0 才开放局域网直连 |
+| DATA_DIR | server 目录；data.db、.jwt_secret、uploads、backups 均位于该数据根 |
+| JWT_SECRET | 可选，至少 16 字符；不设置时自动生成并持久保存 .jwt_secret |
+| TRUST_PROXY | 默认不信任；随附 Nginx 模板只设置为 1，并由代理覆盖客户端转发头 |
+| ALLOWED_ORIGINS | 可选，逗号分隔的额外允许来源；同源部署无需设置 |
+| UPLOAD_MAX_TOTAL_MB | 默认 2048，上传总配额 |
+| UPLOAD_MAX_USER_MB_PER_HOUR | 默认 50，每用户每小时上传额度 |
+
+直接运行时通过 shell 设置环境变量；应用与本地启动脚本不会自动读取 .env。systemd 模板会读取 server/.env，具体格式和 DATA_DIR 可写路径由部署安装器校验。相对 DATA_DIR 按后端工作目录解析，建议使用绝对路径。改变数据根不会自动搬迁旧数据；请停服务后一起迁移数据库、密钥、上传与备份，再更新配置。常规部署固定 KEEP_DB=1，避免误触发删库重建。
+
+### 验证
+
+~~~bash
+(cd server && npm test && npm run audit:security)
+(cd client && npm test && npm run audit:security)
+# 以下需要服务已由运维启动；本地启动默认端口 3000
+curl --fail --max-time 5 http://127.0.0.1:3000/api/health
+# 部署脚本的隔离回归测试，不启动真实应用或修改系统
+node --test deploy/test/*.test.cjs
+~~~
+
+/api/health 会实际查询数据库；只看到静态首页返回 200 不能证明后端健康。部署脚本隔离回归需要 Bash 环境，Windows 原生启停应另在 Windows 上验证。
 
 ---
 

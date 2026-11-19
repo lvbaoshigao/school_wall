@@ -1,0 +1,883 @@
+(node:71668) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+> school-wall-server@1.0.0 test
+> node --test test/*.test.js
+
+(node:71716) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:71737) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# [DB] 迁移完成：旧库列已补齐到最新版本
+# [DB] 数据库未初始化，请通过前端完成首次设置（创建超级管理员 + 第一个校园墙）
+# [DB] 数据库初始化完成
+# Subtest: admin security regression suite with isolated SQL database
+    # Subtest: ordinary users cannot enter global moderation
+    ok 1 - ordinary users cannot enter global moderation
+      ---
+      duration_ms: 270.967355
+      type: 'test'
+      ...
+    # Subtest: user listing permission cannot demote another administrator
+    ok 2 - user listing permission cannot demote another administrator
+      ---
+      duration_ms: 75.848217
+      type: 'test'
+      ...
+    # Subtest: authorized role managers can change a non-root role
+    ok 3 - authorized role managers can change a non-root role
+      ---
+      duration_ms: 74.126949
+      type: 'test'
+      ...
+    # Subtest: report handling alone cannot ban users
+    ok 4 - report handling alone cannot ban users
+      ---
+      duration_ms: 144.955874
+      type: 'test'
+      ...
+    # Subtest: reports cannot bypass super administrator ban protection
+    ok 5 - reports cannot bypass super administrator ban protection
+      ---
+      duration_ms: 169.035406
+      type: 'test'
+      ...
+    # Subtest: reports cannot bypass peer administrator ban protection
+    ok 6 - reports cannot bypass peer administrator ban protection
+      ---
+      duration_ms: 138.799405
+      type: 'test'
+      ...
+    # Subtest: reports cannot be used to ban oneself
+    ok 7 - reports cannot be used to ban oneself
+      ---
+      duration_ms: 188.242441
+      type: 'test'
+      ...
+    # Subtest: authorized report bans remain functional and reset stale ban levels
+    ok 8 - authorized report bans remain functional and reset stale ban levels
+      ---
+      duration_ms: 304.412686
+      type: 'test'
+      ...
+    # Subtest: administrative deletion removes related private rows and updates surviving counters
+    ok 9 - administrative deletion removes related private rows and updates surviving counters
+      ---
+      duration_ms: 153.396519
+      type: 'test'
+      ...
+    # Subtest: administrative deletion rolls back earlier changes after SQL failure
+    ok 10 - administrative deletion rolls back earlier changes after SQL failure
+      ---
+      duration_ms: 246.314953
+      type: 'test'
+      ...
+    # Subtest: unpublished real names cannot be inferred from administrative search results
+    ok 11 - unpublished real names cannot be inferred from administrative search results
+      ---
+      duration_ms: 56.760519
+      type: 'test'
+      ...
+    # Subtest: strict path and pagination validation rejects coercion
+    ok 12 - strict path and pagination validation rejects coercion
+      ---
+      duration_ms: 69.313492
+      type: 'test'
+      ...
+    # Subtest: post report permission cannot substitute for delete permission
+    ok 13 - post report permission cannot substitute for delete permission
+      ---
+      duration_ms: 33.715077
+      type: 'test'
+      ...
+    # Subtest: post report deletion verifies the referenced post belongs to that wall
+    ok 14 - post report deletion verifies the referenced post belongs to that wall
+      ---
+      duration_ms: 28.425707
+      type: 'test'
+      ...
+    # Subtest: administrative post deletion rolls back comments and bookmarks after failure
+    ok 15 - administrative post deletion rolls back comments and bookmarks after failure
+      ---
+      duration_ms: 32.870815
+      type: 'test'
+      ...
+    # Subtest: last active root protection ignores unavailable root accounts
+    ok 16 - last active root protection ignores unavailable root accounts
+      ---
+      duration_ms: 27.135203
+      type: 'test'
+      ...
+    # Subtest: delegated permission managers cannot grant capabilities they do not hold
+    ok 17 - delegated permission managers cannot grant capabilities they do not hold
+      ---
+      duration_ms: 27.040519
+      type: 'test'
+      ...
+    # Subtest: delegates cannot edit root permissions and malformed scopes never fall back to global
+    ok 18 - delegates cannot edit root permissions and malformed scopes never fall back to global
+      ---
+      duration_ms: 61.334161
+      type: 'test'
+      ...
+    # Subtest: legitimate permission delegation is retained
+    ok 19 - legitimate permission delegation is retained
+      ---
+      duration_ms: 32.960697
+      type: 'test'
+      ...
+    # Subtest: permission resolution rejects malformed override scopes and fails closed on lookup errors
+    ok 20 - permission resolution rejects malformed override scopes and fails closed on lookup errors
+      ---
+      duration_ms: 20.366556
+      type: 'test'
+      ...
+    # Subtest: permission writes roll back earlier changes on SQL failure
+    ok 21 - permission writes roll back earlier changes on SQL failure
+      ---
+      duration_ms: 32.738287
+      type: 'test'
+      ...
+    # Subtest: wall approval rejects unavailable applicants and validates path ids
+    ok 22 - wall approval rejects unavailable applicants and validates path ids
+      ---
+      duration_ms: 26.333121
+      type: 'test'
+      ...
+    # Subtest: wall approval is atomic when membership creation fails
+    ok 23 - wall approval is atomic when membership creation fails
+      ---
+      duration_ms: 22.911482
+      type: 'test'
+      ...
+    # Subtest: backup APIs require database privilege and create distinct private files in DATA_DIR
+    ok 24 - backup APIs require database privilege and create distinct private files in DATA_DIR
+      ---
+      duration_ms: 36.848961
+      type: 'test'
+      ...
+    # Subtest: backup list and download reject symlinks
+    ok 25 - backup list and download reject symlinks
+      ---
+      duration_ms: 29.846002
+      type: 'test'
+      ...
+    # Subtest: whitelist protection rejects empty enabled lists while off remains allowed
+    ok 26 - whitelist protection rejects empty enabled lists while off remains allowed
+      ---
+      duration_ms: 45.95032
+      type: 'test'
+      ...
+    # Subtest: whitelist empty config can rely on environment entries containing the current IP
+    ok 27 - whitelist empty config can rely on environment entries containing the current IP
+      ---
+      duration_ms: 23.581719
+      type: 'test'
+      ...
+    # Subtest: whitelist enabled modes reject lists that exclude the current IP
+    ok 28 - whitelist enabled modes reject lists that exclude the current IP
+      ---
+      duration_ms: 28.375452
+      type: 'test'
+      ...
+    # Subtest: whitelist settings save atomically when the second write fails
+    ok 29 - whitelist settings save atomically when the second write fails
+      ---
+      duration_ms: 20.806154
+      type: 'test'
+      ...
+    # Subtest: database wipe rolls back table deletes on error
+    ok 30 - database wipe rolls back table deletes on error
+      ---
+      duration_ms: 17.853863
+      type: 'test'
+      ...
+    # Subtest: wipe safely quotes unusual SQLite table identifiers
+    ok 31 - wipe safely quotes unusual SQLite table identifiers
+      ---
+      duration_ms: 17.238574
+      type: 'test'
+      ...
+    # Subtest: wipe codes enforce cooldown, same session, expiry and attempt limits
+    ok 32 - wipe codes enforce cooldown, same session, expiry and attempt limits
+      ---
+      duration_ms: 73.100696
+      type: 'test'
+      ...
+    # Subtest: wipe aborts before deletion when automatic backup fails
+    ok 33 - wipe aborts before deletion when automatic backup fails
+      ---
+      duration_ms: 30.021856
+      type: 'test'
+      ...
+    # Subtest: dashboard renders safe data attributes and a compilable nonce script
+    ok 34 - dashboard renders safe data attributes and a compilable nonce script
+      ---
+      duration_ms: 88.799799
+      type: 'test'
+      ...
+    # Subtest: dashboard-only delegates cannot retrieve user or post details
+    ok 35 - dashboard-only delegates cannot retrieve user or post details
+      ---
+      duration_ms: 90.389895
+      type: 'test'
+      ...
+    # Subtest: dashboard token and dangerous APIs require session CSRF proof and same origin
+    ok 36 - dashboard token and dangerous APIs require session CSRF proof and same origin
+      ---
+      duration_ms: 71.092363
+      type: 'test'
+      ...
+    # Subtest: dashboard tickets revoke immediately after password version or account status changes
+    ok 37 - dashboard tickets revoke immediately after password version or account status changes
+      ---
+      duration_ms: 142.87087
+      type: 'test'
+      ...
+    # Subtest: wall announcement reads cannot delete expired data in another wall
+    ok 38 - wall announcement reads cannot delete expired data in another wall
+      ---
+      duration_ms: 27.532634
+      type: 'test'
+      ...
+    # Subtest: announcement and delivery notifications roll back together
+    ok 39 - announcement and delivery notifications roll back together
+      ---
+      duration_ms: 45.547622
+      type: 'test'
+      ...
+    # Subtest: report rejection records a rejected status
+    ok 40 - report rejection records a rejected status
+      ---
+      duration_ms: 55.526884
+      type: 'test'
+      ...
+    # Subtest: global announcement management used by dashboard works without wall context
+    ok 41 - global announcement management used by dashboard works without wall context
+      ---
+      duration_ms: 58.833714
+      type: 'test'
+      ...
+    1..41
+ok 1 - admin security regression suite with isolated SQL database
+  ---
+  duration_ms: 3572.135952
+  type: 'test'
+  ...
+# (node:71738) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: scrypt round trips, rejects JSON coercion and bounds malformed KDF data
+ok 2 - scrypt round trips, rejects JSON coercion and bounds malformed KDF data
+  ---
+  duration_ms: 964.239301
+  type: 'test'
+  ...
+# Subtest: legacy bcrypt migrates normal passwords but never pins an arbitrary tail after byte 72
+ok 3 - legacy bcrypt migrates normal passwords but never pins an arbitrary tail after byte 72
+  ---
+  duration_ms: 130.142926
+  type: 'test'
+  ...
+# Subtest: register validates strings, lengths and JSON object shape before any insert
+ok 4 - register validates strings, lengths and JSON object shape before any insert
+  ---
+  duration_ms: 568.179355
+  type: 'test'
+  ...
+# Subtest: concurrent duplicate registrations create only one ordinary account
+ok 5 - concurrent duplicate registrations create only one ordinary account
+  ---
+  duration_ms: 617.881799
+  type: 'test'
+  ...
+# Subtest: profile type and integer validation preserves privacy and prevents mass assignment
+ok 6 - profile type and integer validation preserves privacy and prevents mass assignment
+  ---
+  duration_ms: 262.07626
+  type: 'test'
+  ...
+# Subtest: password changes revoke old tokens, return a working replacement and handle nullable legacy versions
+ok 7 - password changes revoke old tokens, return a working replacement and handle nullable legacy versions
+  ---
+  duration_ms: 616.51639
+  type: 'test'
+  ...
+# Subtest: simultaneous password changes using the same old session cannot both commit
+ok 8 - simultaneous password changes using the same old session cannot both commit
+  ---
+  duration_ms: 500.945718
+  type: 'test'
+  ...
+# Subtest: successful legacy login upgrades the hash and produces an accepted API session
+ok 9 - successful legacy login upgrades the hash and produces an accepted API session
+  ---
+  duration_ms: 411.453789
+  type: 'test'
+  ...
+# Subtest: a delayed bcrypt upgrade cannot overwrite a new password or resurrect old credentials
+ok 10 - a delayed bcrypt upgrade cannot overwrite a new password or resurrect old credentials
+  ---
+  duration_ms: 432.104921
+  type: 'test'
+  ...
+# Subtest: a delayed password verification cannot log in with credentials changed in flight
+ok 11 - a delayed password verification cannot log in with credentials changed in flight
+  ---
+  duration_ms: 235.088797
+  type: 'test'
+  ...
+# Subtest: account deletion rechecks credentials and super-admin protection after verification awaits
+ok 12 - account deletion rechecks credentials and super-admin protection after verification awaits
+  ---
+  duration_ms: 437.613202
+  type: 'test'
+  ...
+# Subtest: account deletion requires the current password and preserves active wall ownership
+ok 13 - account deletion requires the current password and preserves active wall ownership
+  ---
+  duration_ms: 299.690469
+  type: 'test'
+  ...
+# Subtest: account deletion fully rolls back content and counters if the final delete fails
+ok 14 - account deletion fully rolls back content and counters if the final delete fails
+  ---
+  duration_ms: 190.73971
+  type: 'test'
+  ...
+# Subtest: successful account deletion removes dependent private data and repairs surviving counters
+ok 15 - successful account deletion removes dependent private data and repairs surviving counters
+  ---
+  duration_ms: 182.246837
+  type: 'test'
+  ...
+# Subtest: avatars cannot adopt or delete another user file, including legacy malicious references
+ok 16 - avatars cannot adopt or delete another user file, including legacy malicious references
+  ---
+  duration_ms: 115.29773
+  type: 'test'
+  ...
+# Subtest: public profile lookup hides unrelated accounts, honors privacy and rejects id suffixes
+ok 17 - public profile lookup hides unrelated accounts, honors privacy and rejects id suffixes
+  ---
+  duration_ms: 95.984601
+  type: 'test'
+  ...
+# Subtest: avatar decoding rechecks token revocation before changing files or profile state
+ok 18 - avatar decoding rechecks token revocation before changing files or profile state
+  ---
+  duration_ms: 76.335032
+  type: 'test'
+  ...
+# Subtest: wall contexts reject explicit malformed and conflicting sources instead of parseInt prefixes
+ok 19 - wall contexts reject explicit malformed and conflicting sources instead of parseInt prefixes
+  ---
+  duration_ms: 121.811522
+  type: 'test'
+  ...
+# Subtest: anonymous and deleted messages cannot become profile identity probes or bypass blocks and inactive walls
+ok 20 - anonymous and deleted messages cannot become profile identity probes or bypass blocks and inactive walls
+  ---
+  duration_ms: 88.678922
+  type: 'test'
+  ...
+# Subtest: data export hides anonymous tree counterpart IDs, honors side deletion and revokes former volunteer access
+ok 21 - data export hides anonymous tree counterpart IDs, honors side deletion and revokes former volunteer access
+  ---
+  duration_ms: 65.088302
+  type: 'test'
+  ...
+# Subtest: setup validates inputs and concurrent requests create exactly one initialized owner
+ok 22 - setup validates inputs and concurrent requests create exactly one initialized owner
+  ---
+  duration_ms: 258.497842
+  type: 'test'
+  ...
+# [Setup] 初始化失败: injected settings failure
+# [Setup] 初始化失败: injected sign failure
+# Subtest: setup settings-write and token-sign failures roll back all initialization records
+ok 23 - setup settings-write and token-sign failures roll back all initialization records
+  ---
+  duration_ms: 531.196936
+  type: 'test'
+  ...
+# Subtest: chat bans survive router mounting and case-insensitive Express paths
+ok 24 - chat bans survive router mounting and case-insensitive Express paths
+  ---
+  duration_ms: 300.977589
+  type: 'test'
+  ...
+# Subtest: global bans only allow valid-session appeals, bound reason size and rate-limit repeats
+ok 25 - global bans only allow valid-session appeals, bound reason size and rate-limit repeats
+  ---
+  duration_ms: 71.423708
+  type: 'test'
+  ...
+# Subtest: a failed appeal notification rolls back its record so the same user can retry immediately
+ok 26 - a failed appeal notification rolls back its record so the same user can retry immediately
+  ---
+  duration_ms: 126.020143
+  type: 'test'
+  ...
+# Subtest: middleware validates claims, token version, algorithms and current database roles
+ok 27 - middleware validates claims, token version, algorithms and current database roles
+  ---
+  duration_ms: 98.599614
+  type: 'test'
+  ...
+# [Auth] 已生成随机 JWT 密钥并保存到 server/.jwt_secret
+# Subtest: downstream synchronous errors are server errors, not mislabeled expired sessions
+ok 28 - downstream synchronous errors are server errors, not mislabeled expired sessions
+  ---
+  duration_ms: 31.125342
+  type: 'test'
+  ...
+# Subtest: JWT secret creation is exclusive and fails closed on bad configuration or persistence failure
+ok 29 - JWT secret creation is exclusive and fails closed on bad configuration or persistence failure
+  ---
+  duration_ms: 5.293238
+  type: 'test'
+  ...
+# Subtest: offline adduser refuses implicit/default credentials and only creates a new protected database copy
+ok 30 - offline adduser refuses implicit/default credentials and only creates a new protected database copy
+  ---
+  duration_ms: 303.059177
+  type: 'test'
+  ...
+# (node:71744) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: content: anonymous posts and votes never disclose legacy stored author IDs or IPs
+ok 31 - content: anonymous posts and votes never disclose legacy stored author IDs or IPs
+  ---
+  duration_ms: 975.115233
+  type: 'test'
+  ...
+# Subtest: content: current wall is enforced on every post and vote read/write
+ok 32 - content: current wall is enforced on every post and vote read/write
+  ---
+  duration_ms: 527.085536
+  type: 'test'
+  ...
+# Subtest: content: author/moderator rules and comment-parent boundaries remain intact
+ok 33 - content: author/moderator rules and comment-parent boundaries remain intact
+  ---
+  duration_ms: 116.443487
+  type: 'test'
+  ...
+# Subtest: content: comments paginate with deterministic order only after post-wall authorization
+ok 34 - content: comments paginate with deterministic order only after post-wall authorization
+  ---
+  duration_ms: 572.81402
+  type: 'test'
+  ...
+# Subtest: content: removed membership and inactive walls cannot leak bookmarked posts
+ok 35 - content: removed membership and inactive walls cannot leak bookmarked posts
+  ---
+  duration_ms: 169.269884
+  type: 'test'
+  ...
+# Subtest: content: malformed text, flags, objects, IDs and query arrays produce 400
+ok 36 - content: malformed text, flags, objects, IDs and query arrays produce 400
+  ---
+  duration_ms: 260.526478
+  type: 'test'
+  ...
+# Subtest: content: posts search and feed validate query types and bounded pagination without breaking defaults
+ok 37 - content: posts search and feed validate query types and bounded pagination without breaking defaults
+  ---
+  duration_ms: 419.805046
+  type: 'test'
+  ...
+# Subtest: content: LIKE search treats SQL syntax, percent, underscore and backslash literally
+ok 38 - content: LIKE search treats SQL syntax, percent, underscore and backslash literally
+  ---
+  duration_ms: 100.913814
+  type: 'test'
+  ...
+# Subtest: content: strict bounded pagination cannot disable LIMIT or overflow offsets
+ok 39 - content: strict bounded pagination cannot disable LIMIT or overflow offsets
+  ---
+  duration_ms: 468.197619
+  type: 'test'
+  ...
+# Subtest: content: safety tracking requires safety permission, not broad moderation
+ok 40 - content: safety tracking requires safety permission, not broad moderation
+  ---
+  duration_ms: 92.964048
+  type: 'test'
+  ...
+# Subtest: content: unauthorized safety status probes disclose no record state
+ok 41 - content: unauthorized safety status probes disclose no record state
+  ---
+  duration_ms: 102.686086
+  type: 'test'
+  ...
+# Subtest: content: new safety and bug evidence must belong to the submitter and signed reads stay private
+ok 42 - content: new safety and bug evidence must belong to the submitter and signed reads stay private
+  ---
+  duration_ms: 190.945251
+  type: 'test'
+  ...
+# Subtest: content: repeated likes/unlikes and votes preserve single-user counts
+ok 43 - content: repeated likes/unlikes and votes preserve single-user counts
+  ---
+  duration_ms: 317.497456
+  type: 'test'
+  ...
+# Subtest: content: vote deadlines reject invalid types, impossible dates and elapsed instants
+ok 44 - content: vote deadlines reject invalid types, impossible dates and elapsed instants
+  ---
+  duration_ms: 83.094757
+  type: 'test'
+  ...
+# Subtest: content: write failures roll back likes, comments, votes, reports and notifications
+ok 45 - content: write failures roll back likes, comments, votes, reports and notifications
+  ---
+  duration_ms: 97.834373
+  type: 'test'
+  ...
+# Subtest: content: failed deletes and unlike operations keep dependent rows and counts intact
+ok 46 - content: failed deletes and unlike operations keep dependent rows and counts intact
+  ---
+  duration_ms: 122.766573
+  type: 'test'
+  ...
+# Subtest: content: feedback replies validate size and may explicitly clear an old reply
+ok 47 - content: feedback replies validate size and may explicitly clear an old reply
+  ---
+  duration_ms: 56.57425
+  type: 'test'
+  ...
+# Subtest: content: announcement reads filter expiration and scope without deleting any wall data
+ok 48 - content: announcement reads filter expiration and scope without deleting any wall data
+  ---
+  duration_ms: 37.032911
+  type: 'test'
+  ...
+# (node:71777) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: infra: real main returns JSON400 for malformed requests, secure headers and bounded unknown API404
+ok 49 - infra: real main returns JSON400 for malformed requests, secure headers and bounded unknown API404
+  ---
+  duration_ms: 1734.208845
+  type: 'test'
+  ...
+# Subtest: infra: real unread badge endpoint stays aligned with single-sided deletion
+ok 50 - infra: real unread badge endpoint stays aligned with single-sided deletion
+  ---
+  duration_ms: 1957.424174
+  type: 'test'
+  ...
+# Subtest: infra: uploads reject JSON types, SVG and false MIME while accepting a complete PNG
+ok 51 - infra: uploads reject JSON types, SVG and false MIME while accepting a complete PNG
+  ---
+  duration_ms: 1537.785334
+  type: 'test'
+  ...
+# Subtest: infra: accepted uploads are decoded and rewritten without user-supplied private metadata
+ok 52 - infra: accepted uploads are decoded and rewritten without user-supplied private metadata
+  ---
+  duration_ms: 1172.291507
+  type: 'test'
+  ...
+# Subtest: infra: upload decoding rejects truncated PNG, corrupt CRC, invalid IDAT, fake GIF and VP8X shells
+ok 53 - infra: upload decoding rejects truncated PNG, corrupt CRC, invalid IDAT, fake GIF and VP8X shells
+  ---
+  duration_ms: 1161.384333
+  type: 'test'
+  ...
+# Subtest: infra: both avatar endpoints replace own files and preserve another account file
+ok 54 - infra: both avatar endpoints replace own files and preserve another account file
+  ---
+  duration_ms: 934.679894
+  type: 'test'
+  ...
+# Subtest: infra: replacing a shared legacy avatar preserves files still referenced by another profile
+ok 55 - infra: replacing a shared legacy avatar preserves files still referenced by another profile
+  ---
+  duration_ms: 1402.857332
+  type: 'test'
+  ...
+# Subtest: infra: private image capabilities resist encoding bypass, path substitution and use as login tokens
+ok 56 - infra: private image capabilities resist encoding bypass, path substitution and use as login tokens
+  ---
+  duration_ms: 1080.115559
+  type: 'test'
+  ...
+# Subtest: infra: historical report images are private across encoded paths and only authorized report reads sign them
+ok 57 - infra: historical report images are private across encoded paths and only authorized report reads sign them
+  ---
+  duration_ms: 635.177338
+  type: 'test'
+  ...
+# Subtest: infra: mode=all whitelist protects APIs and management regardless of case and ignores spoofed proxy headers
+ok 58 - infra: mode=all whitelist protects APIs and management regardless of case and ignores spoofed proxy headers
+  ---
+  duration_ms: 1075.941701
+  type: 'test'
+  ...
+# Subtest: infra: trusted proxy chains use the nearest untrusted XFF hop instead of the attacker-controlled first IP or CF header
+ok 59 - infra: trusted proxy chains use the nearest untrusted XFF hop instead of the attacker-controlled first IP or CF header
+  ---
+  duration_ms: 958.624269
+  type: 'test'
+  ...
+# Subtest: infra: revoked or nonexistent-account JWTs share the anonymous write throttle and cannot mint fresh quota buckets
+ok 60 - infra: revoked or nonexistent-account JWTs share the anonymous write throttle and cannot mint fresh quota buckets
+  ---
+  duration_ms: 1059.190789
+  type: 'test'
+  ...
+# Subtest: infra: authentication throttling remains per IP despite rotating valid, revoked or dashboard credentials
+ok 61 - infra: authentication throttling remains per IP despite rotating valid, revoked or dashboard credentials
+  ---
+  duration_ms: 881.01023
+  type: 'test'
+  ...
+# (node:71813) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: rolling visitor and request counts expire old hits even while a visitor stays active
+ok 62 - rolling visitor and request counts expire old hits even while a visitor stays active
+  ---
+  duration_ms: 8.096567
+  type: 'test'
+  ...
+# Subtest: preferences ignore string booleans and the default accent agrees with the client
+ok 63 - preferences ignore string booleans and the default accent agrees with the client
+  ---
+  duration_ms: 14.275145
+  type: 'test'
+  ...
+# Subtest: ban duration rejects coercible JSON values instead of silently creating permanent bans
+ok 64 - ban duration rejects coercible JSON values instead of silently creating permanent bans
+  ---
+  duration_ms: 8.395478
+  type: 'test'
+  ...
+# (node:71829) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: blocking preserves the other party blacklist and is idempotent
+ok 65 - blocking preserves the other party blacklist and is idempotent
+  ---
+  duration_ms: 823.638294
+  type: 'test'
+  ...
+# Subtest: blocked and accepted records cannot be turned into friend requests
+ok 66 - blocked and accepted records cannot be turned into friend requests
+  ---
+  duration_ms: 64.782444
+  type: 'test'
+  ...
+# Subtest: only a pending request recipient can accept and acceptance cannot be replayed
+ok 67 - only a pending request recipient can accept and acceptance cannot be replayed
+  ---
+  duration_ms: 70.200038
+  type: 'test'
+  ...
+# Subtest: friend requests reject cross wall strangers, malformed IDs and duplicate reverse requests
+ok 68 - friend requests reject cross wall strangers, malformed IDs and duplicate reverse requests
+  ---
+  duration_ms: 91.513261
+  type: 'test'
+  ...
+# Subtest: permanent wall bans cannot be removed by leaving and rejoining
+ok 69 - permanent wall bans cannot be removed by leaving and rejoining
+  ---
+  duration_ms: 69.187759
+  type: 'test'
+  ...
+# Subtest: expired wall bans settle before a legitimate leave
+ok 70 - expired wall bans settle before a legitimate leave
+  ---
+  duration_ms: 41.454472
+  type: 'test'
+  ...
+# Subtest: wall mutation IDs, switches and authority are validated
+ok 71 - wall mutation IDs, switches and authority are validated
+  ---
+  duration_ms: 71.758659
+  type: 'test'
+  ...
+# Subtest: an ordinary wall admin cannot unban an admin sanctioned by the owner
+ok 72 - an ordinary wall admin cannot unban an admin sanctioned by the owner
+  ---
+  duration_ms: 181.880845
+  type: 'test'
+  ...
+# Subtest: ownership transfer rejects unavailable/current owners and succeeds for an active member
+ok 73 - ownership transfer rejects unavailable/current owners and succeeds for an active member
+  ---
+  duration_ms: 151.987902
+  type: 'test'
+  ...
+# Subtest: private message references stay in the same pair and type
+ok 74 - private message references stay in the same pair and type
+  ---
+  duration_ms: 90.688036
+  type: 'test'
+  ...
+# Subtest: private sends reject cross wall strangers and anonymous/type-confused input
+ok 75 - private sends reject cross wall strangers and anonymous/type-confused input
+  ---
+  duration_ms: 149.162169
+  type: 'test'
+  ...
+# Subtest: anonymous confessions preserve server attribution while concealing it from recipients
+ok 76 - anonymous confessions preserve server attribution while concealing it from recipients
+  ---
+  duration_ms: 62.835996
+  type: 'test'
+  ...
+# Subtest: confessions require an active wall and both active memberships
+ok 77 - confessions require an active wall and both active memberships
+  ---
+  duration_ms: 45.98353
+  type: 'test'
+  ...
+# Subtest: revocation hides quoted copies and rejects corrupt or expired timestamps
+ok 78 - revocation hides quoted copies and rejects corrupt or expired timestamps
+  ---
+  duration_ms: 57.224624
+  type: 'test'
+  ...
+# Subtest: report evidence cannot include another pair or unrelated message types
+ok 79 - report evidence cannot include another pair or unrelated message types
+  ---
+  duration_ms: 67.606387
+  type: 'test'
+  ...
+# Subtest: tree APIs conceal real identities and support server-resolved anonymous reports
+ok 80 - tree APIs conceal real identities and support server-resolved anonymous reports
+  ---
+  duration_ms: 63.426481
+  type: 'test'
+  ...
+# Subtest: removed or denied volunteers lose direct, list and inbox tree access immediately
+ok 81 - removed or denied volunteers lose direct, list and inbox tree access immediately
+  ---
+  duration_ms: 72.311285
+  type: 'test'
+  ...
+# Subtest: banned initiators cannot read, reply, close or delete tree conversations
+ok 82 - banned initiators cannot read, reply, close or delete tree conversations
+  ---
+  duration_ms: 51.611259
+  type: 'test'
+  ...
+# Subtest: tree permission grants do not bypass active membership for pending previews and assignment
+ok 83 - tree permission grants do not bypass active membership for pending previews and assignment
+  ---
+  duration_ms: 55.771142
+  type: 'test'
+  ...
+# Subtest: volunteer takeover revokes the old assignee and preserves reply/close state
+ok 84 - volunteer takeover revokes the old assignee and preserves reply/close state
+  ---
+  duration_ms: 71.857574
+  type: 'test'
+  ...
+# Subtest: generic deletion hides one side and preserves tree root metadata and initiator
+ok 85 - generic deletion hides one side and preserves tree root metadata and initiator
+  ---
+  duration_ms: 58.49212
+  type: 'test'
+  ...
+# Subtest: tree creation validates content and excludes banned volunteers and blocked pairs
+ok 86 - tree creation validates content and excludes banned volunteers and blocked pairs
+  ---
+  duration_ms: 52.957497
+  type: 'test'
+  ...
+# Subtest: user search treats wildcards literally and enforces privacy, block and membership constraints
+ok 87 - user search treats wildcards literally and enforces privacy, block and membership constraints
+  ---
+  duration_ms: 72.277146
+  type: 'test'
+  ...
+# Subtest: profile sharing excludes disabled walls and never discloses hidden real names
+ok 88 - profile sharing excludes disabled walls and never discloses hidden real names
+  ---
+  duration_ms: 38.93887
+  type: 'test'
+  ...
+# Subtest: clearing private chat hides both directions only for the current user
+ok 89 - clearing private chat hides both directions only for the current user
+  ---
+  duration_ms: 88.496022
+  type: 'test'
+  ...
+# Subtest: single message and bulk inbox deletion preserve the other party sent copy
+ok 90 - single message and bulk inbox deletion preserve the other party sent copy
+  ---
+  duration_ms: 113.1421
+  type: 'test'
+  ...
+# Subtest: hidden messages cannot be read-marked, quoted or used as report evidence
+ok 91 - hidden messages cannot be read-marked, quoted or used as report evidence
+  ---
+  duration_ms: 124.974286
+  type: 'test'
+  ...
+# Subtest: tree conversation deletion hides only own history while preserving participant and closed state
+ok 92 - tree conversation deletion hides only own history while preserving participant and closed state
+  ---
+  duration_ms: 98.510791
+  type: 'test'
+  ...
+# Subtest: tree latest previews and unread counts exclude deleted history for the viewer
+ok 93 - tree latest previews and unread counts exclude deleted history for the viewer
+  ---
+  duration_ms: 101.435109
+  type: 'test'
+  ...
+# Subtest: anonymous reporting rejects all explicit target IDs without acting as an identity oracle
+ok 94 - anonymous reporting rejects all explicit target IDs without acting as an identity oracle
+  ---
+  duration_ms: 34.071364
+  type: 'test'
+  ...
+# Subtest: volunteer reassignment does not inherit the old recipient deletion and read state
+ok 95 - volunteer reassignment does not inherit the old recipient deletion and read state
+  ---
+  duration_ms: 83.361754
+  type: 'test'
+  ...
+# Subtest: pending tree disclosure and assignment exclude blocked or departed initiators
+ok 96 - pending tree disclosure and assignment exclude blocked or departed initiators
+  ---
+  duration_ms: 87.659871
+  type: 'test'
+  ...
+# Subtest: shared tree unread badge becomes zero immediately after volunteer permission is revoked
+ok 97 - shared tree unread badge becomes zero immediately after volunteer permission is revoked
+  ---
+  duration_ms: 46.294296
+  type: 'test'
+  ...
+# Subtest: shared tree unread badge excludes hidden rows and inaccessible wall membership
+ok 98 - shared tree unread badge excludes hidden rows and inaccessible wall membership
+  ---
+  duration_ms: 65.02938
+  type: 'test'
+  ...
+# Subtest: shared tree unread badge honors current assignee and settles expired wall bans
+ok 99 - shared tree unread badge honors current assignee and settles expired wall bans
+  ---
+  duration_ms: 39.562172
+  type: 'test'
+  ...
+# Subtest: chat-level global bans apply inside mounted social routers
+ok 100 - chat-level global bans apply inside mounted social routers
+  ---
+  duration_ms: 40.937923
+  type: 'test'
+  ...
+1..100
+# tests 141
+# suites 0
+# pass 141
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 20746.091868

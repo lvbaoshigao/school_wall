@@ -1,12 +1,21 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { authRequired, requirePerm, SECRET } = require('../middleware/auth');
 const { userCan } = require('../lib/permissions');
 const dbops = require('../routes/dbops');
 
-// 运行看板。页面是服务端拼的 HTML（按钮用内联 onclick），
-// 所以 nginx 那边刻意没给 /dashboard 挂 CSP —— 见 deploy/nginx/school-wall-csp.conf。
+// 服务端看板使用 nonce 脚本与事件监听，禁止内联事件以隔离管理数据和脚本。
 const router = express.Router();
+router.use((req, res, next) => {
+  if (req.path.startsWith('/dashboard') || req.path.startsWith('/api/dashboard/')) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+  }
+  next();
+});
 
 // ===== Dashboard =====
 // 票据走 HttpOnly Cookie，不再接受 ?token= ——
@@ -26,8 +35,8 @@ function parseCookies(req) {
 
 // 前端在打开 Dashboard 前先调这里，用 Authorization 头换一张短期票据种进 Cookie
 router.post('/api/dashboard/session', authRequired, requirePerm('global.dashboard'), (req, res) => {
-  const ticket = jwt.sign({ id: req.user.id, aud: 'dashboard' }, SECRET, { expiresIn: '1h' });
-  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const ticket = jwt.sign({ id: req.user.id, tv: req.user.tv, csrf: crypto.randomBytes(32).toString('hex') }, SECRET, { algorithm: 'HS256', audience: 'dashboard', expiresIn: '1h' });
+  const secure = req.secure;
   res.setHeader('Set-Cookie', [
     `sw_dash=${ticket}`,
     'HttpOnly',
@@ -41,27 +50,32 @@ router.post('/api/dashboard/session', authRequired, requirePerm('global.dashboar
 
 function dashboardAuth(req, res, next) {
   const fail = (code, msg) => {
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    return res.status(code).send(msg);
+    if ((req.originalUrl || req.path).split('?')[0].startsWith('/dashboard/api/')) return res.status(code).json({ error: msg });
+    return res.status(code).type('html').send('<h1>' + msg + '</h1><p>请回到校园墙前端重新进入 Dashboard</p>');
   };
-  // Cookie 优先；Authorization 头保留给 curl / 脚本这类非浏览器访问
-  const token = parseCookies(req).sw_dash
-    || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
-  if (!token) {
-    return fail(401, '<h1>请先登录</h1><p>请在校园墙前端登录后，从导航栏进入 Dashboard</p>');
-  }
+  const cookie = parseCookies(req).sw_dash;
+  const token = cookie || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+  if (!token) return fail(401, '请先登录');
   try {
     const payload = jwt.verify(token, SECRET, { algorithms: ['HS256'], audience: 'dashboard' });
-    req.user = payload;
-    const user = req.db.prepare('SELECT role FROM users WHERE id=?').get(payload.id);
-    if (!user || !userCan(req.db, payload.id, 'global.dashboard')) {
-      return fail(403, '<h1>权限不足</h1>');
+    if (!Number.isSafeInteger(payload.id) || payload.id <= 0 || !Number.isSafeInteger(payload.exp) ||
+        !Number.isSafeInteger(payload.tv) || payload.tv < 0 || typeof payload.csrf !== 'string' || !/^[a-f0-9]{64}$/.test(payload.csrf)) {
+      return fail(401, '票据无效或已过期');
     }
-    req.user.role = user.role;
-    next();
+    const user = req.db.prepare('SELECT username, role, status, token_version FROM users WHERE id=?').get(payload.id);
+    if (!user || payload.tv !== (user.token_version || 0)) return fail(401, '登录状态已失效');
+    if (user.status !== 'active' || !userCan(req.db, payload.id, 'global.dashboard')) return fail(403, '权限不足或账号不可用');
+    if (cookie && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      const csrf = req.headers['x-dashboard-csrf'];
+      if (typeof csrf !== 'string' || !/^[a-f0-9]{64}$/.test(csrf) ||
+          !crypto.timingSafeEqual(Buffer.from(csrf), Buffer.from(payload.csrf))) return fail(403, '请求校验失败，请重新打开看板');
+      if (req.headers.origin && req.headers.origin !== req.protocol + '://' + req.get('host')) return fail(403, '不接受跨站管理请求');
+    }
+    req.user = { ...payload, username: user.username, role: user.role };
   } catch {
-    return fail(401, '<h1>票据无效或已过期</h1><p>请回到校园墙前端重新进入 Dashboard</p>');
+    return fail(401, '票据无效或已过期');
   }
+  next();
 }
 
 // ===== Dashboard 内部 API =====
@@ -75,7 +89,7 @@ router.post('/dashboard/api/token', dashboardAuth, (req, res) => {
   // 该 token 会被页面 JS 用来调 /api/admin/*（走 authRequired），必须带上
   // token_version —— 否则令牌版本比对会把管理后台的全部请求打回 401。
   const u = req.db.prepare('SELECT username, role, token_version FROM users WHERE id = ?').get(req.user.id);
-  const token = jwt.sign({ id: req.user.id, username: u?.username || '', role: u?.role || 'user', tv: u?.token_version || 0 }, SECRET, { expiresIn: '10m' });
+  const token = jwt.sign({ id: req.user.id, username: u?.username || '', role: u?.role || 'user', tv: u?.token_version || 0 }, SECRET, { algorithm: 'HS256', expiresIn: '10m' });
   res.json({ token });
 });
 
@@ -85,9 +99,15 @@ router.use('/dashboard/api/db', dbops.dashboardRouter(dashboardAuth));
 router.get('/dashboard', dashboardAuth, (req, res) => {
   const db = req.db;
   const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-// 用于 JS 字符串上下文的转义：在 HTML 转义之外，再对反斜杠和换行做转义，防止用户通过
-// 浏览器对 onclick 属性值的 HTML 解码后，注入 JS 代码执行任意函数。
-const escJs = s => esc(s).replace(/\\/g,'\\\\').replace(/\n/g,'\\n').replace(/\r/g,'\\r');
+  const can = perm => userCan(db, req.user.id, perm);
+  const canModerate = can('global.moderate');
+  const canUsers = can('global.user.manage');
+  const canRole = can('global.user.role');
+  const canBan = can('global.user.ban');
+  const canAnnouncements = can('global.announcement');
+  const canDb = can('global.db.manage');
+  const nonce = crypto.randomBytes(24).toString('base64');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'nonce-" + nonce + "'; script-src-attr 'none'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'");
   const totalUsers = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
   const activeUsers = db.prepare("SELECT COUNT(*) as c FROM users WHERE status='active'").get().c;
   const bannedUsers = db.prepare("SELECT COUNT(*) as c FROM users WHERE status='banned'").get().c;
@@ -97,21 +117,21 @@ const escJs = s => esc(s).replace(/\\/g,'\\\\').replace(/\n/g,'\\n').replace(/\r
   const todayPosts = db.prepare("SELECT COUNT(*) as c FROM posts WHERE date(created_at)=date('now')").get().c;
   const todayUsers = db.prepare("SELECT COUNT(*) as c FROM users WHERE date(created_at)=date('now')").get().c;
 
-  const recentPosts = db.prepare(`
+  const recentPosts = canModerate ? db.prepare(`
     SELECT p.id, p.content, p.category, p.is_anonymous, p.like_count, p.comment_count, p.created_at,
       CASE WHEN p.is_anonymous=1 THEN '匿名' ELSE u.nickname END as author
     FROM posts p LEFT JOIN users u ON p.author_id=u.id ORDER BY p.created_at DESC LIMIT 10
-  `).all();
+  `).all() : [];
 
-  const allUsers = db.prepare(`
-    SELECT id, username, nickname, real_name, role, status, ban_until, created_at
-    FROM users ORDER BY created_at DESC
-  `).all();
+  const allUsers = canUsers ? db.prepare(`
+    SELECT id, username, nickname, CASE WHEN show_real_name=1 THEN real_name ELSE '' END AS real_name, role, status, ban_until, created_at
+    FROM users ORDER BY created_at DESC LIMIT 200
+  `).all() : [];
 
-  const announcements = db.prepare(`
+  const announcements = canAnnouncements ? db.prepare(`
     SELECT a.*, u.nickname as author_name FROM announcements a JOIN users u ON a.author_id=u.id
-    ORDER BY a.is_pinned DESC, a.created_at DESC
-  `).all();
+    WHERE a.scope='global' ORDER BY a.is_pinned DESC, a.created_at DESC LIMIT 100
+  `).all() : [];
 
   const roleLabel = r => ({ super_admin:'超级管理员', admin:'全局管理员', user:'普通用户' })[r] || r;
 
@@ -121,10 +141,10 @@ const escJs = s => esc(s).replace(/\\/g,'\\\\').replace(/\n/g,'\\n').replace(/\r
 <title>管理后台 - 校园墙</title>
 <style>
 :root{
-  --bg:#0b0d1a; --panel:rgba(255,255,255,0.045); --panel-border:rgba(255,255,255,0.09);
-  --text:#e8eaf2; --muted:rgba(232,234,242,0.55); --faint:rgba(232,234,242,0.35);
-  --primary:#7c8cf8; --primary-2:#9d6ef0; --danger:#ff6b6b; --danger-soft:rgba(255,107,107,0.14);
-  --ok:#3ddc84; --warn:#ffd166; --radius:14px;
+  --bg:#f1f6f3; --panel:#fff; --panel-border:#d7e4dd;
+  --text:#203b30; --muted:#526c60; --faint:#60776b;
+  --primary:#286b53; --primary-2:#347760; --danger:#a83535; --danger-soft:#fff1ef;
+  --ok:#2b7052; --warn:#795e25; --radius:14px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -222,13 +242,32 @@ input::placeholder,textarea::placeholder{color:var(--faint)}
   .section{padding:16px}
   .truncate{max-width:140px}
 }
+/* 清爽的校园管理界面，保留原有信息结构与操作。 */
+[hidden]{display:none!important}
+body{background:var(--bg);min-height:100dvh}
+.header{background:rgba(250,253,251,.96)}
+.header h1::before,.section h2::before,.btn-primary{background:var(--primary)}
+.stat-value{background:none;color:var(--text);-webkit-text-fill-color:currentColor;font-variant-numeric:tabular-nums}
+.stat-card{text-align:left}
+th,td{border-bottom-color:var(--panel-border);font-variant-numeric:tabular-nums}
+.table-wrap{border-color:var(--panel-border)}
+tr:hover{background:#f3f8f5}
+.role-super_admin{background:#f4eddc;color:#71591e}.role-admin,.wl-tag{background:#e6f1eb;color:#286b53}.role-user{background:#edf4ef;color:#3a6651}
+.btn-danger{background:var(--danger)}.btn-success{background:var(--primary)}.btn-ghost{background:#e9f1ec;border-color:#cbded3;color:var(--text)}
+.btn-sm{min-height:36px}.btn:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid #347760;outline-offset:3px}
+input,textarea,select{background:#fbfdfb;border-color:#b7cec1}.form-inline input[type=datetime-local]{color-scheme:light}
+.toast,.modal-content{background:#fff;color:var(--text)}.toast{box-shadow:0 5px 20px rgba(37,80,58,.12)}
+.db-meta .item{background:#eff5f1}.code-display{color:#795e25}
+.wl-tag button{min-width:28px;min-height:28px}.skip-link{position:fixed;left:12px;top:-60px;z-index:2100;padding:10px;background:#fff;color:var(--primary)}.skip-link:focus{top:10px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style></head><body>
-<div id="toasts"></div>
+<a class="skip-link" href="#main">跳到管理内容</a>
+<div id="toasts" role="status" aria-live="polite"></div>
 <div class="header">
 <h1>校园墙 · 管理后台</h1>
-<div class="who"><span><b>${esc(req.user.username)}</b> (${roleLabel(req.user.role)})</span><a class="back" href="/">← 返回首页</a></div>
+<div class="who"><span><b>${esc(req.user.username)}</b> (${esc(roleLabel(req.user.role))})</span><a class="back" href="/">← 返回首页</a></div>
 </div>
-<div class="container">
+<main class="container" id="main">
 <div class="stats-grid">
   <div class="stat-card"><div class="stat-value">${totalUsers}</div><div class="stat-label">总用户 (活跃${activeUsers} / 封禁${bannedUsers})</div></div>
   <div class="stat-card"><div class="stat-value">${totalPosts}</div><div class="stat-label">总帖子 (今日${todayPosts})</div></div>
@@ -237,18 +276,18 @@ input::placeholder,textarea::placeholder{color:var(--faint)}
   <div class="stat-card"><div class="stat-value">${todayUsers}</div><div class="stat-label">今日新用户</div></div>
 </div>
 
-<div class="section">
-  <h2>公告管理</h2>
+<section class="section" ${canAnnouncements ? '' : 'hidden'}>
+  <h2>全站公告管理</h2>
   <div class="form-inline">
-    <input id="ann-title" placeholder="公告标题" style="flex:1;min-width:180px">
-    <select id="ann-pinned"><option value="0">普通</option><option value="1">置顶</option></select>
+    <input id="ann-title" aria-label="公告标题" maxlength="200" placeholder="公告标题" style="flex:1;min-width:180px">
+    <select id="ann-pinned" aria-label="公告置顶方式"><option value="0">普通</option><option value="1">置顶</option></select>
   </div>
   <div class="form-inline">
-    <textarea id="ann-content" placeholder="公告内容..." style="flex:1"></textarea>
+    <textarea id="ann-content" aria-label="公告内容" maxlength="20000" placeholder="公告内容..." style="flex:1"></textarea>
   </div>
   <div class="form-inline">
     <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">定时删除: <input id="ann-delete-at" type="datetime-local" style="width:auto"></label>
-    <button class="btn btn-primary" onclick="publishAnn()">发布公告</button>
+    <button class="btn btn-primary" data-action="publishAnn">发布公告</button>
   </div>
   <div class="table-wrap"><table><thead><tr><th>ID</th><th>标题</th><th>置顶</th><th>定时删除</th><th>发布时间</th><th>操作</th></tr></thead>
   <tbody>${announcements.map(a=>`<tr>
@@ -256,26 +295,27 @@ input::placeholder,textarea::placeholder{color:var(--faint)}
     <td>${a.is_pinned?'是':'否'}</td>
     <td>${esc(a.delete_at)||'-'}</td>
     <td>${new Date(a.created_at).toLocaleString('zh-CN')}</td>
-    <td><button class="btn btn-danger btn-sm" onclick="deleteAnn(${a.id})">删除</button></td>
+    <td><button class="btn btn-danger btn-sm" data-action="deleteAnn" data-id="${a.id}">删除</button></td>
   </tr>`).join('') || '<tr><td colspan="6" style="color:var(--faint)">暂无公告</td></tr>'}
   </tbody></table></div>
-</div>
+</section>
 
-<div class="section">
+<section class="section" ${canUsers ? '' : 'hidden'}>
   <h2>用户管理</h2>
+  <p class="hint">显示最近注册的 200 位用户；未公开的真实姓名保持隐藏。</p>
   <div class="table-wrap"><table><thead><tr><th>ID</th><th>用户名</th><th>昵称</th><th>真实姓名</th><th>角色</th><th>状态</th><th>封禁截止</th><th>操作</th></tr></thead>
   <tbody>${allUsers.map(u=>`<tr>
     <td>${u.id}</td><td>${esc(u.username)}</td><td>${esc(u.nickname)||'-'}</td><td>${esc(u.real_name)||'-'}</td>
-    <td><span class="role-badge role-${u.role}">${roleLabel(u.role)}</span></td>
+    <td><span class="role-badge role-${esc(u.role)}">${esc(roleLabel(u.role))}</span></td>
     <td>${u.status==='banned'?'<span class="status-banned">封禁</span>':'正常'}</td>
     <td>${esc(u.ban_until)||'-'}</td>
-    <td>${u.role!=='super_admin'?`
-      <button class="btn btn-primary btn-sm" onclick="showSettings(${u.id},'${escJs(u.username)}','${escJs(u.role)}','${escJs(u.status)}')">设置</button>
+    <td>${u.role!=='super_admin' && (canRole || canBan)?`
+      <button class="btn btn-primary btn-sm" data-action="showSettings" data-id="${u.id}" data-username="${esc(u.username)}" data-role="${esc(u.role)}" data-status="${esc(u.status)}">设置</button>
     `:'<span style="color:var(--faint)">超级管理员</span>'}</td></tr>`).join('') || '<tr><td colspan="8" style="color:var(--faint)">暂无用户</td></tr>'}
   </tbody></table></div>
-</div>
+</section>
 
-<div class="section">
+<section class="section" ${canModerate ? '' : 'hidden'}>
   <h2>最近帖子</h2>
   <div class="table-wrap"><table><thead><tr><th>ID</th><th>内容</th><th>分类</th><th>作者</th><th>赞</th><th>评</th><th>时间</th><th>操作</th></tr></thead>
   <tbody>${recentPosts.map(p=>`<tr><td>${p.id}</td><td class="truncate">${esc(p.content)}</td>
@@ -283,27 +323,27 @@ input::placeholder,textarea::placeholder{color:var(--faint)}
     <td>${p.is_anonymous?'<span style="color:var(--faint)">匿名</span>':esc(p.author||'-')}</td>
     <td>${p.like_count}</td><td>${p.comment_count}</td>
     <td>${new Date(p.created_at).toLocaleString('zh-CN')}</td>
-    <td><button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">删除</button></td></tr>`).join('') || '<tr><td colspan="8" style="color:var(--faint)">暂无帖子</td></tr>'}
+    <td><button class="btn btn-danger btn-sm" data-action="deletePost" data-id="${p.id}">删除</button></td></tr>`).join('') || '<tr><td colspan="8" style="color:var(--faint)">暂无帖子</td></tr>'}
   </tbody></table></div>
-</div>
+</section>
 
-<div class="section">
+<section class="section" ${canDb ? '' : 'hidden'}>
   <h2>数据库管理</h2>
-  <div class="hint">备份 / 白名单 / 删库。仅超级管理员可见可操作。</div>
+  <div class="hint">备份、白名单和清空操作需要数据库管理权限。备份包含敏感数据，请妥善保管。</div>
   <div id="db-meta" class="db-meta"><div class="item"><div class="v">…</div><div class="k">加载中</div></div></div>
   <div class="form-inline">
-    <button class="btn btn-primary" onclick="makeBackup()">立即备份</button>
-    <button class="btn btn-ghost" onclick="loadBackups()">刷新备份列表</button>
+    <button class="btn btn-primary" data-action="makeBackup">立即备份</button>
+    <button class="btn btn-ghost" data-action="loadBackups">刷新备份列表</button>
   </div>
   <div class="table-wrap"><table><thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead>
   <tbody id="backup-rows"><tr><td colspan="4" style="color:var(--faint)">加载中…</td></tr></tbody></table></div>
-</div>
+</section>
 
-<div class="section">
+<section class="section" ${canDb ? '' : 'hidden'}>
   <h2>访问 IP 白名单</h2>
   <div class="hint">控制谁能访问管理后台，或整个 API。环境变量 ADMIN_IP_WHITELIST 配置的条目始终生效（数据库被清空后的引导保护）。</div>
   <div class="form-inline">
-    <label style="font-size:13px;color:var(--muted)">保护范围</label>
+    <label for="wl-mode" style="font-size:13px;color:var(--muted)">保护范围</label>
     <select id="wl-mode" style="min-width:200px">
       <option value="off">关闭（不限制）</option>
       <option value="admin">仅管理后台 / Dashboard</option>
@@ -313,63 +353,68 @@ input::placeholder,textarea::placeholder{color:var(--faint)}
   </div>
   <div class="wl-tags" id="wl-tags"></div>
   <div class="form-inline">
-    <input id="wl-input" placeholder="如 10.8.0.5、192.168.*、::1" style="flex:1;min-width:200px;font-family:monospace" onkeydown="if(event.key==='Enter')addWlEntry()">
-    <button class="btn btn-ghost" onclick="addWlEntry()">添加</button>
-    <button class="btn btn-primary" onclick="saveWhitelist()">保存白名单</button>
+    <input id="wl-input" aria-label="添加 IP 白名单条目" placeholder="如 10.8.0.5、192.168.*、::1" style="flex:1;min-width:200px;font-family:monospace" data-enter-action="addWlEntry">
+    <button class="btn btn-ghost" data-action="addWlEntry">添加</button>
+    <button class="btn btn-primary" data-action="saveWhitelist">保存白名单</button>
   </div>
   <div id="wl-env" style="font-size:12px;color:var(--faint)"></div>
-</div>
+</section>
 
-<div class="section danger-zone">
+<section class="section danger-zone" ${canDb ? '' : 'hidden'}>
   <h2>危险区 · 一键删库</h2>
   <div class="hint">清空全部数据（保留表结构），settings 一并清除，重启前端将重新出现初始化向导。执行前会自动生成一份 pre-wipe 备份。</div>
   <div class="steps">
     <div class="step"><div class="step-num">1</div><div>
-      <button class="btn btn-danger" id="wipe-prep-btn" onclick="wipePrepare()">生成 6 位删库验证码</button>
+      <button class="btn btn-danger" id="wipe-prep-btn" data-action="wipePrepare">生成 6 位删库验证码</button>
       <span style="font-size:12px;color:var(--faint)">验证码 5 分钟内有效</span>
     </div></div>
     <div class="step" id="wipe-step2" style="display:none"><div class="step-num">2</div><div style="flex:1">
       <div class="code-display" id="wipe-code"></div>
       <div class="form-inline" style="margin-top:6px">
-        <input id="wipe-input" placeholder="输入上方 6 位验证码" maxlength="6" style="width:200px;font-family:monospace;letter-spacing:4px;text-transform:uppercase">
-        <button class="btn btn-danger" id="wipe-exec-btn" onclick="wipeExecute()" disabled>请等待 10 秒…</button>
+        <input id="wipe-input" aria-label="删库验证码" autocomplete="off" placeholder="输入上方 6 位验证码" maxlength="6" style="width:200px;font-family:monospace;letter-spacing:4px;text-transform:uppercase">
+        <button class="btn btn-danger" id="wipe-exec-btn" data-action="wipeExecute" disabled>请等待 10 秒…</button>
       </div>
     </div></div>
   </div>
-</div>
-</div>
+</section>
+</main>
 
 <!-- 用户设置弹窗 -->
-<div id="settingsModal" class="modal">
+<div id="settingsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
 <div class="modal-content">
-  <h3>用户设置 · <span id="modal-username"></span></h3>
+  <h3 id="settings-title">用户设置 · <span id="modal-username"></span></h3>
   <input type="hidden" id="modal-user-id">
-  <label>全局角色</label>
-  <select id="modal-role">
+  <label for="modal-role">全局角色</label>
+  <select id="modal-role" ${canRole ? '' : 'disabled'}>
     <option value="user">普通用户</option>
     <option value="admin">全局管理员</option>
   </select>
-  <label>封禁时长 (分钟, 0=永久)</label>
+  <label for="modal-ban-duration">封禁时长 (分钟, 0=永久)</label>
   <input type="number" id="modal-ban-duration" value="0" min="0">
   <div class="modal-actions">
-    <button class="btn btn-success" onclick="saveSettings()">保存设置</button>
-    <button class="btn btn-danger" onclick="banFromModal()">封禁</button>
-    <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+    <button class="btn btn-success" data-action="saveSettings" ${canRole ? '' : 'hidden'}>保存设置</button>
+    <button class="btn btn-danger" data-action="banFromModal" ${canBan ? '' : 'hidden'}>封禁</button>
+    <button class="btn btn-ghost" data-action="closeModal">取消</button>
   </div>
 </div>
 </div>
 
-<script>
+<script nonce="${nonce}">
+function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));}
+const CSRF=${JSON.stringify(req.user.csrf)};
+const CAN_DB=${canDb};
 // ===== 票据引导 =====
 // 先用 HttpOnly Cookie（Path=/dashboard）换一枚 10 分钟的短期 API token，
 // 存在页面内存里给下面的管理操作用 —— 修复了 TOKEN 固定为空导致所有按钮 401 的问题。
 let TOKEN='';
 let tokenReady=null;
+let tokenExpiresAt=0;
 function ensureToken(){
-  if(!tokenReady){
-    tokenReady=fetch('/dashboard/api/token',{method:'POST'})
+  if(!tokenReady || (tokenExpiresAt>0 && Date.now()>=tokenExpiresAt)){
+    tokenExpiresAt=0;
+    tokenReady=fetch('/dashboard/api/token',{method:'POST',headers:{'X-Dashboard-CSRF':CSRF}})
       .then(r=>{if(!r.ok)throw new Error('token 获取失败');return r.json()})
-      .then(d=>{TOKEN=d.token})
+      .then(d=>{TOKEN=d.token;tokenExpiresAt=Date.now()+9*60*1000})
       .catch(e=>{tokenReady=null;throw e});
   }
   return tokenReady;
@@ -410,14 +455,18 @@ async function deleteAnn(id){if(!confirm('确定删除该公告?'))return;try{aw
 async function deletePost(id){if(!confirm('确定删除该帖子?'))return;try{await api('/api/admin/posts/'+id,'DELETE');location.reload()}catch(e){showToast(e.message,'err')}}
 
 // ===== 用户设置弹窗 =====
+let modalReturnFocus=null;
 function showSettings(id,username,role,status){
+  modalReturnFocus=document.activeElement;
   document.getElementById('modal-user-id').value=id;
   document.getElementById('modal-username').textContent=username;
   document.getElementById('modal-role').value=role;
   document.getElementById('modal-ban-duration').value=0;
-  document.getElementById('settingsModal').classList.add('active');
+  const modal=document.getElementById('settingsModal');
+  modal.classList.add('active');
+  modal.focus();
 }
-function closeModal(){document.getElementById('settingsModal').classList.remove('active')}
+function closeModal(){document.getElementById('settingsModal').classList.remove('active');modalReturnFocus?.focus();}
 
 async function saveSettings(){
   const id=document.getElementById('modal-user-id').value;
@@ -441,7 +490,7 @@ function fmtSize(n){
   return n+' B';
 }
 async function dbApi(path,method,body){
-  const r=await fetch('/dashboard/api/db'+path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const r=await fetch('/dashboard/api/db'+path,{method,headers:{'Content-Type':'application/json','X-Dashboard-CSRF':CSRF},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
   return d;
@@ -454,7 +503,7 @@ async function loadDbStatus(){
       '<div class="item"><div class="v">'+s.total_rows+'</div><div class="k">总行数 / '+s.tables.length+' 张表</div></div>'+
       '<div class="item"><div class="v">'+s.backups+'</div><div class="k">备份份数</div></div>'+
       '<div class="item"><div class="v">'+fmtSize(s.upload_size||0)+'</div><div class="k">上传文件体积</div></div>';
-  }catch(e){document.getElementById('db-meta').innerHTML='<div class="item"><div class="k">加载失败: '+e.message+'</div></div>'}
+  }catch(e){document.getElementById('db-meta').innerHTML='<div class="item"><div class="k">加载失败: '+escapeHtml(e.message)+'</div></div>'}
 }
 async function makeBackup(){
   try{const r=await dbApi('/backup','POST',{});showToast(r.message,'ok');loadBackups();loadDbStatus()}
@@ -466,11 +515,11 @@ async function loadBackups(){
     const r=await dbApi('/backups');
     if(!r.backups.length){tb.innerHTML='<tr><td colspan="4" style="color:var(--faint)">还没有备份</td></tr>';return}
     tb.innerHTML=r.backups.map(b=>
-      '<tr><td style="font-family:monospace">'+b.name+'</td><td>'+fmtSize(b.size)+'</td>'+
+      '<tr><td style="font-family:monospace">'+escapeHtml(b.name)+'</td><td>'+fmtSize(b.size)+'</td>'+
       '<td>'+new Date(b.created_at).toLocaleString('zh-CN')+'</td>'+
       '<td><a class="btn btn-ghost btn-sm" href="/dashboard/api/db/backups/'+encodeURIComponent(b.name)+'/download">下载</a> '+
-      '<button class="btn btn-danger btn-sm" onclick="delBackup(\\''+b.name+'\\')">删除</button></td></tr>').join('');
-  }catch(e){tb.innerHTML='<tr><td colspan="4" style="color:var(--danger)">加载失败: '+e.message+'</td></tr>'}
+      '<button class="btn btn-danger btn-sm" data-action="delBackup" data-name="'+escapeHtml(b.name)+'">删除</button></td></tr>').join('');
+  }catch(e){tb.innerHTML='<tr><td colspan="4" style="color:var(--danger)">加载失败: '+escapeHtml(e.message)+'</td></tr>'}
 }
 async function delBackup(name){
   if(!confirm('确定删除备份 '+name+' ?'))return;
@@ -492,7 +541,7 @@ async function loadWhitelist(){
 }
 function renderWlTags(){
   document.getElementById('wl-tags').innerHTML=wlEntries.map((e,i)=>
-    '<span class="wl-tag">'+e+'<button title="移除" onclick="removeWlEntry('+i+')">×</button></span>').join('')||'';
+    '<span class="wl-tag">'+escapeHtml(e)+'<button aria-label="移除 '+escapeHtml(e)+'" data-action="removeWlEntry" data-index="'+i+'">×</button></span>').join('')||'';
 }
 function addWlEntry(){
   const inp=document.getElementById('wl-input');
@@ -543,7 +592,7 @@ async function wipeExecute(){
   btn.disabled=true;
   try{
     const r=await dbApi('/wipe/execute','POST',{code});
-    document.body.innerHTML='<div style="font-family:sans-serif;background:#0b0d1a;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center"><div style="text-align:center"><h1 style="color:#3ddc84">已清空</h1><p style="color:rgba(255,255,255,.6)">'+r.message+'</p><p style="color:rgba(255,255,255,.4);font-size:13px">自动备份: '+r.backup.file+' ('+fmtSize(r.backup.size)+')</p><a href="/" style="color:#7c8cf8">返回首页</a></div></div>';
+    document.body.innerHTML='<div style="font-family:sans-serif;background:#0b0d1a;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center"><div style="text-align:center"><h1 style="color:#3ddc84">已清空</h1><p style="color:rgba(255,255,255,.6)">'+escapeHtml(r.message)+'</p><p style="color:rgba(255,255,255,.4);font-size:13px">自动备份: '+escapeHtml(r.backup.file)+' ('+fmtSize(r.backup.size)+')</p><a href="/" style="color:#7c8cf8">返回首页</a></div></div>';
   }catch(e){
     btn.disabled=false;
     showToast(e.message,'err');
@@ -551,7 +600,27 @@ async function wipeExecute(){
   }
 }
 
-loadDbStatus();loadBackups();loadWhitelist();
+const actions={publishAnn,deleteAnn:el=>deleteAnn(Number(el.dataset.id)),deletePost:el=>deletePost(Number(el.dataset.id)),
+  showSettings:el=>showSettings(Number(el.dataset.id),el.dataset.username,el.dataset.role,el.dataset.status),
+  makeBackup,loadBackups,addWlEntry,saveWhitelist,wipePrepare,wipeExecute,saveSettings,banFromModal,closeModal,
+  delBackup:el=>delBackup(el.dataset.name),removeWlEntry:el=>removeWlEntry(Number(el.dataset.index))};
+document.addEventListener('click',event=>{
+  const control=event.target.closest('[data-action]');
+  if(control && Object.prototype.hasOwnProperty.call(actions,control.dataset.action)) actions[control.dataset.action](control);
+});
+document.addEventListener('keydown',event=>{
+  if(event.key==='Enter' && event.target.dataset.enterAction==='addWlEntry'){event.preventDefault();addWlEntry();}
+  const modal=document.getElementById('settingsModal');
+  if(!modal.classList.contains('active'))return;
+  if(event.key==='Escape'){event.preventDefault();closeModal();return;}
+  if(event.key==='Tab'){
+    const controls=Array.from(modal.querySelectorAll('button:not([disabled]):not([hidden]),input:not([type=hidden]):not([disabled]),select:not([disabled])'));
+    const first=controls[0],last=controls[controls.length-1];
+    if(event.shiftKey && (document.activeElement===first || document.activeElement===modal)){event.preventDefault();last?.focus();}
+    else if(!event.shiftKey && (document.activeElement===last || document.activeElement===modal)){event.preventDefault();first?.focus();}
+  }
+});
+if(CAN_DB){loadDbStatus();loadBackups();loadWhitelist();}
 </script></body></html>`);
 });
 
