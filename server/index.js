@@ -12,6 +12,7 @@ const { countAccessibleTreeUnread } = require('./lib/treeAccess');
 
 const { UPLOADS_DIR } = require('./lib/paths');
 const { privateUploadGuard } = require('./lib/uploads');
+const { apiV1Middleware, apiV1Router } = require('./lib/apiV1');
 const AVATAR_DIR = path.join(UPLOADS_DIR, 'avatars');
 const IMAGE_DIR = path.join(UPLOADS_DIR, 'images');
 const BUG_REPORT_IMAGE_DIR = path.join(UPLOADS_DIR, 'bug-reports');
@@ -152,6 +153,9 @@ async function main() {
     next();
   });
 
+  // Keep the legacy chain authoritative; only versioned JSON responses gain the v1 envelope.
+  app.use(apiV1Middleware());
+
   // 健康检查：nginx/监控探活专用。此前只能探 `/`，而那是 SPA 静态首页 ——
   // 后端进程挂掉后 nginx 依然返回 200，探活永远是假阳性。
   // 注意：这条路由注册在下方 req.db 注入中间件之前，必须直接走 getWrapper()
@@ -269,6 +273,8 @@ a:hover{text-decoration:underline}
     if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) return writeLimiter(req, res, next);
     next();
   });
+  // Discovery and specifications share API limits and the configured all-site IP guard.
+  app.use('/api', apiV1Router());
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/register', authLimiter);
   app.use('/api/auth', require('./routes/auth'));

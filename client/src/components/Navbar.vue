@@ -12,7 +12,11 @@ import { useToast } from '../composables/useToast'
 import { useFocusTrap } from '../composables/useFocusTrap'
 
 const emit = defineEmits(['change-wallpaper', 'toggle-theme'])
-const props = defineProps({ theme: { type: String, default: 'dark' } })
+const props = defineProps({
+  theme: { type: String, default: 'dark' },
+  themeMode: { type: String, default: 'system' },
+  themeSaving: { type: Boolean, default: false },
+})
 
 const userStore = useUserStore()
 const wallStore = useWallStore()
@@ -220,6 +224,12 @@ async function openDashboard() {
 }
 
 const isHomePage = computed(() => router.currentRoute.value.path === '/')
+const mobileBack = computed(() => ({
+  ChatRoom: { path: '/chat', label: '返回聊天列表' },
+  TreeHoleChat: { path: '/tree-hole/list', label: '返回匿名会话列表' },
+  Settings: { path: '/', label: '返回校园动态' },
+  PostDetail: { path: '/', label: '返回校园动态' },
+})[router.currentRoute.value.name] || null)
 const userAvatar = computed(() => user.value?.avatar || '')
 // 模板里 4 处引用但此前从未定义 —— 用户名与头像 alt 一直渲染为空
 const userName = computed(() => user.value?.nickname || user.value?.username || '用户')
@@ -288,6 +298,7 @@ function renderAnnouncement(content) {
     <div class="nav-inner" :class="{ 'nav-inner-wide': isHomePage }">
       <!-- 左：已登录显示墙切换器（取代原 logo），未登录显示 logo -->
       <div class="nav-left">
+        <button v-if="mobileBack" class="nav-btn nav-icon-btn nav-back mobile-only" :aria-label="mobileBack.label" :title="mobileBack.label" @click="go(mobileBack.path)"><Icon name="chevron-left" :size="20" /></button>
         <div v-if="isLoggedIn" class="dropdown-wrapper wall-switcher">
           <button class="wall-btn" aria-controls="nav-wall-menu" :aria-expanded="showWallMenu" @click="toggleNavMenu('wall')" :title="currentWall?.description || '切换校园墙'">
             <Icon name="school" :size="15" />
@@ -319,12 +330,12 @@ function renderAnnouncement(content) {
             <Icon name="megaphone" :size="17" />
             <span v-if="unreadAnnouncement > 0" class="ann-dot" role="status" :aria-label="`${unreadAnnouncement} 条未读公告`"></span>
           </button>
-          <button v-if="settingsStore.tools.theme" class="nav-btn nav-icon-btn" @click="emit('toggle-theme')"
+          <button v-if="settingsStore.tools.theme" class="nav-btn nav-icon-btn" :disabled="props.themeSaving" @click="emit('toggle-theme')"
                   :title="props.theme === 'dark' ? '切换亮色主题' : '切换暗色主题'"
                   :aria-label="props.theme === 'dark' ? '切换亮色主题' : '切换暗色主题'">
             <Icon :name="props.theme === 'dark' ? 'sun' : 'moon'" :size="17" />
           </button>
-          <button v-if="settingsStore.tools.wallpaper" class="nav-btn nav-icon-btn" @click="changeWallpaper"
+          <button v-if="settingsStore.tools.wallpaper && settingsStore.prefs.wallpaper_enabled !== false" class="nav-btn nav-icon-btn" @click="changeWallpaper"
                   title="换壁纸" aria-label="换壁纸">
             <Icon name="image" :size="17" />
           </button>
@@ -429,7 +440,7 @@ function renderAnnouncement(content) {
             </div>
           </div>
           <div class="mobile-divider"></div>
-          <button v-if="settingsStore.tools.theme" class="mobile-item" @click="emit('toggle-theme')">
+          <button v-if="settingsStore.tools.theme" class="mobile-item" :disabled="props.themeSaving" @click="emit('toggle-theme')">
             {{ props.theme === 'dark' ? '切换亮色' : '切换暗色' }}
           </button>
           <div class="mobile-divider"></div>
@@ -459,14 +470,14 @@ function renderAnnouncement(content) {
           <button class="mobile-item" @click="go('/settings')">设置</button>
           <button v-if="canOpenAdmin" class="mobile-item" @click="go('/admin')">管理后台</button>
           <button v-if="userStore.can('global.dashboard')" class="mobile-item" @click="openDashboard">运行看板</button>
-          <button v-if="settingsStore.tools.wallpaper" class="mobile-item" @click="changeWallpaper">换壁纸</button>
+          <button v-if="settingsStore.tools.wallpaper && settingsStore.prefs.wallpaper_enabled !== false" class="mobile-item" @click="changeWallpaper">换壁纸</button>
           <div class="mobile-divider"></div>
           <button class="mobile-item danger" @click="logout">退出登录</button>
         </template>
         <template v-else>
           <button class="mobile-item" @click="go('/login')">登录</button>
           <button class="mobile-item" @click="go('/register')">注册</button>
-          <button v-if="settingsStore.tools.theme" class="mobile-item" @click="emit('toggle-theme')">{{ props.theme === 'dark' ? '切换亮色' : '切换暗色' }}</button>
+          <button v-if="settingsStore.tools.theme" class="mobile-item" :disabled="props.themeSaving" @click="emit('toggle-theme')">{{ props.theme === 'dark' ? '切换亮色' : '切换暗色' }}</button>
         </template>
       </div>
     </Transition>
@@ -532,6 +543,7 @@ function renderAnnouncement(content) {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border);
+  padding-top: var(--safe-area-top);
 }
 
 .navbar.menu-open { z-index: calc(var(--z-floating) + 1); }
@@ -549,8 +561,8 @@ function renderAnnouncement(content) {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
-  height: 64px;
-  padding: 0 var(--space-3);
+  height: var(--app-nav-height);
+  padding: 0 max(var(--space-3), var(--safe-area-right)) 0 max(var(--space-3), var(--safe-area-left));
 }
 
 /* 主页正文容器放宽到了 1280px（App.vue 的 .main-wide），
@@ -566,6 +578,7 @@ function renderAnnouncement(content) {
 .nav-tools { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 
 .logo {
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -796,7 +809,7 @@ function renderAnnouncement(content) {
 
 .mobile-menu {
   position: absolute;
-  top: 64px;
+  top: var(--app-header-height);
   left: 0;
   right: 0;
   background: var(--surface-raised);
@@ -805,7 +818,7 @@ function renderAnnouncement(content) {
   border-bottom: 1px solid var(--border);
   padding: 12px;
   z-index: 999;
-  max-height: calc(100dvh - 64px);
+  max-height: max(0px, calc(var(--visual-viewport-height) - var(--app-header-height)));
   overscroll-behavior: contain;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
   overflow-y: auto;
@@ -891,6 +904,9 @@ function renderAnnouncement(content) {
 @media (max-width: 1080px) {
   /* 移动端只剩左侧标识 + 汉堡按钮，三栏网格退回两端对齐 */
   .nav-inner { display: flex; justify-content: space-between; }
+  .nav-left { flex: 1; max-width: calc(100% - 52px); }
+  .wall-switcher, .wall-btn { max-width: 100%; }
+  .mobile-menu-btn, .nav-back { flex-shrink: 0; }
   .desktop-only { display: none !important; }
   .mobile-only { display: inline-flex !important; }
 }
@@ -918,7 +934,7 @@ function renderAnnouncement(content) {
 }
 .announcement-modal {
   width: 100%; max-width: 560px;
-  max-height: calc(100dvh - 48px); display: flex; flex-direction: column;
+  max-height: max(0px, calc(var(--visual-viewport-height) - 48px)); display: flex; flex-direction: column;
   padding: 0; border-radius: var(--radius-lg); overflow: hidden;
   background: var(--surface-raised);
 }
@@ -946,6 +962,14 @@ function renderAnnouncement(content) {
 .ann-detail-view { display: flex; flex-direction: column; gap: 12px; }
 .close-btn { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--radius-sm); color: var(--text-primary); background: var(--bg-input); cursor: pointer; flex-shrink: 0; }
 .close-btn:hover { background: var(--bg-input-focus); }
-.dropdown { max-width: min(340px, calc(100vw - 24px)); max-height: calc(100dvh - 90px); overflow-y: auto; }
+.dropdown { max-width: min(340px, calc(var(--visual-viewport-width) - 24px)); max-height: max(0px, calc(var(--visual-viewport-height) - var(--app-header-height) - 16px)); overflow-y: auto; }
+.dropdown-item, .mobile-item, .mobile-wall-label { overflow-wrap: anywhere; }
+.mobile-item { min-height: 44px; }
+.mobile-user-info > div { min-width: 0; overflow-wrap: anywhere; }
+.mobile-user-info .text-muted { display: block; }
+@media (max-height: 480px) and (orientation: landscape) {
+  .mobile-menu { padding-top: 4px; }
+  .mobile-user-info { padding-block: 4px; }
+}
 @media (min-width: 1081px) { .mobile-menu { display: none; } }
 </style>

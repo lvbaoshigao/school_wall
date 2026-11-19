@@ -1,9 +1,12 @@
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
-import api from '../api'
+import api, { getSessionToken, getApiErrorMessage } from '../api'
+import { useSettingsStore } from '../stores/settings'
+import { useTimeAgo } from '../composables/useTimeAgo'
+import { createSocialScope, pollMilliseconds } from '../components/chat-social/socialState'
 import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
@@ -12,6 +15,16 @@ const router = useRouter()
 const userStore = useUserStore()
 const wallStore = useWallStore()
 const toast = useToast()
+const settingsStore = useSettingsStore()
+const { timeAgo } = useTimeAgo()
+const search = ref('')
+const scope = createSocialScope(() => ({ token: getSessionToken(), wallId: wallStore.currentWallId, session: userStore.sessionRevision }))
+let disposed = false
+let loadVersion = 0
+let latestRequest
+let refreshTimer
+const dense = computed(() => settingsStore.prefs.chat_density === 'compact')
+const showTimestamps = computed(() => settingsStore.prefs.chat_show_timestamps !== false)
 
 const activeTab = ref('my') // 'my' | 'pending'
 const myConversations = ref([])
@@ -25,17 +38,26 @@ const deleting = ref(false)
 const assigning = ref(new Set())
 const loadError = ref('')
 
-async function loadConversations() {
-  loading.value = true
+async function loadConversations(silent = false) {
+  if (disposed || silent && (selectMode.value || deleting.value || assigning.value.size)) return
+  latestRequest?.cancel()
+  const request = scope.request()
+  latestRequest = request
+  const version = ++loadVersion
+  if (!silent) loading.value = true
   loadError.value = ''
   try {
-    const res = await api.get('/messages/tree-hole/conversations')
-    myConversations.value = res.data.my || []
-    pendingConversations.value = res.data.pending || []
+    const res = await api.get('/messages/tree-hole/conversations', request.config)
+    if (!request.current() || version !== loadVersion) return
+    myConversations.value = Array.isArray(res.data.my) ? res.data.my : []
+    pendingConversations.value = Array.isArray(res.data.pending) ? res.data.pending : []
+    const valid = new Set(myConversations.value.map(item => item.conversation_id))
+    selectedIds.value = new Set([...selectedIds.value].filter(id => valid.has(id)))
   } catch (e) {
-    loadError.value = '树洞对话加载失败，请重试'
+    if (request.current() && version === loadVersion) loadError.value = getApiErrorMessage(e, '树洞对话加载失败，请重试')
   } finally {
-    loading.value = false
+    if (request.current() && version === loadVersion) loading.value = false
+    request.release()
   }
 }
 
@@ -46,26 +68,29 @@ function openChat(convId) {
 
 async function assignConversation(convId) {
   if (assigning.value.has(convId)) return
+  const request = scope.request()
   assigning.value.add(convId)
   try {
-    const res = await api.post(`/messages/tree-hole/${convId}/assign`)
+    const res = await api.post(`/messages/tree-hole/${encodeURIComponent(convId)}/assign`, {}, request.config)
+    if (!request.current()) return
     toast.success(res.data.message)
     router.push(`/tree-hole/chat/${convId}`)
   } catch (e) {
-    toast.error(e.response?.data?.error || '响应失败')
-    loadConversations()
-  } finally { assigning.value.delete(convId) }
+    if (request.current()) { toast.error(getApiErrorMessage(e, '响应失败')); loadConversations() }
+  } finally { if (request.current()) assigning.value.delete(convId); request.release() }
 }
 
 function toggleSelect(convId) {
+  if (deleting.value) return
   if (selectedIds.value.has(convId)) selectedIds.value.delete(convId)
   else selectedIds.value.add(convId)
 }
 
 function toggleSelectAll() {
-  const list = activeTab.value === 'my' ? myConversations.value : pendingConversations.value
-  if (selectedIds.value.size === list.length) {
-    selectedIds.value.clear()
+  if (deleting.value) return
+  const list = visibleMine.value
+  if (list.length && list.every(item => selectedIds.value.has(item.conversation_id))) {
+    list.forEach(item => selectedIds.value.delete(item.conversation_id))
   } else {
     list.forEach(c => selectedIds.value.add(c.conversation_id))
   }
@@ -89,83 +114,94 @@ function promptDeleteSelected() {
 
 async function deleteSelected() {
   if (deleting.value || !selectedIds.value.size) return
+  const request = scope.request()
   deleting.value = true
   const ids = [...selectedIds.value]
   try {
-    const results = await Promise.allSettled(ids.map(cid => api.delete('/messages/tree-hole/' + cid)))
+    const results = []
+    for (let index = 0; index < ids.length; index += 5) {
+      if (!request.current()) return
+      results.push(...await Promise.allSettled(ids.slice(index, index + 5).map(cid => api.delete('/messages/tree-hole/' + encodeURIComponent(cid), request.config))))
+    }
+    if (!request.current()) return
     const removed = new Set(ids.filter((id, index) => results[index].status === 'fulfilled'))
     myConversations.value = myConversations.value.filter(c => !removed.has(c.conversation_id))
     selectedIds.value = new Set(ids.filter(id => !removed.has(id)))
     if (selectedIds.value.size) toast.error('部分对话删除失败，已保留失败项，可重新提交')
     else { selectMode.value = false; toast.success('已删除选中的对话') }
-  } finally { deleting.value = false }
+  } finally { if (request.current()) deleting.value = false; request.release() }
 }
 watch(activeTab, exitSelectMode)
 
-const timeAgo = (date) => {
-  if (!date) return ''
-  const d = new Date(date.replace(' ', 'T'))
-  const now = Date.now()
-  const diff = now - d.getTime()
-  if (diff < 0) return '刚刚'
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return '刚刚'
-  if (mins < 60) return `${mins}分钟前`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}小时前`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}天前`
-  return d.toLocaleDateString()
+const visibleMine = computed(() => myConversations.value.filter(item => !search.value.trim() || (item.last_message || '').toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())))
+const visiblePending = computed(() => pendingConversations.value.filter(item => !search.value.trim() || (item.first_message || '').toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())))
+function stopPolling() { clearTimeout(refreshTimer); refreshTimer = null }
+function startPolling() {
+  stopPolling()
+  if (disposed || document.visibilityState === 'hidden') return
+  refreshTimer = setTimeout(async () => { await loadConversations(true); startPolling() }, pollMilliseconds(settingsStore.prefs.chat_poll_interval))
 }
-
-onMounted(() => loadConversations())
+function resetContext() {
+  scope.reset(); loadVersion++; stopPolling(); myConversations.value = []; pendingConversations.value = []
+  deleting.value = false; assigning.value = new Set(); selectedIds.value = new Set(); selectMode.value = false; showDeleteConfirm.value = false; search.value = ''
+  loadConversations(); startPolling()
+}
+function onVisibilityChange() { if (document.visibilityState === 'visible') { loadConversations(true); startPolling() } else stopPolling() }
+watch(() => [wallStore.currentWallId, userStore.sessionRevision, userStore.token], resetContext)
+watch(() => settingsStore.prefs.chat_poll_interval, startPolling)
+onMounted(() => { loadConversations(); startPolling(); document.addEventListener('visibilitychange', onVisibilityChange) })
+onBeforeUnmount(() => { disposed = true; scope.dispose(); stopPolling(); document.removeEventListener('visibilitychange', onVisibilityChange) })
 </script>
 
 <template>
-  <div class="conversations-page">
+  <div class="conversations-page" :class="{ compact: dense }">
     <div class="page-header">
-      <h2>树洞对话</h2>
+      <div><h1>树洞对话</h1><p class="page-intro text-muted">给情绪留一点空间，身份始终保密</p></div>
       <div class="header-actions">
+        <button class="btn btn-secondary btn-sm" :disabled="loading || deleting" @click="loadConversations()">刷新</button>
         <button v-if="!selectMode && activeTab === 'my'" class="btn btn-secondary btn-sm" :disabled="loading || myConversations.length === 0" @click="enterSelectMode">选择</button>
         <template v-else-if="selectMode">
-          <button class="btn btn-secondary btn-sm" @click="toggleSelectAll">{{ selectedIds.size === (activeTab === 'my' ? myConversations : pendingConversations).length ? '取消全选' : '全选' }}</button>
+          <button class="btn btn-secondary btn-sm" @click="toggleSelectAll">{{ visibleMine.length && visibleMine.every(item => selectedIds.has(item.conversation_id)) ? '取消全选' : '全选' }}</button>
           <button class="btn btn-danger btn-sm" :disabled="selectedIds.size === 0 || deleting" @click="promptDeleteSelected">删除 ({{ selectedIds.size }})</button>
-          <button class="btn btn-secondary btn-sm" @click="exitSelectMode">取消</button>
+          <button class="btn btn-secondary btn-sm" :disabled="deleting" @click="exitSelectMode">取消</button>
         </template>
         <button class="btn btn-primary btn-sm" @click="router.push('/help/counseling')">+ 新的倾诉</button>
       </div>
     </div>
 
     <!-- 选项卡 -->
-    <div class="tab-bar">
-      <button class="tab-btn" :class="{ active: activeTab === 'my' }" @click="activeTab = 'my'">
+    <div class="tab-bar" role="group" aria-label="树洞会话类型">
+      <button class="tab-btn" :class="{ active: activeTab === 'my' }" :aria-pressed="activeTab === 'my'" @click="activeTab = 'my'">
         我的对话 <span v-if="myConversations.length" class="tab-count">{{ myConversations.length }}</span>
       </button>
-      <button v-if="wallStore.canHere('wall.tree_hole')" class="tab-btn" :class="{ active: activeTab === 'pending' }" @click="activeTab = 'pending'">
+      <button v-if="wallStore.canHere('wall.tree_hole')" class="tab-btn" :class="{ active: activeTab === 'pending' }" :aria-pressed="activeTab === 'pending'" @click="activeTab = 'pending'">
         待响应 <span v-if="pendingConversations.length" class="tab-count">{{ pendingConversations.length }}</span>
       </button>
     </div>
 
-    <div v-if="loading" class="loading">加载中</div>
+    <label class="tree-search">搜索对话内容<input v-model="search" type="search" maxlength="100" placeholder="搜索已加载的消息摘要" /></label>
+    <div v-if="loading" class="loading" role="status">正在加载树洞对话</div>
 
-    <p v-else-if="loadError" class="state-error" role="alert">{{ loadError }} <button class="btn btn-secondary btn-sm" @click="loadConversations">重试</button></p>
+    <p v-else-if="loadError" class="state-error" role="alert">{{ loadError }} <button class="btn btn-secondary btn-sm" @click="loadConversations()">重试</button></p>
     <template v-else>
       <!-- 我的对话 -->
       <template v-if="activeTab === 'my'">
-        <div v-if="myConversations.length === 0" class="empty-state">
+        <div v-if="visibleMine.length === 0" class="empty-state">
           <div class="icon"><Icon name="leaf" :size="34" /></div>
-          <p v-if="wallStore.canHere('wall.tree_hole')">暂无树洞对话</p>
+          <p v-if="search.trim()">没有匹配的对话摘要</p>
+          <p v-else-if="wallStore.canHere('wall.tree_hole')">暂无树洞对话</p>
           <p v-else>你还没有树洞对话，点击"倾诉"开始</p>
         </div>
 
         <div v-else class="conv-list">
           <div
-            v-for="conv in myConversations"
+            v-for="conv in visibleMine"
             :key="conv.conversation_id"
             class="conv-item glass"
             :class="{ selected: selectedIds.has(conv.conversation_id) }"
             :role="selectMode ? undefined : 'link'"
             :tabindex="selectMode ? -1 : 0"
+            @keydown.space.self.prevent="openChat(conv.conversation_id)"
             @keydown.enter.self="openChat(conv.conversation_id)"
             @click="openChat(conv.conversation_id)"
           >
@@ -178,10 +214,10 @@ onMounted(() => loadConversations())
             <div class="conv-info">
               <div class="conv-top">
                 <span class="conv-name">匿名对话 <span v-if="conv.is_closed" class="closed-tag">已归档</span></span>
-                <span class="text-muted">{{ timeAgo(conv.last_time) }}</span>
+                <span v-if="showTimestamps" class="text-muted">{{ timeAgo(conv.last_time) }}</span>
               </div>
               <div class="conv-preview">
-                <span class="preview-text">{{ conv.last_message || '...' }}</span>
+                <span class="preview-text">{{ conv.is_mine ? '我：' : '' }}{{ conv.last_message || '暂无消息' }}</span>
                 <span v-if="conv.unread_count > 0" class="unread-badge">{{ conv.unread_count }}</span>
               </div>
             </div>
@@ -191,15 +227,15 @@ onMounted(() => loadConversations())
 
       <!-- 待响应 -->
       <template v-if="activeTab === 'pending'">
-        <div v-if="pendingConversations.length === 0" class="empty-state">
+        <div v-if="visiblePending.length === 0" class="empty-state">
           <div class="icon"><Icon name="check-circle" :size="34" /></div>
-          <p>暂无待响应的倾诉</p>
+          <p>{{ search.trim() ? '没有匹配的倾诉摘要' : '暂无待响应的倾诉' }}</p>
           <p class="text-muted" style="font-size:13px">有人发起倾诉、又还没等到志愿者回应时，会出现在这里</p>
         </div>
 
         <div v-else class="conv-list">
           <div
-            v-for="conv in pendingConversations"
+            v-for="conv in visiblePending"
             :key="conv.conversation_id"
             class="conv-item glass pending-item"
           >
@@ -209,10 +245,10 @@ onMounted(() => loadConversations())
             <div class="conv-info">
               <div class="conv-top">
                 <span class="conv-name">匿名倾诉</span>
-                <span class="text-muted">{{ timeAgo(conv.first_time) }}</span>
+                <span v-if="showTimestamps" class="text-muted">{{ timeAgo(conv.first_time) }}</span>
               </div>
               <div class="conv-preview">
-                <span class="preview-text">{{ conv.first_message || '...' }}</span>
+                <span class="preview-text">{{ conv.first_message || '暂无消息' }}</span>
               </div>
             </div>
             <button class="btn btn-primary btn-sm" :disabled="assigning.has(conv.conversation_id)" @click.stop="assignConversation(conv.conversation_id)">我来回应</button>
@@ -299,4 +335,15 @@ onMounted(() => loadConversations())
 .conv-top { gap: 10px; flex-wrap: wrap; }
 .conv-check input { accent-color: var(--accent-1); }
 @media (max-width: 480px) { .header-actions { flex-wrap: wrap; } .conv-item { padding: 14px 12px; gap: 10px; } .pending-item { flex-wrap: wrap; } .pending-item > button { margin-left: auto; } }
+.conversations-page { max-width: 56rem; margin-inline: auto; }
+.page-header h1 { font-size: var(--font-2xl); letter-spacing: -.035em; }
+.page-intro { font-size: var(--font-sm); line-height: 1.7; margin-top: var(--space-2); }
+.tree-search { display: grid; gap: var(--space-2); font-size: var(--font-sm); color: var(--text-secondary); margin-bottom: var(--space-5); }
+.tree-search input { width: 100%; min-width: 0; }
+.conv-item:hover, .pending-item:hover { background: var(--bg-card-hover); }
+.tab-count, .closed-tag { background: var(--bg-input); }
+.conv-top > .text-muted { font-size: var(--font-xs); }
+.conv-avatar { color: #fff; }
+.compact .conv-item { padding: var(--space-3); }
+@media (max-width: 480px) { .header-actions { width: 100%; gap: var(--space-2); } .conv-item { gap: var(--space-3); padding: var(--space-3); } .conv-avatar { width: 2.5rem; height: 2.5rem; } .conv-item > .btn { margin-left: auto; } .pending-item { flex-wrap: wrap; } .conv-name { overflow-wrap: anywhere; } }
 </style>

@@ -20,7 +20,7 @@ useFocusTrap(open, panelRef, () => { open.value = false })
 // 这些页面本身就是创作页或不需要 FAB（登录/注册/聊天室输入区会被挡住）
 const hiddenRoutes = new Set([
   'Login', 'Register', 'WallSelect', 'ChatRoom', 'TreeHoleChat',
-  'CreatePost', 'CreateVote', 'WriteConfession', 'Banned', 'Admin',
+  'CreatePost', 'CreateVote', 'WriteConfession', 'Banned', 'Admin', 'Settings',
 ])
 const visible = computed(() => userStore.isLoggedIn && !hiddenRoutes.has(route.name))
 watch(visible, show => { if (!show) open.value = false })
@@ -93,8 +93,8 @@ function go(path) {
 <style scoped>
 .fab-root {
   position: fixed;
-  right: 20px;
-  bottom: max(24px, env(safe-area-inset-bottom));
+  right: max(20px, var(--safe-area-right));
+  bottom: max(24px, calc(12px + var(--safe-area-bottom)));
   z-index: var(--z-floating);
   display: flex;
   flex-direction: column;
@@ -147,7 +147,7 @@ function go(path) {
   border-radius: var(--radius-lg);
   min-width: 200px;
   max-width: calc(100vw - 32px);
-  max-height: calc(100dvh - 120px);
+  max-height: max(0px, calc(var(--visual-viewport-height) - var(--app-header-height) - 100px));
   overflow-y: auto;
   outline: none;
 }
@@ -157,6 +157,7 @@ function go(path) {
   align-items: center;
   gap: var(--space-3);
   padding: 10px 12px;
+  min-height: 44px;
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
@@ -196,7 +197,7 @@ function go(path) {
 
 /* 与 BackToTop 错开：BackToTop 在右下 24px 附近时 FAB 上移 */
 @media (max-width: 600px) {
-  .fab-root { right: 16px; bottom: max(20px, env(safe-area-inset-bottom)); }
+  .fab-root { right: max(16px, var(--safe-area-right)); bottom: max(20px, calc(12px + var(--safe-area-bottom))); }
   .fab-btn { width: 50px; height: 50px; }
 }
 </style>

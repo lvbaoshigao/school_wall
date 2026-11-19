@@ -121,7 +121,12 @@ onBeforeUnmount(() => { disposed = true; loadVersion++; clearInterval(clock) })
 
 <style scoped>
 .skeleton-wrap { display: flex; flex-direction: column; gap: var(--space-3); }
-.votes-page { animation: fadeIn 0.5s ease; }
+.votes-page { animation: fadeIn 0.5s ease; min-width: 0; }
+.page-header > * { min-width: 0; }
+.page-header .btn { min-height: 44px; }
+.vote-card { min-width: 0; }
+.vote-footer > span { min-width: 0; overflow-wrap: anywhere; }
+.vote-tags { min-width: 0; max-width: 100%; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
 .page-header {
@@ -244,7 +249,8 @@ onBeforeUnmount(() => { disposed = true; loadVersion++; clearInterval(clock) })
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 8px 16px;
   padding: 24px 0;
 }
 
@@ -253,7 +259,9 @@ onBeforeUnmount(() => { disposed = true; loadVersion++; clearInterval(clock) })
 .vote-card { display: block; color: var(--text-primary); text-decoration: none; }
 .vote-header, .vote-footer { gap: 10px; flex-wrap: wrap; }
 .vote-header h3, .preview-item { overflow-wrap: anywhere; min-width: 0; }
-.vote-tags { flex-wrap: wrap; margin-left: 0; }
+.vote-tags { flex-wrap: wrap; flex-shrink: 1; margin-left: 0; }
+.pagination .btn { min-height: 44px; }
+.pagination .text-muted { white-space: nowrap; }
 .vote-desc { line-height: 1.65; }
 @media (max-width: 480px) { .page-header { gap: 12px; flex-wrap: wrap; } .vote-card { padding: 18px 16px; } .click-hint { margin-left: 0; } }
 </style>

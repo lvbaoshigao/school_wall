@@ -43,17 +43,64 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 
 // ===== 用户偏好 =====
 // 键名/类型/默认值集中定义在 lib/prefs.js，这里只负责读写与持久化
-const { mergePrefs, sanitizePrefs } = require('../lib/prefs');
+const { mergePrefs, sanitizePrefs, PREF_SCOPES, getPrefsSchema, resetPrefs } = require('../lib/prefs');
+
+function storedPrefs(db, userId) {
+  const row = db.prepare("SELECT pref_value FROM user_prefs WHERE user_id=? AND pref_key='navbar'").get(userId);
+  if (!row?.pref_value) return {};
+  try {
+    const value = JSON.parse(row.pref_value);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
+function updatePrefs(db, userId, change) {
+  db.db.run('SAVEPOINT auth_preferences');
+  try {
+    const prefs = change(storedPrefs(db, userId));
+    db.prepare(`INSERT OR REPLACE INTO user_prefs (user_id, pref_key, pref_value, updated_at)
+      VALUES (?, 'navbar', ?, datetime('now','localtime'))`).run(userId, JSON.stringify(prefs));
+    db.db.run('RELEASE SAVEPOINT auth_preferences');
+    return mergePrefs(prefs);
+  } catch (error) {
+    try {
+      db.db.run('ROLLBACK TO SAVEPOINT auth_preferences');
+      db.db.run('RELEASE SAVEPOINT auth_preferences');
+    } catch {}
+    throw error;
+  }
+}
+
+router.get('/prefs/schema', authRequired, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(getPrefsSchema());
+});
+
+router.post('/prefs/reset', authRequired, (req, res) => {
+  const { scope } = req.body;
+  if (Object.keys(req.body).length !== 1 || typeof scope !== 'string' ||
+      !Object.prototype.hasOwnProperty.call(PREF_SCOPES, scope)) {
+    return res.status(400).json({ error: '请仅提供有效的偏好重置scope' });
+  }
+  try {
+    const prefs = updatePrefs(req.db, req.user.id, stored => {
+      const reset = resetPrefs(stored, scope);
+      // 只重置一个分类时，保留其它分类尚未显式保存的状态（用于旧主题迁移）。
+      return scope === 'all' ? reset : { ...stored,
+        ...Object.fromEntries(PREF_SCOPES[scope].map(key => [key, reset[key]])) };
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ prefs });
+  } catch (error) {
+    res.status(500).json({ error: '重置偏好失败，请重试' });
+  }
+});
 
 // 读取当前用户偏好
 router.get('/prefs', authRequired, (req, res) => {
   try {
-    const row = req.db.prepare("SELECT pref_value FROM user_prefs WHERE user_id=? AND pref_key='navbar'").get(req.user.id);
-    let serverPrefs = {};
-    if (row?.pref_value) {
-      try { serverPrefs = JSON.parse(row.pref_value) || {}; } catch {}
-    }
-    res.json({ prefs: mergePrefs(serverPrefs) });
+    const stored = storedPrefs(req.db, req.user.id);
+    res.json({ prefs: mergePrefs(stored), storedKeys: Object.keys(sanitizePrefs(stored)) });
   } catch (e) {
     res.status(500).json({ error: '读取偏好失败' });
   }
@@ -66,17 +113,8 @@ router.put('/prefs', authRequired, (req, res) => {
     return res.status(400).json({ error: '缺少偏好数据' });
   }
   try {
-    const row = req.db.prepare("SELECT pref_value FROM user_prefs WHERE user_id=? AND pref_key='navbar'").get(req.user.id);
-    let existing = {};
-    if (row?.pref_value) {
-      try { existing = JSON.parse(row.pref_value) || {}; } catch {}
-    }
-    const stored = { ...existing, ...sanitizePrefs(prefs) };
-    req.db.prepare(`
-      INSERT OR REPLACE INTO user_prefs (user_id, pref_key, pref_value, updated_at)
-      VALUES (?, 'navbar', ?, datetime('now','localtime'))
-    `).run(req.user.id, JSON.stringify(stored));
-    res.json({ prefs: mergePrefs(stored) });
+    const saved = updatePrefs(req.db, req.user.id, existing => ({ ...existing, ...sanitizePrefs(prefs) }));
+    res.json({ prefs: saved });
   } catch (e) {
     res.status(500).json({ error: '保存偏好失败' });
   }

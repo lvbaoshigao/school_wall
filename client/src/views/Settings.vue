@@ -1,926 +1,289 @@
 <script setup>
-import { ref, inject, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { useSettingsStore, NAV_ITEMS, ACCENTS } from '../stores/settings'
+import { ref, inject, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useSettingsStore, NAV_ITEMS, PREFERENCE_GROUPS, parsePreferenceImport } from '../stores/settings'
 import { useWallStore } from '../stores/wall'
 import { useUserStore } from '../stores/user'
 import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import SettingControl from '../components/settings/SettingControl.vue'
+import { SETTINGS_SECTIONS, buildSettingsCatalog, resolveSettingsSection, searchSettings } from '../components/settings/catalog'
 import api, { getApiErrorMessage, writeStorage } from '../api'
 
 const router = useRouter()
+const route = useRoute()
 const settingsStore = useSettingsStore()
 const wallStore = useWallStore()
 const userStore = useUserStore()
 const toast = useToast()
-
-const { current: theme, toggle: toggleTheme } = inject('theme', { current: ref('dark'), toggle: () => {} })
-
-// 搜索与隐私开关（全部可自选；真实姓名默认关闭）
-const privacy = computed(() => ({
-  allow_search_by_id: userStore.user?.allow_search_by_id !== 0,
-  allow_search_by_username: userStore.user?.allow_search_by_username !== 0,
-  allow_search_by_nickname: userStore.user?.allow_search_by_nickname !== 0,
-  allow_search_by_real_name: userStore.user?.allow_search_by_real_name === 1,
-  allow_discover: userStore.user?.allow_discover !== 0,
-}))
-
-// 四种搜索方式全关时，别人无法主动找到你 —— 明确告知，避免被误当成功能故障
-const unfindable = computed(() =>
-  !privacy.value.allow_search_by_id &&
-  !privacy.value.allow_search_by_username &&
-  !privacy.value.allow_search_by_nickname &&
-  !privacy.value.allow_search_by_real_name
-)
-
-// 没填真实姓名时开了也没意义，直接禁用并提示
-const hasRealName = computed(() => !!(userStore.user?.real_name || '').trim())
-
+const theme = inject('theme', { current: ref('light') })
+const resolvedTheme = computed(() => theme.current?.value === 'dark' ? '暗色' : '亮色')
+const catalog = buildSettingsCatalog(NAV_ITEMS)
+const activeSection = ref(resolveSettingsSection(route.query.section, route.hash))
+const search = ref(typeof route.query.q === 'string' ? route.query.q.slice(0, 80) : '')
+const searchInput = ref(null)
+const pageTop = ref(null)
+const sectionHeading = ref(null)
+const fileInput = ref(null)
 const privacySaving = ref(false)
-async function setPrivacy(key, val, label) {
-  if (privacySaving.value) return
-  privacySaving.value = true
-  try {
-    await userStore.updateProfile({ [key]: val ? 1 : 0 })
-    toast[val ? 'success' : 'info'](`${label}已${val ? '开启' : '关闭'}`)
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, '保存失败，请重试'))
-  } finally { privacySaving.value = false }
-}
-
-// 导航工具项（主题/壁纸）
-const TOOL_ITEMS = [
-  { key: 'theme', icon: 'moon', label: '主题切换', path: '' },
-  { key: 'wallpaper', icon: 'image', label: '换壁纸', path: '' },
-]
-
-// 有权限才允许在设置里改的项（树洞）
-function canToggle(item) {
-  if (!item.requireTreeHole) return true
-  return wallStore.canHere('wall.tree_hole')
-}
-
-async function toggleNav(item, val) {
-  if (item.requireTreeHole && !canToggle(item)) return
-  if (!await settingsStore.setNavPref(item.key, val)) { toast.error(settingsStore.saveError || '保存失败，请重试'); return }
-  toast[val ? 'success' : 'info'](`${item.label}已${val ? '显示' : '隐藏'}`)
-}
-
-async function toggleTool(item, val) {
-  if (!await settingsStore.setNavPref(item.key, val)) { toast.error(settingsStore.saveError || '保存失败，请重试'); return }
-  toast[val ? 'success' : 'info'](`${item.label}已${val ? '显示' : '隐藏'}`)
-}
-
-// 下拉型导航项（发布/求助）本身没有单一页面，「进入」跳到它的第一个子项
-function entryPath(item) {
-  return item.path || item.children?.[0]?.path || ''
-}
-
-function entryTitle(item) {
-  if (item.path) return `进入${item.label}`
-  const first = item.children?.[0]
-  return first ? `进入${item.label} · ${first.label}` : ''
-}
-
-function go(item) {
-  const path = entryPath(item)
-  if (path) router.push(path)
-}
-
-// ===== 偏好项 =====
-const prefs = computed(() => settingsStore.prefs)
-
-// 单选型偏好的可选值
-const CHOICES = {
-  feed_sort: [{ v: 'latest', l: '最新' }, { v: 'hot', l: '热门' }],
-  feed_category: ['全部', '吐槽', '分享', '求助', '讨论', '其他'].map(c => ({ v: c, l: c })),
-  density: [{ v: 'comfortable', l: '舒适' }, { v: 'compact', l: '紧凑' }],
-  time_format: [{ v: 'relative', l: '相对时间' }, { v: 'absolute', l: '具体时间' }],
-  font_scale: [{ v: 'sm', l: '小' }, { v: 'md', l: '标准' }, { v: 'lg', l: '大' }],
-  unread_interval: [
-    { v: '0', l: '不自动' }, { v: '15', l: '15 秒' }, { v: '30', l: '30 秒' },
-    { v: '60', l: '1 分钟' }, { v: '300', l: '5 分钟' },
-  ],
-}
-
-async function setPref(key, val, label, tip) {
-  if (!await settingsStore.setPref(key, val)) { toast.error(settingsStore.saveError || '保存失败，请重试'); return }
-  if (tip) toast.info(tip)
-  else if (typeof val === 'boolean') toast[val ? 'success' : 'info'](`${label}已${val ? '开启' : '关闭'}`)
-  else toast.success(`${label}已设为${label === '主题色' ? val : (CHOICES[key]?.find(c => c.v === val)?.l ?? val)}`)
-}
-
-// ===== 导出数据 =====
-const exporting = ref(false)
-const showClearCacheConfirm = ref(false)
-
-function formatSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
-}
-
-async function exportData() {
-  if (exporting.value) return
-  exporting.value = true
-  try {
-    // 后端返回的是 gzip 后的二进制，必须按 blob 收，否则会被当文本破坏
-    const res = await api.get('/auth/export', { responseType: 'blob' })
-    const disp = res.headers['content-disposition'] || ''
-    const name = /filename="([^"]+)"/.exec(disp)?.[1] || 'schoolwall-export.json.gz'
-    const raw = Number(res.headers['x-uncompressed-size']) || 0
-
-    const url = URL.createObjectURL(res.data)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = name
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    // 立刻 revoke 会让部分浏览器的下载中断，延后释放
-    setTimeout(() => URL.revokeObjectURL(url), 10000)
-
-    const ratio = raw ? `，已压缩 ${formatSize(raw)} → ${formatSize(res.data.size)}` : ''
-    toast.success(`导出完成${ratio}`)
-  } catch (e) {
-    toast.error('导出失败，请稍后再试')
-  } finally {
-    exporting.value = false
-  }
-}
-
-function clearLocalCache() {
-  showClearCacheConfirm.value = true
-}
-
-function doClearLocalCache() {
-  userStore.logout()
-  writeStorage('banInfo', null, 'sessionStorage')
-  showClearCacheConfirm.value = false
-  router.replace('/login')
-}
-
-// 近一小时访问量。服务端是内存统计，重启会清零。
-// 每分钟刷一次就够，这个数字本来就是个粗略的体感值，没必要更勤。
+const accountStatus = ref('idle')
+const accountError = ref('')
+const actionError = ref('')
+const actionBusy = ref('')
+const retryOperation = ref(null)
+const currentSection = computed(() => SETTINGS_SECTIONS.find(section => section.id === activeSection.value) || SETTINGS_SECTIONS[0])
+const isSearching = computed(() => !!search.value.trim())
+const results = computed(() => searchSettings(catalog, search.value))
+const resultCount = computed(() => results.value.length)
+const visibleGroups = computed(() => SETTINGS_SECTIONS.map(section => ({ ...section, items: results.value.filter(item => item.section === section.id) })).filter(section => section.items.length && (isSearching.value || section.id === activeSection.value)))
+const busy = computed(() => settingsStore.saving || settingsStore.loading || privacySaving.value)
+const errorMessage = computed(() => actionError.value || accountError.value || settingsStore.saveError)
+const saveState = computed(() => busy.value ? 'saving' : errorMessage.value ? 'error' : accountStatus.value === 'saved' || settingsStore.saveStatus === 'saved' ? 'saved' : 'idle')
+const saveText = computed(() => saveState.value === 'saving' ? settingsStore.loading ? '正在同步…' : '正在保存…' : saveState.value === 'saved' ? '已保存到账号' : saveState.value === 'error' ? '未能保存' : '更改后自动保存')
+const unfindable = computed(() => userStore.user && ['allow_search_by_id', 'allow_search_by_username', 'allow_search_by_nickname', 'allow_search_by_real_name'].every(key => !privacyValue(key)))
 const visitStats = ref(null)
 let visitTimer = null
 
-async function loadVisitStats() {
-  try {
-    visitStats.value = (await api.get('/stats/visits')).data
-  } catch {
-    // 取不到就不显示，不要为一个装饰性数字弹错误提示
-    visitStats.value = null
+watch(() => [route.query.section, route.hash], () => { activeSection.value = resolveSettingsSection(route.query.section, route.hash) })
+watch(() => route.query.q, value => { search.value = typeof value === 'string' ? value.slice(0, 80) : '' })
+watch(() => userStore.sessionRevision, () => { retryOperation.value = null; actionError.value = ''; accountError.value = ''; accountStatus.value = 'idle'; pendingImport.value = null; confirmation.value = null })
+
+function sectionCount(id) { return results.value.filter(item => item.section === id).length }
+async function chooseSection(id) {
+  if (!SETTINGS_SECTIONS.some(section => section.id === id)) return
+  activeSection.value = id
+  search.value = ''
+  await router.replace({ query: { ...route.query, section: id, q: undefined }, hash: '' })
+  await nextTick()
+  sectionHeading.value?.focus({ preventScroll: true })
+}
+function clearSearch() {
+  search.value = ''
+  if (route.query.q !== undefined) router.replace({ query: { ...route.query, q: undefined } })
+  nextTick(() => searchInput.value?.focus())
+}
+function backToTop() {
+  pageTop.value?.scrollIntoView({ block: 'start', behavior: settingsStore.prefs.reduce_motion || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  pageTop.value?.focus({ preventScroll: true })
+}
+function privacyValue(key) {
+  return key === 'allow_search_by_real_name' ? userStore.user?.[key] === 1 : userStore.user?.[key] !== 0
+}
+function valueFor(item) {
+  if (item.source === 'privacy') return privacyValue(item.key)
+  if (item.source === 'navigation') return Object.hasOwn(settingsStore.nav, item.key) ? settingsStore.nav[item.key] : settingsStore.tools[item.key]
+  return settingsStore.prefs[item.key]
+}
+function disabledReason(item) {
+  if (item.source === 'privacy' && !userStore.user) return '账户资料还未加载，请稍后重试。'
+  if (item.key === 'allow_search_by_real_name' && !(userStore.user?.real_name || '').trim()) return '请先在个人资料中填写真实姓名。'
+  if (item.requireTreeHole && !wallStore.canHere('wall.tree_hole')) return '此入口仅对当前墙的树洞志愿者开放。'
+  return ''
+}
+async function saveSetting(item, value) {
+  if (busy.value || disabledReason(item)) return
+  actionError.value = ''; accountError.value = ''
+  retryOperation.value = () => saveSetting(item, value)
+  if (item.source === 'privacy') {
+    privacySaving.value = true
+    accountStatus.value = 'saving'
+    const revision = userStore.sessionRevision
+    try {
+      await userStore.updateProfile({ [item.key]: value ? 1 : 0 })
+      if (revision === userStore.sessionRevision) { accountStatus.value = 'saved'; retryOperation.value = null }
+    } catch (error) { if (revision === userStore.sessionRevision) { accountError.value = getApiErrorMessage(error, '隐私设置未保存，请重试'); accountStatus.value = 'error' } }
+    finally { privacySaving.value = false }
+  } else {
+    const ok = item.source === 'navigation' ? await settingsStore.setNavPref(item.key, value) : await settingsStore.setPref(item.key, value)
+    if (ok) retryOperation.value = null
   }
 }
 
-onMounted(() => {
-  if (!settingsStore.loaded) settingsStore.loadSettings()
-  loadVisitStats()
-  visitTimer = setInterval(loadVisitStats, 60000)
-})
-
-onUnmounted(() => {
-  if (visitTimer) clearInterval(visitTimer)
-})
+const confirmation = ref(null)
+const showResetScope = ref(false)
+const resetScope = ref('all')
+const scopeLabels = { all: '全部偏好', appearance: '外观', reading: '阅读', publishing: '发布默认值', chat: '聊天', notifications: '通知', navigation: '导航' }
+const pendingImport = ref(null)
+const importPreview = computed(() => Object.entries(pendingImport.value?.patch || {}).map(([key, value]) => {
+  const item = catalog.find(entry => entry.key === key && entry.source !== 'privacy')
+  const label = typeof value === 'boolean' ? value ? '开启' : '关闭' : item?.options?.find(option => option.value === value)?.label || value
+  return { key, name: item?.label || key, value: label }
+}))
+async function readImport(event) {
+  const input = event.target
+  const file = input.files?.[0]
+  if (!file || busy.value) { input.value = ''; return }
+  actionError.value = ''
+  try {
+    if (file.size > 65536) throw new Error('请选择小于64KB的偏好JSON文件')
+    const text = await file.text()
+    const patch = parsePreferenceImport(text)
+    pendingImport.value = { text, patch }
+    confirmation.value = { kind: 'import', title: '导入 ' + Object.keys(patch).length + ' 项偏好', message: '确认后将替换文件中列出的偏好，其余偏好保持不变。不会导入账号、隐私或登录凭证。', button: '确认导入' }
+  } catch (error) { actionError.value = error.message || '偏好文件无法读取，请重新选择' }
+  finally { input.value = '' }
+}
+function askReset() {
+  if (busy.value || !['all', ...PREFERENCE_GROUPS].includes(resetScope.value)) return
+  confirmation.value = { kind: 'reset', scope: resetScope.value, title: '恢复' + scopeLabels[resetScope.value], message: '只恢复所选范围的偏好，不会修改真实姓名、联系方式、搜索隐私、帖子或消息。' + (['all', 'publishing'].includes(resetScope.value) ? '范围包含发布时的匿名默认选项，下次发布前请确认。' : ''), button: '恢复默认' }
+}
+async function applyImport(text) {
+  retryOperation.value = () => applyImport(text)
+  actionError.value = ''; accountError.value = ''
+  const ok = await settingsStore.importPreferences(text)
+  if (ok) { retryOperation.value = null; toast.success('偏好已导入') }
+}
+async function applyReset(scope) {
+  retryOperation.value = () => applyReset(scope)
+  actionError.value = ''; accountError.value = ''
+  const ok = await settingsStore.resetPreferences(scope)
+  if (ok) { retryOperation.value = null; showResetScope.value = false; toast.success(scopeLabels[scope] + '已恢复默认') }
+}
+async function confirmAction() {
+  const action = confirmation.value
+  confirmation.value = null
+  if (!action || busy.value) return
+  if (action.kind === 'import') { const text = pendingImport.value?.text; pendingImport.value = null; if (text) await applyImport(text) }
+  else if (action.kind === 'reset') await applyReset(action.scope)
+  else if (action.kind === 'clear') { userStore.logout(); writeStorage('banInfo', null, 'sessionStorage'); await router.replace('/login') }
+}
+function cancelConfirmation() { confirmation.value = null; pendingImport.value = null }
+function download(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url; link.download = filename
+  document.body.appendChild(link); link.click(); link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10000)
+}
+async function exportAccount() {
+  if (actionBusy.value) return
+  actionBusy.value = 'export_account'; actionError.value = ''
+  try {
+    const res = await api.get('/auth/export', { responseType: 'blob' })
+    const name = /filename="([^"]+)"/.exec(res.headers['content-disposition'] || '')?.[1] || 'schoolwall-export.json.gz'
+    download(res.data, name.replace(/[\\/:*?"<>|]/g, '_'))
+    toast.success('账号数据已导出，请妥善保管')
+  } catch (error) { actionError.value = getApiErrorMessage(error, '账号数据导出失败，请重试') }
+  finally { actionBusy.value = '' }
+}
+function handleAction(item) {
+  if (item.path) { router.push(item.path); return }
+  if (item.key === 'export_preferences') { download(new Blob([JSON.stringify(settingsStore.exportPreferences(), null, 2)], { type: 'application/json' }), 'schoolwall-preferences.json'); toast.success('偏好已导出') }
+  else if (item.key === 'import_preferences') fileInput.value?.click()
+  else if (item.key === 'reset_preferences') { showResetScope.value = !showResetScope.value; nextTick(() => document.getElementById('reset-scope')?.focus()) }
+  else if (item.key === 'export_account') exportAccount()
+  else if (item.key === 'clear_session') confirmation.value = { kind: 'clear', title: '清除本机登录状态', message: '操作后会退出当前账号，需要重新登录。服务器中的偏好和账号数据保持不变。', button: '清除并退出' }
+}
+async function loadVisits() { try { visitStats.value = (await api.get('/stats/visits')).data } catch { visitStats.value = null } }
+onMounted(() => { if (!settingsStore.loaded) settingsStore.loadSettings(); loadVisits(); visitTimer = setInterval(loadVisits, 60000) })
+onUnmounted(() => { clearInterval(visitTimer); retryOperation.value = null })
 </script>
 
 <template>
-  <div class="settings-page">
-    <div class="settings-header glass-strong">
-      <div class="settings-title-row">
-        <h1>设置</h1>
-        <span v-if="visitStats" class="visit-badge" :title="`近 ${visitStats.windowMinutes} 分钟内有 ${visitStats.visitors} 位访客，共 ${visitStats.requests} 次请求`">
-          <Icon name="chart" :size="14" />
-          近1小时 {{ visitStats.visitors }} 人访问
-        </span>
-      </div>
-      <p class="text-muted">个性化你的校园墙体验</p>
+  <div class="settings-center">
+    <header ref="pageTop" class="settings-masthead" tabindex="-1">
+      <div><p class="settings-eyebrow">你的校园，按你的习惯</p><h1>设置中心</h1><p class="settings-intro">管理隐私与日常偏好，让校园墙用起来更顺手。</p></div>
+      <span class="save-indicator" :class="saveState" role="status" aria-live="polite" aria-atomic="true"><Icon :name="saveState === 'saved' ? 'check-circle' : saveState === 'error' ? 'alert-circle' : 'settings'" :size="16" />{{ saveText }}</span>
+    </header>
+
+    <div class="settings-search" role="search" aria-label="搜索设置">
+      <Icon name="search" :size="20" />
+      <label for="settings-search" class="sr-only">搜索设置</label>
+      <input id="settings-search" ref="searchInput" v-model="search" type="search" maxlength="80" placeholder="搜索设置，例如：隐私、消息、文字大小" autocomplete="off" aria-controls="settings-results" @keydown.esc="clearSearch" />
+      <button v-if="search" type="button" class="search-clear" aria-label="清空设置搜索" @click="clearSearch"><Icon name="close" :size="17" /></button>
+      <span class="search-count" role="status" aria-live="polite">{{ isSearching ? resultCount + ' 项结果' : catalog.length + ' 项设置' }}</span>
     </div>
 
-    <div v-if="settingsStore.saveError" class="settings-error" role="alert">{{ settingsStore.saveError }} <button v-if="!settingsStore.loaded" class="btn btn-secondary btn-sm" @click="settingsStore.loadSettings">重新加载设置</button></div>
+    <div class="settings-layout">
+      <nav class="category-navigation" aria-label="设置分类">
+        <p class="category-caption">设置分类</p>
+        <label for="settings-category" class="sr-only">选择设置分类</label>
+        <select id="settings-category" class="mobile-category" :value="activeSection" @change="chooseSection($event.target.value)"><option v-for="section in SETTINGS_SECTIONS" :key="section.id" :value="section.id">{{ section.title }}{{ isSearching ? ' · ' + sectionCount(section.id) : '' }}</option></select>
+        <div class="desktop-categories"><button v-for="section in SETTINGS_SECTIONS" :key="section.id" type="button" class="category-button" :class="{ selected: activeSection === section.id && !isSearching }" :aria-current="activeSection === section.id && !isSearching ? 'true' : undefined" aria-controls="settings-results" @click="chooseSection(section.id)"><Icon :name="section.icon" :size="18" /><span>{{ section.title }}</span><span class="category-count">{{ sectionCount(section.id) }}</span></button></div>
+        <p class="category-note"><Icon name="check-circle" :size="15" />偏好随账号同步</p>
+      </nav>
 
-    <!-- 导航栏显示项 -->
-    <div class="settings-card glass">
-      <div class="card-head">
-        <h3>导航栏显示项</h3>
-        <span class="text-muted">关闭的选项卡会从顶部导航隐藏，可随时回来重新开启</span>
-      </div>
-
-      <div class="pref-list">
-        <div v-for="item in NAV_ITEMS" :key="item.key" class="pref-row">
-          <input
-            type="checkbox"
-            class="pref-check"
-            :checked="!!settingsStore.nav[item.key]"
-            :aria-label="'在导航栏显示' + item.label"
-            :disabled="!canToggle(item)"
-            @change="toggleNav(item, $event.target.checked)"
-          />
-          <span class="pref-icon"><Icon :name="item.icon" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">
-              {{ item.label }}
-              <Icon v-if="item.requireTreeHole && !canToggle(item)" class="pref-lock" name="lock" :size="12" label="无权限修改" />
-            </span>
-            <span class="pref-desc">{{ item.desc }}</span>
-          </span>
-          <button v-if="entryPath(item)" class="pref-enter" :title="entryTitle(item)" :aria-label="entryTitle(item)" @click="go(item)">
-            <Icon name="arrow-right" :size="15" />
-          </button>
-        </div>
-
-        <div class="pref-divider"></div>
-
-        <!-- 导航工具项：主题/壁纸 -->
-        <div v-for="item in TOOL_ITEMS" :key="item.key" class="pref-row">
-          <input
-            type="checkbox"
-            class="pref-check"
-            :checked="!!settingsStore.tools[item.key]"
-            :aria-label="'在导航栏显示' + item.label"
-            @change="toggleTool(item, $event.target.checked)"
-          />
-          <span class="pref-icon">
-            <Icon :name="item.key === 'theme' ? (theme === 'dark' ? 'moon' : 'sun') : item.icon" :size="16" />
-          </span>
-          <span class="pref-info">
-            <span class="pref-name">{{ item.label }}</span>
-            <span class="pref-desc">{{ item.key === 'theme' ? '顶部亮/暗切换按钮' : '顶部随机壁纸按钮' }}</span>
-          </span>
-        </div>
+      <div id="settings-results" class="settings-content">
+        <div v-if="errorMessage" class="settings-feedback" role="alert"><Icon name="alert-circle" :size="18" /><div><p>{{ errorMessage }}</p><p class="feedback-help">保存失败的更改不会覆盖原设置。</p><button v-if="retryOperation && !busy" type="button" class="text-link" @click="retryOperation()">重试上次更改</button><button v-else-if="!settingsStore.loaded && !busy" type="button" class="text-link" @click="settingsStore.loadSettings">重新同步设置</button></div></div>
+        <header class="section-heading"><div><p class="section-eyebrow">{{ isSearching ? '跨分类搜索' : '偏好与管理' }}</p><h2 ref="sectionHeading" tabindex="-1">{{ isSearching ? '搜索结果' : currentSection.title }}</h2><p>{{ isSearching ? '找到 ' + resultCount + ' 项匹配的设置' : currentSection.description }}</p></div><button type="button" class="back-top" @click="backToTop"><Icon name="arrow-up" :size="15" />回到顶部</button></header>
+        <div v-if="!visibleGroups.length" class="settings-empty" role="status"><Icon name="search" :size="30" /><h3>没有找到相关设置</h3><p>试试“聊天”“隐私”或“主题”，也可以清空搜索浏览分类。</p><button type="button" class="btn btn-secondary" @click="clearSearch">清空搜索</button></div>
+        <section v-for="group in visibleGroups" :key="group.id" class="settings-group glass" :aria-label="group.title">
+          <header v-if="isSearching" class="result-group-header"><Icon :name="group.icon" :size="17" /><h3>{{ group.title }}</h3><span>{{ group.items.length }} 项</span></header>
+          <p v-if="group.id === 'account' && unfindable" class="context-note" role="status">所有搜索方式都已关闭。其他同学无法主动搜索到你，你仍可以添加好友。</p>
+          <p v-if="group.id === 'appearance'" class="context-note">当前显示{{ resolvedTheme }}主题。外观更改会立即预览，保存失败时自动恢复。</p>
+          <p v-if="group.id === 'notifications'" class="context-note">私信与树洞对话始终计入未读，避免遗漏直接发给你的消息。</p>
+          <SettingControl v-for="item in group.items" :key="item.key" :setting="item" :value="valueFor(item)" :disabled="busy || !!disabledReason(item)" :disabled-reason="disabledReason(item)" :busy="actionBusy === item.key" @change="saveSetting(item, $event)" @action="handleAction(item)" />
+          <form v-if="group.id === 'data' && showResetScope" class="reset-panel" @submit.prevent="askReset"><label for="reset-scope">选择恢复范围</label><div class="reset-controls"><select id="reset-scope" v-model="resetScope" :disabled="busy"><option v-for="(label, scope) in scopeLabels" :key="scope" :value="scope">{{ label }}</option></select><button type="submit" class="btn btn-secondary" :disabled="busy">继续确认</button></div><p>账号隐私、个人资料和内容不会随偏好恢复而改变。</p></form>
+        </section>
+        <footer class="settings-footer"><p>设置自动保存到当前账号，可在其他设备继续使用。</p><p v-if="visitStats">近 {{ visitStats.windowMinutes || 60 }} 分钟有 {{ visitStats.visitors }} 位访客访问校园墙。</p></footer>
       </div>
     </div>
-
-    <!-- 搜索与隐私 -->
-    <div class="settings-card glass">
-      <div class="card-head">
-        <h3>搜索与隐私</h3>
-        <span class="text-muted">控制别人能否通过哪些方式找到你</span>
-      </div>
-
-      <div class="pref-list">
-        <div class="pref-row">
-          <input
-            type="checkbox"
-            class="pref-check"
-            :checked="privacy.allow_search_by_id" aria-label="允许通过 ID 搜索到我" :disabled="privacySaving"
-            @change="setPrivacy('allow_search_by_id', $event.target.checked, 'ID 搜索')"
-          />
-          <span class="pref-icon"><Icon name="tag" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">允许通过 ID 搜索到我</span>
-            <span class="pref-desc">你的 ID 是 {{ userStore.user?.id }}，它始终是账号的唯一标识，关闭后别人只是无法用它搜到你</span>
-          </span>
-        </div>
-
-        <div class="pref-row">
-          <input
-            type="checkbox"
-            class="pref-check"
-            :checked="privacy.allow_search_by_username" aria-label="允许通过账号搜索到我" :disabled="privacySaving"
-            @change="setPrivacy('allow_search_by_username', $event.target.checked, '账号搜索')"
-          />
-          <span class="pref-icon">@</span>
-          <span class="pref-info">
-            <span class="pref-name">允许通过账号搜索到我</span>
-            <span class="pref-desc">账号名 @{{ userStore.user?.username }} 不可修改</span>
-          </span>
-        </div>
-
-        <div class="pref-row">
-          <input
-            type="checkbox"
-            class="pref-check"
-            :checked="privacy.allow_search_by_nickname" aria-label="允许通过昵称搜索到我" :disabled="privacySaving"
-            @change="setPrivacy('allow_search_by_nickname', $event.target.checked, '昵称搜索')"
-          />
-          <span class="pref-icon"><Icon name="edit" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">允许通过昵称搜索到我</span>
-            <span class="pref-desc">别人可用你的昵称找到你</span>
-          </span>
-        </div>
-
-        <div class="pref-row">
-          <input
-            type="checkbox"
-            class="pref-check"
-            :checked="privacy.allow_search_by_real_name" aria-label="允许通过真实姓名搜索到我"
-            :disabled="!hasRealName || privacySaving"
-            @change="setPrivacy('allow_search_by_real_name', $event.target.checked, '真实姓名搜索')"
-          />
-          <span class="pref-icon"><Icon name="user" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">
-              允许通过真实姓名搜索到我
-              <Icon v-if="!hasRealName" class="pref-lock" name="lock" :size="12" label="需先填写真实姓名" />
-            </span>
-            <span class="pref-desc">
-              {{ hasRealName
-                ? '默认关闭；开启后同学可用你的真实姓名找到你（搜索结果只显示昵称，不会展示姓名）'
-                : '请先在个人资料里填写真实姓名' }}
-            </span>
-          </span>
-          <button class="pref-enter" title="去个人资料填写真实姓名" aria-label="去个人资料填写真实姓名" @click="router.push('/profile')">
-            <Icon name="arrow-right" :size="15" />
-          </button>
-        </div>
-
-        <div class="pref-divider"></div>
-
-        <div class="pref-row">
-          <input
-            type="checkbox"
-            class="pref-check"
-            :checked="privacy.allow_discover" aria-label="允许出现在发现好友列表" :disabled="privacySaving"
-            @change="setPrivacy('allow_discover', $event.target.checked, '发现好友')"
-          />
-          <span class="pref-icon"><Icon name="compass" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">允许将我公布到「发现好友」</span>
-            <span class="pref-desc">关闭后不会出现在聊天页的发现列表中</span>
-          </span>
-        </div>
-
-        <p v-if="unfindable" class="privacy-warn" role="status">
-          四种搜索方式都已关闭，现在没有人能主动搜到你 —— 只能由你去添加别人。
-        </p>
-      </div>
-    </div>
-
-    <!-- 阅读与浏览 -->
-    <div class="settings-card glass">
-      <div class="card-head">
-        <h3>阅读与浏览</h3>
-        <span class="text-muted">影响帖子列表与正文的默认呈现方式</span>
-      </div>
-      <div class="pref-list">
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="chart" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">主页默认排序</span>
-            <span class="pref-desc">每次进入主页时默认按哪种顺序排列</span>
-          </span>
-          <div class="seg" role="group" aria-label="主页默认排序">
-            <button v-for="c in CHOICES.feed_sort" :key="c.v" class="seg-btn"
-                    :aria-pressed="prefs.feed_sort === c.v" :class="{ active: prefs.feed_sort === c.v }"
-                    @click="setPref('feed_sort', c.v, '默认排序')">{{ c.l }}</button>
-          </div>
-        </div>
-
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="tag" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">默认话题分类</span>
-            <span class="pref-desc">进入主页时默认停在哪个分类</span>
-          </span>
-          <select class="pref-select" :value="prefs.feed_category" aria-label="默认话题分类"
-                  @change="setPref('feed_category', $event.target.value, '默认分类')">
-            <option v-for="c in CHOICES.feed_category" :key="c.v" :value="c.v">{{ c.l }}</option>
-          </select>
-        </div>
-
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="list" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">列表密度</span>
-            <span class="pref-desc">紧凑模式压缩卡片留白，一屏能看到更多帖子</span>
-          </span>
-          <div class="seg" role="group" aria-label="列表密度">
-            <button v-for="c in CHOICES.density" :key="c.v" class="seg-btn"
-                    :aria-pressed="prefs.density === c.v" :class="{ active: prefs.density === c.v }"
-                    @click="setPref('density', c.v, '列表密度')">{{ c.l }}</button>
-          </div>
-        </div>
-
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="clock" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">时间显示</span>
-            <span class="pref-desc">「3 小时前」还是「08-04 09:12」</span>
-          </span>
-          <div class="seg" role="group" aria-label="时间显示">
-            <button v-for="c in CHOICES.time_format" :key="c.v" class="seg-btn"
-                    :aria-pressed="prefs.time_format === c.v" :class="{ active: prefs.time_format === c.v }"
-                    @click="setPref('time_format', c.v, '时间显示')">{{ c.l }}</button>
-          </div>
-        </div>
-
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="heading" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">正文字号</span>
-            <span class="pref-desc">整体缩放全站文字，立即生效</span>
-          </span>
-          <div class="seg" role="group" aria-label="正文字号">
-            <button v-for="c in CHOICES.font_scale" :key="c.v" class="seg-btn"
-                    :aria-pressed="prefs.font_scale === c.v" :class="{ active: prefs.font_scale === c.v }"
-                    @click="setPref('font_scale', c.v, '正文字号')">{{ c.l }}</button>
-          </div>
-        </div>
-
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.auto_load_images" aria-label="自动加载帖子图片"
-                 @change="setPref('auto_load_images', $event.target.checked, '图片自动加载')" />
-          <span class="pref-icon"><Icon name="image" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">自动加载帖子图片</span>
-            <span class="pref-desc">关闭后图片显示为占位块，点击才加载，省流量</span>
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 发布默认值 -->
-    <div class="settings-card glass">
-      <div class="card-head">
-        <h3>发布默认值</h3>
-        <span class="text-muted">每次打开发布页时这些开关的初始状态</span>
-      </div>
-      <div class="pref-list">
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.default_anonymous_post" aria-label="默认匿名发帖"
-                 @change="setPref('default_anonymous_post', $event.target.checked, '默认匿名发帖')" />
-          <span class="pref-icon"><Icon name="user" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">默认匿名发帖</span>
-            <span class="pref-desc">开启后发帖页的「匿名发布」默认勾选，仍可单次取消</span>
-          </span>
-        </div>
-
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.default_markdown" aria-label="默认使用 Markdown"
-                 @change="setPref('default_markdown', $event.target.checked, '默认 Markdown')" />
-          <span class="pref-icon"><Icon name="code" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">默认使用 Markdown</span>
-            <span class="pref-desc">发帖时直接进入带工具栏的 Markdown 编辑器</span>
-          </span>
-        </div>
-
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.confirm_before_post" aria-label="发布前确认"
-                 @change="setPref('confirm_before_post', $event.target.checked, '发布前二次确认')" />
-          <span class="pref-icon"><Icon name="check-circle" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">发布前二次确认</span>
-            <span class="pref-desc">点发布后先弹窗确认，避免手滑发出去</span>
-          </span>
-        </div>
-
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.default_anonymous_confession" aria-label="默认匿名表白"
-                 @change="setPref('default_anonymous_confession', $event.target.checked, '表白信默认匿名')" />
-          <span class="pref-icon"><Icon name="mail" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">表白信默认匿名</span>
-            <span class="pref-desc">默认开启；关掉后对方能看到是你发的</span>
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 通知与提醒 -->
-    <div class="settings-card glass">
-      <div class="card-head">
-        <h3>通知与提醒</h3>
-        <span class="text-muted">控制顶栏红点计入哪些消息，以及别人的互动是否提醒你</span>
-      </div>
-      <div class="pref-list">
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.badge_interaction" aria-label="互动消息计入未读红点"
-                 @change="setPref('badge_interaction', $event.target.checked, '互动计入红点')" />
-          <span class="pref-icon"><Icon name="heart" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">互动消息计入未读红点</span>
-            <span class="pref-desc">被评论、被点赞的通知</span>
-          </span>
-        </div>
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.badge_announcement" aria-label="公告计入未读红点"
-                 @change="setPref('badge_announcement', $event.target.checked, '公告计入红点')" />
-          <span class="pref-icon"><Icon name="megaphone" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">公告计入未读红点</span>
-            <span class="pref-desc">校园墙管理员发布的公告</span>
-          </span>
-        </div>
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.badge_system" aria-label="系统通知计入未读红点"
-                 @change="setPref('badge_system', $event.target.checked, '系统通知计入红点')" />
-          <span class="pref-icon"><Icon name="bell" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">系统通知计入未读红点</span>
-            <span class="pref-desc">好友请求、审批结果、角色变更等</span>
-          </span>
-        </div>
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.badge_report" aria-label="举报通知计入未读红点"
-                 @change="setPref('badge_report', $event.target.checked, '举报通知计入红点')" />
-          <span class="pref-icon"><Icon name="flag" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">举报通知计入未读红点</span>
-            <span class="pref-desc">举报进度与处理结果</span>
-          </span>
-        </div>
-
-        <p class="pref-note text-muted">私信与树洞始终计入红点 —— 它们是点对点对话，漏看代价太大。</p>
-
-        <div class="pref-divider"></div>
-
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="refresh" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">未读检查频率</span>
-            <span class="pref-desc">顶栏多久向服务器查一次新消息</span>
-          </span>
-          <select class="pref-select" :value="prefs.unread_interval" aria-label="未读检查频率"
-                  @change="setPref('unread_interval', $event.target.value, '未读检查频率')">
-            <option v-for="c in CHOICES.unread_interval" :key="c.v" :value="c.v">{{ c.l }}</option>
-          </select>
-        </div>
-
-        <div class="pref-divider"></div>
-
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.notify_on_comment" aria-label="评论我的帖子时提醒我"
-                 @change="setPref('notify_on_comment', $event.target.checked, '被评论提醒')" />
-          <span class="pref-icon"><Icon name="message" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">有人评论我的帖子时提醒我</span>
-            <span class="pref-desc">关闭后服务器不再为此写入站内信（不是前端藏起来）</span>
-          </span>
-        </div>
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.notify_on_like" aria-label="点赞我的帖子时提醒我"
-                 @change="setPref('notify_on_like', $event.target.checked, '被点赞提醒')" />
-          <span class="pref-icon"><Icon name="heart" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">有人点赞我的帖子时提醒我</span>
-            <span class="pref-desc">帖子热度高时这类通知会很多，可以关掉</span>
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 无障碍与动效 -->
-    <div class="settings-card glass">
-      <div class="card-head">
-        <h3>无障碍与动效</h3>
-        <span class="text-muted">全部即时生效，无需刷新</span>
-      </div>
-      <div class="pref-list">
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.reduce_motion" aria-label="减少动效"
-                 @change="setPref('reduce_motion', $event.target.checked, '减少动效')" />
-          <span class="pref-icon"><Icon name="minus" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">减少动效</span>
-            <span class="pref-desc">关闭入场动画与过渡；系统已开启「减少动态效果」时本来就会生效，这里可单独强制</span>
-          </span>
-        </div>
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.high_contrast" aria-label="高对比度"
-                 @change="setPref('high_contrast', $event.target.checked, '高对比度')" />
-          <span class="pref-icon"><Icon name="eye" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">高对比度</span>
-            <span class="pref-desc">加深卡片底色与边框，提高文字对比度</span>
-          </span>
-        </div>
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.always_focus_ring" aria-label="始终显示焦点框"
-                 @change="setPref('always_focus_ring', $event.target.checked, '始终显示焦点框')" />
-          <span class="pref-icon"><Icon name="tag" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">始终显示焦点框</span>
-            <span class="pref-desc">默认只在键盘操作时显示；开启后鼠标点击也保留，便于确认当前位置</span>
-          </span>
-        </div>
-        <div class="pref-row">
-          <input type="checkbox" class="pref-check" :checked="prefs.disable_blur" aria-label="关闭毛玻璃模糊"
-                 @change="setPref('disable_blur', $event.target.checked, '毛玻璃模糊')" />
-          <span class="pref-icon"><Icon name="image" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">关闭毛玻璃模糊</span>
-            <span class="pref-desc">模糊很吃显卡，低配设备上滚动发卡时建议关闭</span>
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 外观 -->
-    <div class="settings-card glass">
-      <div class="card-head">
-        <h3>外观</h3>
-        <span class="text-muted">主题模式与全站主题色</span>
-      </div>
-
-      <div class="theme-row">
-        <span class="row-label">
-          <Icon :name="theme === 'dark' ? 'moon' : 'sun'" :size="18" />
-          主题模式
-        </span>
-        <button class="btn btn-secondary btn-sm" @click="toggleTheme">
-          {{ theme === 'dark' ? '切换到亮色' : '切换到暗色' }}
-        </button>
-      </div>
-
-      <div class="accent-block">
-        <div class="accent-label">
-          <span class="pref-name">主题色</span>
-          <span class="pref-desc">按钮、选中态、焦点框与背景叠加层都会跟着变</span>
-        </div>
-        <div class="accent-swatches" role="group" aria-label="主题色">
-          <button
-            v-for="a in ACCENTS" :key="a.key"
-            class="swatch"
-            :class="{ active: prefs.accent === a.key }"
-            :aria-pressed="prefs.accent === a.key"
-            :aria-label="a.label"
-            :title="a.label"
-            :style="{ background: `linear-gradient(180deg, ${a.c1} 0%, ${a.c2} 100%)` }"
-            @click="setPref('accent', a.key, '主题色', `主题色已设为${a.label}`)"
-          >
-            <Icon v-if="prefs.accent === a.key" name="check" :size="16" />
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 账号与数据 -->
-    <div class="settings-card glass">
-      <div class="card-head">
-        <h3>账号与数据</h3>
-        <span class="text-muted">你的数据始终属于你，可随时带走</span>
-      </div>
-      <div class="pref-list">
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="lock" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">修改密码</span>
-            <span class="pref-desc">在个人主页中修改</span>
-          </span>
-          <button class="pref-enter" title="去个人主页修改密码" aria-label="去个人主页修改密码"
-                  @click="router.push('/profile')"><Icon name="arrow-right" :size="15" /></button>
-        </div>
-
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="file" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">导出我的数据</span>
-            <span class="pref-desc">资料、帖子、评论、消息、投票、好友、收藏，打包为 gzip 压缩的 .json.gz</span>
-          </span>
-          <button class="btn btn-secondary btn-sm" :disabled="exporting" @click="exportData">
-            {{ exporting ? '打包中…' : '导出' }}
-          </button>
-        </div>
-
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="trash" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">清空本地缓存</span>
-            <span class="pref-desc">清掉本机保存的登录态与临时数据；账号偏好存在服务器上，不受影响</span>
-          </span>
-          <button class="btn btn-secondary btn-sm" @click="clearLocalCache">清空</button>
-        </div>
-
-        <div class="pref-divider"></div>
-
-        <div class="pref-row">
-          <span class="pref-icon"><Icon name="alert-triangle" :size="16" /></span>
-          <span class="pref-info">
-            <span class="pref-name">Bug 反馈</span>
-            <span class="pref-desc">遇到了问题？告诉我们，我们会尽快处理</span>
-          </span>
-          <button class="pref-enter" title="提交 Bug 反馈" aria-label="提交 Bug 反馈"
-                  @click="router.push('/bug-report')"><Icon name="arrow-right" :size="15" /></button>
-        </div>
-      </div>
-    </div>
-
-    <div class="settings-foot">
-      <p class="text-muted">偏好储存在账号中，换设备登录也会同步。</p>
-    </div>
-
-    <!-- 清空缓存确认 -->
-    <ConfirmModal
-      :show="showClearCacheConfirm"
-      title="清空本地缓存"
-      message="清空本地缓存会退出登录，需要重新输入账号密码。确定继续吗？"
-      confirm-text="确定清空"
-      cancel-text="取消"
-      :danger="true"
-      @confirm="doClearLocalCache"
-      @update:show="showClearCacheConfirm = $event"
-    />
+    <input ref="fileInput" type="file" accept=".json,application/json" class="sr-only" tabindex="-1" aria-label="选择校园墙偏好JSON文件" @change="readImport" />
+    <ConfirmModal :show="!!confirmation" :title="confirmation?.title || '确认更改'" :message="confirmation?.message || ''" :confirm-text="confirmation?.button || '确认'" cancel-text="取消" :danger="confirmation?.kind === 'clear'" @confirm="confirmAction" @cancel="cancelConfirmation" @update:show="!$event && (confirmation = null)">
+      <dl v-if="confirmation?.kind === 'import'" class="import-preview"><div v-for="item in importPreview" :key="item.key"><dt>{{ item.name }}</dt><dd>{{ item.value }}</dd></div></dl>
+    </ConfirmModal>
   </div>
 </template>
 
 <style scoped>
-.settings-title-row {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; flex-wrap: wrap;
-}
-.visit-badge {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 11px; border-radius: var(--radius-pill);
-  font-size: 12.5px; font-weight: 500; white-space: nowrap;
-  color: var(--text-secondary);
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-}
-@media (max-width: 480px) {
-  .visit-badge { font-size: 12px; padding: 3px 9px; }
-}
-.settings-page { animation: fadeIn 0.5s ease; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-.settings-header { padding: 24px; margin-bottom: 16px; border-radius: var(--radius-lg); }
-.settings-header h2 { font-size: 24px; margin-bottom: 4px; }
-
-.settings-card { padding: 20px 24px; margin-bottom: 16px; border-radius: var(--radius-lg); }
-.settings-card h3 { font-size: 17px; margin-bottom: 12px; }
-.card-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
-
-/* 紧凑单行列表 — 两列，节省空间 */
-.pref-list {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px 12px;
-  margin-top: 12px;
-}
-
-@media (max-width: 640px) {
-  .pref-list { grid-template-columns: 1fr; }
-}
-
-.pref-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 5px 6px;
-  border-radius: var(--radius-sm);
-  transition: background 0.15s ease;
-  min-width: 0;
-}
-.pref-row:hover { background: var(--bg-card-hover); }
-
-.pref-check { flex-shrink: 0; }
-
-.pref-icon {
-  font-size: 16px;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border-radius: var(--radius-sm);
-  background: var(--bg-input);
-}
-
-.pref-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.pref-name { font-size: 14px; font-weight: 600; }
-.pref-desc {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.45;
-}
-.pref-lock { color: var(--text-muted); vertical-align: baseline; }
-
-.pref-enter {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 50%;
-  background: var(--bg-input);
-  color: var(--text-secondary);
-  font-size: 14px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s ease;
-}
-.pref-enter:hover {
-  background: var(--btn-fill);
-  color: #fff;
-  box-shadow: var(--btn-shadow);
-}
-
-.pref-divider { height: 1px; background: var(--border); margin: var(--space-2) var(--space-1); }
-
-.pref-note {
-  font-size: 12px;
-  line-height: 1.5;
-  padding: var(--space-1) var(--space-2);
-}
-
-/* 分段选择器：两三个互斥选项时比下拉更直观 */
-.seg {
-  display: flex;
-  flex-shrink: 0;
-  gap: 2px;
-  padding: 2px;
-  background: var(--bg-input);
-  border-radius: var(--radius-pill);
-}
-.seg-btn {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: 12px;
-  padding: 4px 12px;
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.2s var(--ease), color 0.2s var(--ease);
-}
-.seg-btn:hover { color: var(--text-primary); }
-.seg-btn.active {
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-line);
-  padding: 3px 11px;
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.pref-select {
-  flex-shrink: 0;
-  width: auto;
-  min-width: 96px;
-  padding: 5px 10px;
-  font-size: 13px;
-  border-radius: var(--radius-sm);
-}
-
-/* 主题色色板 */
-.accent-block {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-  padding: 14px 16px;
-  margin-top: var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-}
-.accent-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.accent-swatches { display: flex; gap: var(--space-2); flex-wrap: wrap; }
-.swatch {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  padding: 0;
-  transition: transform 0.2s var(--ease), border-color 0.2s var(--ease);
-}
-.swatch:hover { transform: scale(1.1); }
-.swatch.active { border-color: var(--text-primary); }
-.swatch:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-
-.privacy-warn {
-  margin-top: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 165, 2, 0.12);
-  border: 1px solid rgba(255, 165, 2, 0.28);
-  color: var(--warning-light);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.theme-row {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 16px; border-radius: var(--radius-md);
-  background: var(--bg-card); border: 1px solid var(--border);
-}
-.row-label { display: flex; align-items: center; gap: 8px; }
-
-.settings-foot { text-align: center; color: var(--text-muted); font-size: 13px; padding: 8px; }
-
-@media (max-width: 480px) {
-  .pref-desc { display: none; }
-}
-.settings-page { max-width: 57rem; margin-inline: auto; }
-.settings-header { border-top: 3px solid var(--accent-1); }
-.settings-title-row h1 { font-size: clamp(1.65rem, 4vw, 2rem); letter-spacing: -.025em; }
-.settings-error { padding: 1rem; margin-block: 1rem; border-left: 3px solid var(--danger); background: var(--bg-card); border-radius: var(--radius-sm); }
-.pref-check { flex-shrink: 0; min-width: 1.25rem; min-height: 1.25rem; cursor: pointer; }
-.pref-info { min-width: 0; overflow-wrap: anywhere; }
-.seg { flex-wrap: wrap; }
-.seg-btn, .pref-enter, .swatch { min-height: 2.75rem; min-width: 2.75rem; }
-@media (prefers-reduced-motion: reduce) { .settings-page { animation: none; } }
+.settings-center { max-width: 70rem; margin: 0 auto; padding: .5rem 0 2rem; }
+.settings-masthead { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; margin: .75rem 0 1.8rem; outline: none; scroll-margin-top: 6rem; }
+.settings-eyebrow { color: var(--text-link); font-size: .77rem; font-weight: 600; letter-spacing: .07em; margin-bottom: .5rem; }
+h1 { margin: 0; font-size: clamp(1.9rem, 4vw, 2.45rem); line-height: 1.25; font-weight: 700; letter-spacing: -.035em; }
+.settings-intro { color: var(--text-muted); font-size: .92rem; line-height: 1.8; margin-top: .65rem; text-wrap: pretty; }
+.save-indicator { display: inline-flex; align-items: center; gap: .4rem; padding: .5rem .75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: .77rem; color: var(--text-secondary); flex-shrink: 0; min-height: 2.5rem; }
+.save-indicator.saved { color: var(--text-link); background: var(--accent-soft); border-color: var(--accent-line); }
+.save-indicator.error { color: var(--danger-light); }
+.settings-search { display: flex; align-items: center; gap: .75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-input); padding: .35rem .85rem; margin-bottom: 1.65rem; color: var(--text-muted); }
+.settings-search:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.settings-search input { min-width: 0; flex: 1; border: 0; box-shadow: none; outline: none; background: none; color: var(--text-primary); padding: .65rem 0; min-height: 2.75rem; font-size: .9rem; border-radius: 0; }
+.settings-search input:focus-visible { outline: none; }
+.settings-search input::-webkit-search-cancel-button { display: none; }
+.search-clear { width: 2.75rem; height: 2.75rem; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; display: grid; place-items: center; border-radius: var(--radius-sm); flex-shrink: 0; }
+.search-clear:hover { background: var(--bg-card-hover); }
+.search-count { flex-shrink: 0; font-size: .77rem; font-variant-numeric: tabular-nums; border-left: 1px solid var(--border-strong); padding-left: .8rem; }
+.settings-layout { display: grid; grid-template-columns: 11.7rem minmax(0, 1fr); gap: 1.8rem; align-items: start; }
+.category-navigation { position: sticky; top: 5.75rem; }
+.category-caption { font-size: .73rem; color: var(--text-muted); padding: .25rem .8rem .7rem; letter-spacing: .05em; }
+.desktop-categories { display: flex; flex-direction: column; gap: .3rem; }
+.category-button { width: 100%; display: flex; align-items: center; gap: .65rem; color: var(--text-secondary); border: 1px solid transparent; background: none; padding: .8rem; font: inherit; text-align: left; cursor: pointer; min-height: 2.9rem; border-radius: var(--radius-sm); font-size: .86rem; transition: background .16s ease; }
+.category-button:hover { background: var(--bg-card-hover); }
+.category-button.selected { color: var(--text-link); background: var(--accent-soft); border-color: var(--accent-line); font-weight: 600; }
+.category-count { margin-left: auto; color: var(--text-muted); font-size: .72rem; font-variant-numeric: tabular-nums; }
+.category-note { display: flex; align-items: center; gap: .45rem; font-size: .73rem; line-height: 1.7; color: var(--text-muted); padding: 1.1rem .8rem; margin-top: .9rem; border-top: 1px solid var(--border); }
+.mobile-category { display: none; }
+.settings-content { min-width: 0; }
+.section-heading { display: flex; align-items: flex-start; gap: 1rem; justify-content: space-between; margin: .1rem 0 1.2rem; }
+.section-eyebrow { font-size: .72rem; color: var(--text-muted); margin-bottom: .35rem; }
+.section-heading h2 { font-size: 1.4rem; letter-spacing: -.025em; line-height: 1.45; outline: none; scroll-margin-top: 6rem; }
+.section-heading p:last-child { font-size: .83rem; color: var(--text-muted); margin-top: .3rem; line-height: 1.8; }
+.back-top { display: inline-flex; align-items: center; justify-content: center; gap: .25rem; min-height: 44px; background: none; border: 0; cursor: pointer; color: var(--text-link); font: inherit; font-size: .74rem; flex-shrink: 0; padding: .4rem; }
+.settings-group { padding: .25rem 1.5rem; margin-bottom: 1rem; border: 1px solid var(--border); box-shadow: none; }
+.result-group-header { display: flex; align-items: center; gap: .5rem; padding: 1rem 0 .85rem; color: var(--text-link); border-bottom: 1px solid var(--border); }
+.result-group-header h3 { font-size: .92rem; font-weight: 600; }
+.result-group-header span { margin-left: auto; font-size: .76rem; color: var(--text-muted); }
+.context-note { font-size: .8rem; line-height: 1.8; color: var(--text-secondary); background: var(--accent-soft); padding: .8rem 1rem; margin: 1rem 0 .2rem; border-radius: var(--radius-sm); }
+.settings-feedback { display: flex; gap: .7rem; background: var(--bg-card); border: 1px solid var(--border); border-left: 3px solid var(--danger); border-radius: var(--radius-sm); margin-bottom: 1.25rem; padding: 1rem; color: var(--text-primary); font-size: .87rem; line-height: 1.7; }
+.settings-feedback > svg { flex-shrink: 0; color: var(--danger-light); margin-top: .2rem; }
+.feedback-help { color: var(--text-muted); font-size: .8rem; }
+.text-link { color: var(--text-link); background: none; border: 0; font: inherit; text-decoration: underline; min-height: 2.75rem; cursor: pointer; padding: .4rem 0; }
+.settings-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 1rem; padding: 2.5rem 1.5rem; border-top: 1px solid var(--border); }
+.settings-empty > svg { color: var(--text-muted); }
+.settings-empty h3 { font-size: 1.1rem; }
+.settings-empty p { font-size: .86rem; color: var(--text-muted); line-height: 1.8; max-width: 32rem; }
+.settings-footer { color: var(--text-muted); font-size: .76rem; line-height: 1.9; padding: .75rem .1rem; }
+.reset-panel { border-top: 1px solid var(--border); padding: 1rem 0 1.3rem; }
+.reset-panel label { font-size: .9rem; font-weight: 600; }
+.reset-controls { display: flex; gap: .65rem; margin: .7rem 0; }
+.reset-controls select { flex: 1; min-width: 0; color: var(--text-primary); background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: .6rem; font: inherit; }
+.reset-controls option { background: var(--bg-main); }
+.reset-panel p { color: var(--text-muted); font-size: .78rem; line-height: 1.7; }
+.import-preview { max-height: 15rem; overflow-y: auto; margin-top: .5rem; border-top: 1px solid var(--border); padding-right: .3rem; }
+.import-preview div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; padding: .55rem 0; border-bottom: 1px solid var(--border); font-size: .8rem; line-height: 1.6; }
+.import-preview dt { color: var(--text-secondary); }
+.import-preview dd { color: var(--text-link); text-align: right; }
+@media (max-width: 760px) { .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; } .category-navigation { position: static; } .desktop-categories, .category-caption, .category-note { display: none; } .mobile-category { display: block; width: 100%; min-height: 2.9rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-primary); font: inherit; font-weight: 600; padding: .6rem .8rem; } .mobile-category option { background: var(--bg-main); } .settings-masthead { margin-top: .25rem; } }
+@media (max-width: 480px) { .settings-center { padding-top: .25rem; } .settings-masthead { flex-direction: column; gap: 1rem; margin-bottom: 1.2rem; } .save-indicator { align-self: flex-start; } .settings-search { flex-wrap: wrap; gap: .4rem; padding: .3rem .65rem; margin-bottom: 1rem; } .search-count { width: 100%; border-left: 0; border-top: 1px solid var(--border); padding: .4rem 0 .15rem; font-size: .73rem; } .settings-group { padding-inline: 1rem; } .section-heading { gap: .5rem; } .back-top { font-size: .7rem; } .settings-intro { font-size: .86rem; } }
+@media (prefers-reduced-motion: reduce) { .category-button { transition: none; } }
 </style>

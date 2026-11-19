@@ -348,7 +348,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.home { animation: fadeIn 0.5s ease; }
+.home { animation: fadeIn 0.5s ease; min-width: 0; }
+.home-topbar > :first-child { min-width: 0; }
+.topic-toggle { flex-shrink: 0; min-width: 44px; min-height: 44px; }
 
 /* 话题分类入口：与它控制的左栏同侧 */
 .home-topbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-bottom: var(--space-5); }
@@ -387,7 +389,10 @@ onMounted(() => {
 .topic-drawer-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1100;
+  z-index: var(--z-modal);
+  top: var(--visual-viewport-offset-top);
+  bottom: auto;
+  height: var(--visual-viewport-height);
   background: rgba(0, 0, 0, 0.5);
   display: flex;
   justify-content: flex-start;
@@ -395,7 +400,8 @@ onMounted(() => {
 .topic-drawer {
   width: min(300px, 85vw);
   height: 100%;
-  padding: var(--space-5);
+  padding: max(var(--space-5), var(--safe-area-top)) var(--space-5) max(var(--space-5), var(--safe-area-bottom)) max(var(--space-5), var(--safe-area-left));
+  overscroll-behavior: contain;
   border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
   overflow-y: auto;
 }
@@ -410,10 +416,10 @@ onMounted(() => {
 .drawer-cat { width: 100%; }
 
 /* 主体布局 */
-.main-layout { display: flex; gap: 16px; align-items: flex-start; }
+.main-layout { display: flex; gap: 16px; align-items: flex-start; min-width: 0; width: 100%; }
 .category-sidebar {
   width: 140px; flex-shrink: 0; padding: 12px; border-radius: var(--radius-lg);
-  position: sticky; top: 76px;
+  position: sticky; top: calc(var(--app-header-height) + 12px);
 }
 .sidebar-title {
   font-size: 13px; font-weight: 600; color: var(--text-muted);
@@ -426,6 +432,7 @@ onMounted(() => {
   color: var(--text-secondary); font-size: 14px; cursor: pointer; transition: all 0.2s;
   text-align: left; white-space: nowrap;
 }
+.cat-btn { min-height: 44px; }
 .cat-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
 .cat-btn.active { background: var(--accent-soft); color: var(--text-primary); font-weight: 600; border-left: 3px solid var(--accent-1); }
 .hot-btn.active { background: var(--accent-soft); border-left: 3px solid var(--accent-1); color: var(--text-link); }
@@ -436,7 +443,7 @@ onMounted(() => {
   width: 280px;
   flex-shrink: 0;
   position: sticky;
-  top: 76px;
+  top: calc(var(--app-header-height) + 12px);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -454,6 +461,7 @@ onMounted(() => {
 
 .wall-stats { display: flex; gap: 10px; }
 .wall-stat {
+  min-width: 0;
   flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
   padding: 10px 6px; background: var(--bg-card); border-radius: var(--radius-md);
 }
@@ -467,7 +475,7 @@ onMounted(() => {
 .wall-meta { display: flex; flex-direction: column; gap: 7px; margin: 4px 0 14px; }
 .wall-meta-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
 .wall-meta-row dt { color: var(--text-muted); flex-shrink: 0; }
-.wall-meta-row dd { color: var(--text-secondary); text-align: right; word-break: break-word; }
+.wall-meta-row dd { min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); text-align: right; word-break: break-word; }
 .wall-action { width: 100%; }
 
 .wall-loading { display: flex; flex-direction: column; gap: 8px; }
@@ -476,7 +484,9 @@ onMounted(() => {
 .wall-skel-short { width: 40%; }
 @keyframes wallSkel { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .posts-list { display: flex; flex-direction: column; gap: 12px; }
-.pagination { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 24px 0; }
+.pagination { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 24px 0; }
+.pagination .text-muted { white-space: nowrap; }
+.pagination .btn { min-height: 44px; }
 
 /* 公告弹窗 */
 .modal {
@@ -486,6 +496,7 @@ onMounted(() => {
 .close-btn {
   display: inline-flex; align-items: center; background: none; border: none;
   color: var(--text-secondary); cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
+  justify-content: center; min-width: 44px; min-height: 44px;
 }
 .close-btn:hover { background: var(--bg-card-hover); }
 

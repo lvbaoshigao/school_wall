@@ -1,19 +1,25 @@
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
-import api from '../api'
+import { useSettingsStore } from '../stores/settings'
+import { useTimeAgo } from '../composables/useTimeAgo'
+import api, { getSessionToken, getApiErrorMessage } from '../api'
 import { useToast } from '../composables/useToast'
+import { createSocialScope, anonymousMessages, mergeMessages, pollMilliseconds, isNearBottom } from '../components/chat-social/socialState'
+import SocialComposer from '../components/chat-social/SocialComposer.vue'
 import Icon from '../components/Icon.vue'
+import SkeletonCard from '../components/SkeletonCard.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const wallStore = useWallStore()
+const settingsStore = useSettingsStore()
+const { fullTime } = useTimeAgo()
 const toast = useToast()
-
 const chatMessages = ref([])
 const newMessage = ref('')
 const loading = ref(true)
@@ -23,171 +29,214 @@ const isClosed = ref(false)
 const isInitiator = ref(false)
 const canReport = ref(false)
 const loadError = ref('')
+const historyError = ref('')
+const sendError = ref('')
 const messagesArea = ref(null)
+const composerRef = ref(null)
 const closing = ref(false)
 const reporting = ref(false)
-let disposed = false
-let loadVersion = 0
-let loadController = null
-let refreshTimer = null
-
+const loadingHistory = ref(false)
+const hasMoreHistory = ref(false)
+const historyCursor = ref(null)
+const unseenCount = ref(0)
+const copyFallback = ref('')
+const operationStatus = ref('')
 const showCloseConfirm = ref(false)
 const showReportConfirm = ref(false)
 const reportReason = ref('')
+const dense = computed(() => settingsStore.prefs.chat_density === 'compact')
+const showTimestamps = computed(() => settingsStore.prefs.chat_show_timestamps !== false)
+const shortcut = computed(() => settingsStore.prefs.chat_send_shortcut === 'modifier' ? 'modifier' : 'enter')
+const scope = createSocialScope(() => ({ token: getSessionToken(), wallId: wallStore.currentWallId, session: userStore.sessionRevision, conversation: String(route.params.conversationId || '') }))
+let disposed = false
+let loadVersion = 0
+let contextVersion = 0
+let latestRequest
+let refreshTimer = null
+const emojis = ['😀', '😂', '😊', '🥰', '🤔', '😅', '😢', '🥺', '👍', '👏', '🙏', '💪', '❤️', '💕', '🎉', '🌟', '🙂', '😉', '🤗', '😌', '🌱', '☀️', '🍀', '🌷']
 
-const emojis = [
-  '😀', '😂', '🤣', '😊', '😍', '🥰', '😘', '😎',
-  '🤔', '😅', '😢', '😭', '😡', '🥺', '😴', '🤯',
-  '👍', '👎', '👏', '🙏', '💪', '❤️', '💔', '💕',
-  '🎉', '🎊', '🎈', '🎁', '🌟', '⭐', '🔥', '💯',
-  '😊', '😇', '🙂', '😉', '😋', '🤗', '🤭', '🤫',
-  '😏', '😒', '🙄', '😬', '🤥', '😌', '😔', '😪'
-]
-
-async function loadMessages() {
-  if (disposed) return
-  const conversationId = String(route.params.conversationId)
+function applyMeta(data) {
+  isClosed.value = isClosed.value || !!data.is_closed
+  isInitiator.value = !!data.is_initiator
+  canReport.value = data.can_report === true
+}
+function conversationPath() { return '/messages/tree-hole/' + encodeURIComponent(String(route.params.conversationId || '')) }
+function denyAccess() {
+  scope.reset(); loadVersion++; stopPolling()
+  chatMessages.value = []; canReport.value = false; hasMoreHistory.value = false; isClosed.value = true
+  copyFallback.value = ''; unseenCount.value = 0; loading.value = loadingHistory.value = sending.value = closing.value = reporting.value = false
+}
+async function loadMessages(silent = false) {
+  if (disposed || silent && loadingHistory.value) return
+  latestRequest?.cancel()
+  const request = scope.request()
+  latestRequest = request
   const version = ++loadVersion
-  loadController?.abort()
-  const controller = new AbortController()
-  loadController = controller
+  const path = conversationPath()
+  const wasNearBottom = isNearBottom(messagesArea.value)
+  const previousLast = chatMessages.value.at(-1)?.id || 0
+  const previousFirst = chatMessages.value[0]?.id || 0
   try {
-    const res = await api.get('/messages/tree-hole/' + conversationId, { signal: controller.signal })
-    if (disposed || version !== loadVersion) return
-    chatMessages.value = Array.isArray(res.data) ? res.data : (res.data.messages || [])
-    isClosed.value = !!res.data.is_closed
-    isInitiator.value = !!res.data.is_initiator
-    canReport.value = !!res.data.can_report
+    const res = await api.get(path, { ...request.config, params: { limit: 50 } })
+    if (!request.current() || version !== loadVersion) return
+    let incoming = anonymousMessages(Array.isArray(res.data) ? res.data : res.data.messages)
+    const initialIncoming = incoming
+    let page = res.data
+    // 补齐新增空洞并更新已加载历史的撤回/已读状态，不恢复旧内容。
+    while (previousFirst && incoming.length && incoming[0].id > previousFirst && page.hasMore && page.next_before_id) {
+      const older = await api.get(path, { ...request.config, params: { limit: 200, before: page.next_before_id } })
+      if (!request.current() || version !== loadVersion) return
+      const rows = anonymousMessages(older.data.messages)
+      if (!rows.length || rows[0].id >= incoming[0].id) break
+      incoming = mergeMessages(rows, incoming)
+      page = older.data
+    }
+    if (!request.current() || version !== loadVersion) return
+    chatMessages.value = previousLast && incoming.length ? mergeMessages(chatMessages.value, incoming) : incoming
+    if (!previousLast || !incoming.length) {
+      hasMoreHistory.value = !!res.data.hasMore
+      historyCursor.value = res.data.next_before_id || res.data.next_before || null
+      if (!historyCursor.value) hasMoreHistory.value = false
+    }
+    applyMeta(res.data)
     loadError.value = ''
-  } catch (e) {
-    if (disposed || version !== loadVersion || controller.signal.aborted) return
-    if (e.response?.status === 403 || e.response?.status === 404) {
-      toast.error('对话不存在或无权访问')
-      router.push('/tree-hole/list')
-    } else loadError.value = '对话加载失败，请重试'
-  } finally {
-    if (!disposed && version === loadVersion) loading.value = false
-  }
-}
-
-
-async function sendMessage() {
-  if (disposed || loading.value || !newMessage.value.trim() || sending.value || isClosed.value) return
-  const conversationId = String(route.params.conversationId)
-  sending.value = true
-  try {
-    await api.post(`/messages/tree-hole/${conversationId}/reply`, {
-      content: newMessage.value.trim()
-    })
-    if (disposed || String(route.params.conversationId) !== conversationId) return
-    newMessage.value = ''
-    showEmoji.value = false
-    await loadMessages()
+    loading.value = false
+    const fresh = incoming.filter(message => message.id > previousLast && !message.is_mine).length
     await nextTick()
-    scrollToBottom()
+    if (!request.current() || version !== loadVersion) return
+    if (!previousLast || wasNearBottom) scrollToBottom()
+    else if (initialIncoming.length) unseenCount.value += fresh
   } catch (e) {
-    toast.error(e.response?.data?.error || '发送失败')
-  } finally {
-    sending.value = false
+    if (!request.current() || version !== loadVersion) return
+    if (e.response?.status === 403 || e.response?.status === 404) {
+      denyAccess()
+    }
+    loadError.value = getApiErrorMessage(e, e.response?.status === 403 || e.response?.status === 404 ? '对话不存在或当前无权访问' : '对话加载失败，请重试')
+  } finally { if (request.current() && version === loadVersion) loading.value = false; request.release() }
+}
+async function retryMessages() { await loadMessages(); if (!disposed) startPolling() }
+async function loadOlderMessages() {
+  if (loadingHistory.value || !hasMoreHistory.value || !historyCursor.value || loading.value) return
+  const request = scope.request()
+  loadingHistory.value = true
+  historyError.value = ''
+  const area = messagesArea.value
+  const previousHeight = area?.scrollHeight || 0
+  const previousTop = area?.scrollTop || 0
+  try {
+    const res = await api.get(conversationPath(), { ...request.config, params: { limit: 50, before: historyCursor.value } })
+    if (!request.current()) return
+    chatMessages.value = mergeMessages(anonymousMessages(res.data.messages), chatMessages.value)
+    hasMoreHistory.value = !!res.data.hasMore
+    historyCursor.value = res.data.next_before_id || res.data.next_before || null
+    if (!historyCursor.value) hasMoreHistory.value = false
+    applyMeta(res.data)
+    await nextTick()
+    if (request.current() && area && area === messagesArea.value) area.scrollTop = previousTop + area.scrollHeight - previousHeight
+  } catch (e) {
+    if (!request.current()) return
+    if (e.response?.status === 403 || e.response?.status === 404) { denyAccess(); loadError.value = '对话不存在或当前无权访问' }
+    else historyError.value = getApiErrorMessage(e, '历史消息加载失败，请重试')
   }
+  finally { if (request.current()) loadingHistory.value = false; request.release() }
 }
-
-function promptCloseConversation() {
-  showCloseConfirm.value = true
+async function sendMessage() {
+  const text = newMessage.value.trim()
+  if (disposed || loading.value || !text || sending.value || isClosed.value) return
+  if (text.length > 2000) { sendError.value = '消息不能超过 2000 字'; return }
+  const request = scope.request()
+  const path = conversationPath()
+  sending.value = true
+  sendError.value = ''
+  try {
+    await api.post(path + '/reply', { content: text }, request.config)
+    if (!request.current()) return
+    if (newMessage.value.trim() === text) newMessage.value = ''
+    showEmoji.value = false
+    await loadMessages(true)
+    if (request.current()) composerRef.value?.focus()
+  } catch (e) { if (request.current()) sendError.value = getApiErrorMessage(e, '发送失败，内容已保留，请重试') }
+  finally { if (request.current()) sending.value = false; request.release() }
 }
-
+function promptCloseConversation() { if (!closing.value && !isClosed.value) showCloseConfirm.value = true }
 async function closeConversation() {
   if (closing.value || isClosed.value) return
+  const request = scope.request()
   closing.value = true
   try {
-    await api.post(`/messages/tree-hole/${route.params.conversationId}/close`)
+    await api.post(conversationPath() + '/close', {}, request.config)
+    if (!request.current()) return
     isClosed.value = true
-    await loadMessages()
-  } catch (e) {
-    toast.error(e.response?.data?.error || '关闭失败')
-  } finally { closing.value = false }
+    stopPolling()
+    await loadMessages(true)
+  } catch (e) { if (request.current()) toast.error(getApiErrorMessage(e, '关闭失败')) }
+  finally { if (request.current()) closing.value = false; request.release() }
 }
-
-function addEmoji(emoji) { newMessage.value += emoji }
-
-function promptReport() {
-  reportReason.value = ''
-  showReportConfirm.value = true
-}
-
+function addEmoji(emoji) { composerRef.value?.insertText(emoji) }
+function promptReport() { if (!canReport.value) return; reportReason.value = ''; showReportConfirm.value = true }
 async function doReport() {
   if (reporting.value || !canReport.value) return
-  if (!reportReason.value.trim()) { toast.error('请填写举报原因'); return }
-  if (reportReason.value.trim().length > 1000) { toast.error('举报原因不能超过1000字'); return }
+  const reason = reportReason.value.trim()
+  if (!reason || reason.length > 1000) { toast.error('请填写 1–1000 字的举报原因'); return }
+  const request = scope.request()
+  const conversationId = String(route.params.conversationId)
   reporting.value = true
   try {
-    await api.post('/messages/report-user', {
-      conversation_id: route.params.conversationId,
-      reason: reportReason.value.trim(),
-      selected_message_ids: chatMessages.value.filter(m => !m.is_mine).slice(-50).map(m => m.id),
-    })
-    toast.success('举报已提交')
-    showReportConfirm.value = false
-  } catch (e) {
-    toast.error(e.response?.data?.error || '举报失败')
-  } finally { reporting.value = false }
+    await api.post('/messages/report-user', { conversation_id: conversationId, reason, selected_message_ids: chatMessages.value.filter(message => !message.is_mine).slice(-50).map(message => message.id) }, request.config)
+    if (request.current()) { toast.success('举报已提交'); showReportConfirm.value = false }
+  } catch (e) { if (request.current()) toast.error(getApiErrorMessage(e, '举报失败')) }
+  finally { if (request.current()) reporting.value = false; request.release() }
 }
-
-function scrollToBottom() {
-  const area = messagesArea.value
-  if (area) area.scrollTop = area.scrollHeight
+async function copyMessage(message) {
+  if (message.is_revoked || !message.content) return
+  const request = scope.request()
+  copyFallback.value = ''
+  operationStatus.value = ''
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
+    await navigator.clipboard.writeText(message.content)
+    if (request.current()) operationStatus.value = '消息内容已复制'
+  } catch {
+    if (request.current()) { copyFallback.value = message.content; operationStatus.value = '浏览器无法自动复制，请在下方选中文本后复制' }
+  } finally { request.release() }
 }
-
+function scrollToBottom() { const area = messagesArea.value; if (area) area.scrollTop = area.scrollHeight; unseenCount.value = 0 }
+function onMessagesScroll() { if (isNearBottom(messagesArea.value)) unseenCount.value = 0 }
 function stopPolling() { clearTimeout(refreshTimer); refreshTimer = null }
 function startPolling() {
   stopPolling()
   if (disposed || isClosed.value || document.visibilityState === 'hidden') return
-  refreshTimer = setTimeout(async () => {
-    const area = messagesArea.value
-    const nearBottom = !area || area.scrollHeight - area.scrollTop - area.clientHeight < 80
-    await loadMessages()
-    if (!disposed && nearBottom) { await nextTick(); scrollToBottom() }
-    startPolling()
-  }, 10000)
+  const version = contextVersion
+  refreshTimer = setTimeout(async () => { await loadMessages(true); if (!disposed && version === contextVersion) startPolling() }, pollMilliseconds(settingsStore.prefs.chat_poll_interval))
 }
 async function onVisibilityChange() {
   stopPolling()
   if (disposed || document.visibilityState !== 'visible') return
-  await loadMessages()
-  startPolling()
+  const version = contextVersion
+  await loadMessages(true)
+  if (!disposed && version === contextVersion) startPolling()
 }
 async function openConversation() {
-  loading.value = true
-  chatMessages.value = []
-  newMessage.value = ''
-  isClosed.value = false
-  canReport.value = false
-  showReportConfirm.value = false
+  scope.reset(); stopPolling(); contextVersion++; loadVersion++
+  const version = contextVersion
+  chatMessages.value = []; newMessage.value = ''; loading.value = true; sending.value = closing.value = reporting.value = false
+  isClosed.value = isInitiator.value = canReport.value = false; loadingHistory.value = false; hasMoreHistory.value = false; historyCursor.value = null
+  showReportConfirm.value = showCloseConfirm.value = showEmoji.value = false
+  loadError.value = historyError.value = sendError.value = copyFallback.value = operationStatus.value = ''; unseenCount.value = 0
   await loadMessages()
-  if (disposed) return
-  await nextTick()
-  scrollToBottom()
-  startPolling()
+  if (!disposed && version === contextVersion) startPolling()
 }
-watch(() => route.params.conversationId, openConversation)
-onMounted(() => {
-  document.addEventListener('visibilitychange', onVisibilityChange)
-  openConversation()
-})
-onBeforeUnmount(() => {
-  disposed = true
-  loadVersion++
-  loadController?.abort()
-  stopPolling()
-  document.removeEventListener('visibilitychange', onVisibilityChange)
-})
+watch(() => [route.params.conversationId, wallStore.currentWallId, userStore.sessionRevision, userStore.token], openConversation)
+watch(() => settingsStore.prefs.chat_poll_interval, startPolling)
+onMounted(() => { document.addEventListener('visibilitychange', onVisibilityChange); return openConversation() })
+onBeforeUnmount(() => { disposed = true; scope.dispose(); loadVersion++; contextVersion++; stopPolling(); document.removeEventListener('visibilitychange', onVisibilityChange) })
 </script>
 
 <template>
-  <div class="tree-hole-chat">
+  <div class="tree-hole-chat" :class="{ compact: dense }">
     <div class="chat-header glass">
       <button class="btn btn-secondary btn-sm" @click="router.push('/tree-hole/list')"><Icon name="chevron-left" :size="15" />返回</button>
-      <h3>匿名对话</h3>
+      <div class="chat-title"><h1>匿名对话</h1><p class="text-muted">只显示对话内容，不公开双方身份</p></div>
       <div class="header-right">
         <span v-if="isClosed" class="closed-badge">已归档</span>
         <button v-else class="btn btn-secondary btn-sm" :disabled="closing || loading" @click="promptCloseConversation">关闭对话</button>
@@ -195,11 +244,13 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="loading" class="loading">加载中</div>
+    <div v-if="loading" class="skeleton-stack" role="status" aria-label="正在加载匿名对话"><SkeletonCard :lines="4" /><SkeletonCard :lines="2" /></div>
 
-    <div v-else-if="loadError" class="state-error" role="alert">{{ loadError }} <button class="btn btn-secondary btn-sm" @click="loadMessages">重试</button></div>
-    <template v-else>
-      <div ref="messagesArea" class="messages-area" role="log" aria-label="树洞消息" aria-live="polite" aria-relevant="additions text">
+    <div v-if="loadError" class="state-error" role="alert">{{ loadError }} <button class="btn btn-secondary btn-sm" @click="retryMessages">重试</button></div>
+    <template v-if="!loading && (!loadError || chatMessages.length)">
+      <div ref="messagesArea" class="messages-area" role="log" aria-label="树洞消息" :aria-live="loadingHistory ? 'off' : 'polite'" aria-relevant="additions text" @scroll.passive="onMessagesScroll">
+        <div v-if="hasMoreHistory" class="history-control"><button class="btn btn-secondary btn-sm" :disabled="loadingHistory" @click="loadOlderMessages">{{ loadingHistory ? '正在加载…' : '加载更早的消息' }}</button></div>
+        <p v-if="historyError" class="state-error" role="alert">{{ historyError }} <button class="btn btn-secondary btn-sm" @click="loadOlderMessages">重试</button></p>
         <div v-if="chatMessages.length === 0" class="empty-state">
           <p>暂无消息，开始对话吧</p>
         </div>
@@ -210,37 +261,36 @@ onBeforeUnmount(() => {
           class="message-item"
           :class="{ 'message-mine': msg.is_mine }"
         >
-          <div v-if="msg.content === '[对话已关闭]'" class="system-notice">
-            倾诉者已关闭对话
+          <div v-if="msg.is_revoked && msg.content === '[对话已关闭]'" class="system-notice">
+            对话已关闭
           </div>
           <template v-else>
-            <div class="message-label">{{ msg.is_mine ? '我' : (wallStore.canHere('wall.tree_hole') ? '匿名用户' : '树洞') }}</div>
+            <div class="message-label">{{ msg.is_mine ? '我' : (isInitiator ? '树洞志愿者' : '匿名倾诉者') }}</div>
             <div class="message-bubble" :class="{ revoked: msg.is_revoked }">
-              <div class="message-content">{{ msg.content }}</div>
-              <div class="message-time">{{ new Date(msg.created_at.replace(' ', 'T')).toLocaleTimeString() }}</div>
+              <div class="message-content">{{ msg.is_revoked ? '消息已撤回' : msg.content }}</div>
+              <div v-if="showTimestamps" class="message-time">{{ fullTime(msg.created_at) }}<span v-if="msg.is_mine && !msg.is_revoked"> · {{ msg.is_read ? '已读' : '未读' }}</span></div>
             </div>
+            <button v-if="!msg.is_revoked" class="copy-message" @click="copyMessage(msg)" :aria-label="'复制' + (msg.is_mine ? '我的' : '对方的') + '这条消息'">复制</button>
           </template>
         </div>
       </div>
 
+      <button v-if="unseenCount" class="new-message-link btn btn-secondary btn-sm" @click="scrollToBottom">{{ unseenCount }} 条新消息 · 查看最新</button>
+      <p v-if="operationStatus" class="operation-status text-muted" role="status">{{ operationStatus }}</p>
+      <div v-if="copyFallback" class="copy-fallback glass"><label for="anonymous-copy">手动复制消息</label><textarea id="anonymous-copy" :value="copyFallback" readonly rows="3" @focus="$event.target.select()"></textarea><button class="btn btn-secondary btn-sm" @click="copyFallback = ''">完成</button></div>
       <div v-if="isClosed" class="closed-notice glass">
         对话已关闭，无法继续发送消息
       </div>
 
       <template v-else>
-        <div v-if="showEmoji" class="emoji-picker glass">
+        <div v-if="showEmoji" id="anonymous-emojis" class="emoji-picker glass" @keydown.esc="showEmoji = false; composerRef?.focus()">
           <div class="emoji-grid">
-            <button v-for="emoji in emojis" :key="emoji" class="emoji-btn" @click="addEmoji(emoji)">{{ emoji }}</button>
+            <button v-for="emoji in emojis" :key="emoji" class="emoji-btn" :aria-label="'插入表情 ' + emoji" @click="addEmoji(emoji)">{{ emoji }}</button>
           </div>
         </div>
 
-        <div class="input-area glass">
-          <button class="emoji-toggle" aria-label="插入表情" :aria-expanded="showEmoji" @click="showEmoji = !showEmoji" :class="{ active: showEmoji }"><Icon name="smile" :size="19" /></button>
-          <input v-model="newMessage" aria-label="消息内容" maxlength="2000" placeholder="输入消息..." @keydown.enter="!$event.isComposing && sendMessage()" :disabled="sending" />
-          <button class="btn btn-primary" :disabled="!newMessage.trim() || sending" @click="sendMessage">
-            {{ sending ? '发送中' : '发送' }}
-          </button>
-        </div>
+        <p v-if="sendError" class="state-error" role="alert">{{ sendError }}</p>
+        <SocialComposer ref="composerRef" v-model="newMessage" :sending="sending" :disabled="loading || isClosed" :shortcut="shortcut" @submit="sendMessage"><template #tools><button class="emoji-toggle" type="button" aria-label="插入表情" aria-controls="anonymous-emojis" :aria-expanded="showEmoji" @click="showEmoji = !showEmoji" :class="{ active: showEmoji }"><Icon name="smile" :size="19" /></button></template></SocialComposer>
       </template>
     </template>
 
@@ -315,4 +365,27 @@ onBeforeUnmount(() => {
 .message-content { white-space: pre-wrap; line-height: 1.65; }
 .input-area input { min-width: 0; }
 @media (max-width: 480px) { .chat-header { flex-wrap: wrap; padding: 10px; } .header-right { margin-left: auto; } .input-area { padding: 10px 8px; gap: 6px; } .message-bubble { max-width: 90%; } }
+.tree-hole-chat { height: var(--app-content-height, calc(100dvh - 112px)); min-height: 0; max-width: 58rem; margin-inline: auto; }
+.chat-header { flex-wrap: wrap; margin-bottom: var(--space-2); }
+.chat-title { flex: 1; min-width: 8rem; }
+.chat-title h1 { font-size: var(--font-lg); font-weight: 600; }
+.chat-title p { font-size: var(--font-xs); margin-top: var(--space-1); }
+.messages-area { overflow-anchor: none; gap: var(--space-4); }
+.history-control { display: flex; justify-content: center; margin-bottom: var(--space-3); }
+.message-bubble { background: var(--bg-input); }
+.message-content { font-size: var(--font-base); line-height: 1.7; overflow-wrap: anywhere; }
+.message-time { font-size: var(--font-xs); }
+.message-label { font-size: var(--font-xs); }
+.copy-message { background: transparent; border: 0; color: var(--text-muted); font-size: var(--font-xs); cursor: pointer; min-width: 44px; min-height: 44px; padding: .3rem .6rem; border-radius: var(--radius-sm); }
+.copy-message:hover, .emoji-btn:hover, .emoji-toggle:hover, .emoji-toggle.active { color: var(--text-primary); background: var(--bg-card-hover); }
+.emoji-toggle { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; min-width: 44px; min-height: 44px; color: var(--text-secondary); }
+.new-message-link { align-self: center; margin-bottom: var(--space-2); }
+.operation-status { font-size: var(--font-xs); padding: var(--space-2); }
+.copy-fallback { padding: var(--space-3); flex-shrink: 0; }
+.copy-fallback label { display: block; font-size: var(--font-sm); margin-bottom: var(--space-2); }
+.copy-fallback textarea { width: 100%; max-height: 6rem; }
+.compact .messages-area { gap: var(--space-2); }
+.compact .message-bubble { padding: .4rem .7rem; }
+.state-error { flex-shrink: 0; }
+@media (max-width: 480px) { .messages-area { padding: var(--space-3) var(--space-1); } .message-bubble { max-width: 92%; } .header-right { width: 100%; justify-content: flex-end; } }
 </style>

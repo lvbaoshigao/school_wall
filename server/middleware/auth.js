@@ -144,7 +144,7 @@ function banPayload(state, reason, scope = 'global') {
 
 // 封禁级别拦截：login/all 完全拦截；post 只拦写请求；chat 只拦聊天相关
 function banLevelCheck(req, user, state) {
-  const requestPath = (req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0].toLowerCase().replace(/\/+$/, '');
+  const requestPath = (req.apiCanonicalPath || req.originalUrl || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0].toLowerCase().replace(/\/+$/, '');
   // 全局封禁仍允许本人持有效会话提交申诉，除此以外不放宽封禁权限。
   if (req.method === 'POST' && requestPath === '/api/auth/appeal') return false;
   const level = state.banLevel || 'login';

@@ -283,6 +283,7 @@ async function initDB() {
       assignee_id INTEGER DEFAULT 0,
       reply_to_id INTEGER DEFAULT 0,
       reply_to_content TEXT DEFAULT '',
+      client_message_id TEXT DEFAULT NULL,
       is_revoked INTEGER DEFAULT 0,
       sender_deleted INTEGER NOT NULL DEFAULT 0,
       receiver_deleted INTEGER NOT NULL DEFAULT 0,
@@ -529,6 +530,7 @@ async function initDB() {
     addCol('messages', 'conversation_id', "TEXT DEFAULT ''");
     addCol('messages', 'reply_to_id', "INTEGER DEFAULT 0");
     addCol('messages', 'reply_to_content', "TEXT DEFAULT ''");
+    addCol('messages', 'client_message_id', "TEXT DEFAULT NULL");
     addCol('messages', 'is_revoked', "INTEGER DEFAULT 0");
     addCol('messages', 'sender_deleted', "INTEGER NOT NULL DEFAULT 0");
     addCol('messages', 'receiver_deleted', "INTEGER NOT NULL DEFAULT 0");
@@ -585,6 +587,11 @@ async function initDB() {
   } catch (e) {
     console.warn('[DB] 迁移过程中出现少量跳过项（可忽略）: ' + e.message);
   }
+
+  // Create cursor/idempotency indexes after old databases received the new column.
+  wrapper.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_sender_client_id ON messages(sender_id, client_message_id) WHERE client_message_id IS NOT NULL AND client_message_id <> ''");
+  wrapper.exec('CREATE INDEX IF NOT EXISTS idx_messages_private_outgoing ON messages(sender_id, receiver_id, id)');
+  wrapper.exec('CREATE INDEX IF NOT EXISTS idx_messages_private_incoming ON messages(receiver_id, sender_id, id)');
 
   if (!getSetting(wrapper, 'require_approval')) {
     setSetting(wrapper, 'require_approval', '0');

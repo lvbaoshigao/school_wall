@@ -96,9 +96,4 @@
 
 ## 证据
 
-审计摘要、原始 npm JSON、最终测试日志、端到端结果与截图保存在 [验证目录](../artifacts/qa/)。
-
-- [桌面亮色](../artifacts/qa/home-desktop.png)
-- [桌面暗色](../artifacts/qa/home-dark.png)
-- [移动版](../artifacts/qa/home-mobile.png)
-- [管理看板](../artifacts/qa/dashboard.png)
+上轮验证的临时数据库、原始 npm JSON、测试日志与截图已按后续清理要求删除。本报告保留当时的审计结论与验证统计；持续回归测试源码仍随项目保留。

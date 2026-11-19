@@ -1,6 +1,6 @@
 import { defineStore, acceptHMRUpdate } from 'pinia'
 import { computed, ref, onScopeDispose } from 'vue'
-import api, { getSessionToken, subscribeSessionChange, getApiErrorMessage } from '../api'
+import api, { getSessionToken, subscribeSessionChange, getApiErrorMessage, readStorage, writeStorage } from '../api'
 import { useUserStore } from './user'
 import { useWallStore } from './wall'
 
@@ -26,38 +26,38 @@ export const NAV_ITEMS = [
   ], desc: '倾诉 / 安全举报' },
 ]
 
-// 偏好 schema：与后端 server/lib/prefs.js 一一对应。
-// 后端才是校验方，这里的默认值只用于「还没拉到服务端偏好」时的首屏渲染。
+// 与服务端偏好schema同步；账号隐私字段有意不在可导入/重置范围内。
 export const PREF_SCHEMA = {
-  feed_sort:        { def: 'latest' },
-  feed_category:    { def: '全部' },
-  density:          { def: 'comfortable' },
-  time_format:      { def: 'relative' },
-  font_scale:       { def: 'md' },
-  auto_load_images: { def: true },
-
-  default_anonymous_post:       { def: false },
-  default_markdown:             { def: false },
-  confirm_before_post:          { def: false },
-  default_anonymous_confession: { def: true },
-
-  badge_interaction:  { def: true },
-  badge_announcement: { def: true },
-  badge_system:       { def: true },
-  badge_report:       { def: true },
-  unread_interval:    { def: '30' },
-  notify_on_comment:  { def: true },
-  notify_on_like:     { def: true },
-
-  reduce_motion:     { def: false },
-  high_contrast:     { def: false },
-  always_focus_ring: { def: false },
-  disable_blur:      { def: false },
-
-  accent: { def: 'teal' },
+  feed_sort: { type: 'enum', values: ['latest', 'hot'], def: 'latest', group: 'reading' },
+  feed_category: { type: 'enum', values: ['全部', '吐槽', '分享', '求助', '讨论', '其他'], def: '全部', group: 'reading' },
+  density: { type: 'enum', values: ['comfortable', 'compact'], def: 'comfortable', group: 'reading' },
+  time_format: { type: 'enum', values: ['relative', 'absolute'], def: 'relative', group: 'reading' },
+  font_scale: { type: 'enum', values: ['sm', 'md', 'lg'], def: 'md', group: 'reading' },
+  auto_load_images: { type: 'bool', def: true, group: 'reading' },
+  default_anonymous_post: { type: 'bool', def: false, group: 'publishing' },
+  default_markdown: { type: 'bool', def: false, group: 'publishing' },
+  confirm_before_post: { type: 'bool', def: false, group: 'publishing' },
+  default_anonymous_confession: { type: 'bool', def: true, group: 'publishing' },
+  badge_interaction: { type: 'bool', def: true, group: 'notifications' },
+  badge_announcement: { type: 'bool', def: true, group: 'notifications' },
+  badge_system: { type: 'bool', def: true, group: 'notifications' },
+  badge_report: { type: 'bool', def: true, group: 'notifications' },
+  unread_interval: { type: 'enum', values: ['0', '15', '30', '60', '300'], def: '30', group: 'notifications' },
+  notify_on_comment: { type: 'bool', def: true, group: 'notifications' },
+  notify_on_like: { type: 'bool', def: true, group: 'notifications' },
+  reduce_motion: { type: 'bool', def: false, group: 'appearance' },
+  high_contrast: { type: 'bool', def: false, group: 'appearance' },
+  always_focus_ring: { type: 'bool', def: false, group: 'appearance' },
+  disable_blur: { type: 'bool', def: false, group: 'appearance' },
+  accent: { type: 'enum', values: ['indigo', 'teal', 'forest', 'amber', 'rose', 'slate'], def: 'teal', group: 'appearance' },
+  theme_mode: { type: 'enum', values: ['system', 'light', 'dark'], def: 'system', group: 'appearance' },
+  wallpaper_enabled: { type: 'bool', def: true, group: 'appearance' },
+  chat_send_shortcut: { type: 'enum', values: ['enter', 'modifier'], def: 'enter', group: 'chat' },
+  chat_density: { type: 'enum', values: ['comfortable', 'compact'], def: 'comfortable', group: 'chat' },
+  chat_show_timestamps: { type: 'bool', def: true, group: 'chat' },
+  chat_poll_interval: { type: 'enum', values: ['10', '20', '30', '60'], def: '20', group: 'chat' },
 }
 
-// 可选主题色。每项给出两个色标，按钮渐变、选中态、焦点环都由它派生。
 export const ACCENTS = [
   { key: 'indigo', label: '靛蓝', c1: '#7183f0', c2: '#5a68d8', shadow: '72, 92, 210' },
   { key: 'teal',   label: '青碧', c1: '#397d72', c2: '#2d655c', shadow: '36, 96, 86' },
@@ -68,34 +68,67 @@ export const ACCENTS = [
 ]
 
 const DEFAULT_NAV = NAV_ITEMS.reduce((acc, item) => { acc[item.key] = !['votes', 'treehole', 'bookmarks', 'help'].includes(item.key); return acc }, {})
-// 导航工具项（主题/壁纸），同样可在设置里开关
 const DEFAULT_TOOLS = { theme: true, wallpaper: true }
-const DEFAULT_PREFS = Object.fromEntries(Object.entries(PREF_SCHEMA).map(([k, v]) => [k, v.def]))
+const DEFAULT_PREFS = Object.fromEntries(Object.entries(PREF_SCHEMA).map(([key, spec]) => [key, spec.def]))
+export const PREFERENCE_SCHEMA = {
+  ...Object.fromEntries(Object.entries({ ...DEFAULT_NAV, ...DEFAULT_TOOLS }).map(([key, def]) => [key, { type: 'bool', def, group: 'navigation' }])),
+  ...PREF_SCHEMA,
+}
+export const PREFERENCE_GROUPS = ['appearance', 'reading', 'publishing', 'chat', 'notifications', 'navigation']
+
+function plainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value))
+}
+export function validatePreferencePatch(input) {
+  if (!plainObject(input) || !Object.keys(input).length) throw new Error('偏好必须是非空的JSON对象')
+  const patch = {}
+  for (const [key, value] of Object.entries(input)) {
+    if (!Object.hasOwn(PREFERENCE_SCHEMA, key)) throw new Error('包含不支持的偏好：' + key)
+    const spec = PREFERENCE_SCHEMA[key]
+    if ((spec.type === 'bool' && typeof value !== 'boolean') || (spec.type === 'enum' && !spec.values.includes(value))) throw new Error('偏好值无效：' + key)
+    patch[key] = value
+  }
+  return patch
+}
+export function preferenceDefaults(group = 'all') {
+  if (group !== 'all' && !PREFERENCE_GROUPS.includes(group)) throw new Error('无法恢复此分类')
+  return Object.fromEntries(Object.entries(PREFERENCE_SCHEMA).filter(([, spec]) => group === 'all' || spec.group === group).map(([key, spec]) => [key, spec.def]))
+}
+export function parsePreferenceImport(text) {
+  if (typeof text !== 'string' || text.length > 65536) throw new Error('偏好文件需要小于64KB')
+  let data
+  try { data = JSON.parse(text) } catch { throw new Error('文件不是有效的JSON') }
+  if (!plainObject(data) || data.format !== 'school-wall-preferences' || data.version !== 1 || Object.keys(data).some(key => !['format', 'version', 'prefs'].includes(key))) throw new Error('不支持的偏好文件格式或版本')
+  return validatePreferencePatch(data.prefs)
+}
+
+function storedThemeMode() {
+  const current = readStorage('theme_mode')
+  if (['system', 'light', 'dark'].includes(current)) return current
+  const legacy = readStorage('theme')
+  return ['light', 'dark'].includes(legacy) ? legacy : null
+}
 
 export const useSettingsStore = defineStore('settings', () => {
   const nav = ref({ ...DEFAULT_NAV })
   const tools = ref({ ...DEFAULT_TOOLS })
-  const prefs = ref({ ...DEFAULT_PREFS })
+  const prefs = ref({ ...DEFAULT_PREFS, theme_mode: storedThemeMode() || 'system' })
+  const themeModeInitialized = ref(!getSessionToken())
   const loaded = ref(false)
-
+  const loading = ref(false)
+  const saveError = ref('')
+  const saveStatus = ref('idle')
+  const lastSavedAt = ref(null)
+  const pendingCount = ref(0)
+  const saving = computed(() => pendingCount.value > 0)
   const userStore = useUserStore()
   const wallStore = useWallStore()
+  const visibleNav = computed(() => NAV_ITEMS.filter(item => nav.value[item.key] && (!item.requireTreeHole || wallStore.canHere('wall.tree_hole'))))
+  const accent = computed(() => ACCENTS.find(item => item.key === prefs.value.accent) || ACCENTS.find(item => item.key === 'teal'))
+  let loadPromise = null
+  let saveQueue = Promise.resolve()
+  let settingsRevision = 0
 
-  // 按用户权限过滤后的导航项（树洞需树洞志愿者 / 全局管理员）
-  const visibleNav = computed(() => {
-    const items = NAV_ITEMS.filter(item => {
-      if (!nav.value[item.key]) return false
-      if (item.requireTreeHole) {
-        return wallStore.canHere('wall.tree_hole')
-      }
-      return true
-    })
-    return items
-  })
-
-  const accent = computed(() => ACCENTS.find(a => a.key === prefs.value.accent) || ACCENTS.find(a => a.key === 'teal'))
-
-  // 把外观类偏好写到 <html> 上，由 global.css 的属性选择器接管
   function applyAppearance() {
     if (typeof document === 'undefined') return
     const el = document.documentElement
@@ -106,40 +139,38 @@ export const useSettingsStore = defineStore('settings', () => {
     el.dataset.highContrast = p.high_contrast ? 'on' : 'off'
     el.dataset.focusRing = p.always_focus_ring ? 'always' : 'auto'
     el.dataset.blur = p.disable_blur ? 'off' : 'on'
-    const a = accent.value
-    el.style.setProperty('--accent-1', a.c1)
-    el.style.setProperty('--accent-2', a.c2)
-    el.style.setProperty('--accent-shadow-rgb', a.shadow)
+    el.style.setProperty('--accent-1', accent.value.c1)
+    el.style.setProperty('--accent-2', accent.value.c2)
+    el.style.setProperty('--accent-shadow-rgb', accent.value.shadow)
   }
-
-  function applyStored(p) {
-    nav.value = { ...DEFAULT_NAV }
-    tools.value = { ...DEFAULT_TOOLS }
-    prefs.value = { ...DEFAULT_PREFS }
-    for (const k of Object.keys(nav.value)) {
-      if (typeof p[k] === 'boolean') nav.value[k] = p[k]
+  function snapshot() { return { ...nav.value, ...tools.value, ...prefs.value } }
+  function applyPatch(patch, persistTheme = false) {
+    for (const [key, value] of Object.entries(patch)) {
+      if (Object.hasOwn(nav.value, key)) nav.value = { ...nav.value, [key]: value }
+      else if (Object.hasOwn(tools.value, key)) tools.value = { ...tools.value, [key]: value }
+      else if (Object.hasOwn(prefs.value, key)) prefs.value = { ...prefs.value, [key]: value }
     }
-    for (const k of Object.keys(tools.value)) {
-      if (typeof p[k] === 'boolean') tools.value[k] = p[k]
-    }
-    for (const k of Object.keys(prefs.value)) {
-      if (p[k] !== undefined) prefs.value[k] = p[k]
+    if (persistTheme && Object.hasOwn(patch, 'theme_mode')) {
+      writeStorage('theme_mode', prefs.value.theme_mode)
+      themeModeInitialized.value = true
     }
     applyAppearance()
   }
-
-  const saveError = ref('')
-  let loadPromise = null
-  let saveQueue = Promise.resolve()
-  let settingsRevision = 0
-
+  function applyStored(data) {
+    const valid = {}
+    for (const [key, spec] of Object.entries(PREFERENCE_SCHEMA)) {
+      const value = data?.[key]
+      valid[key] = (spec.type === 'bool' && typeof value === 'boolean') || (spec.type === 'enum' && spec.values.includes(value)) ? value : spec.def
+    }
+    applyPatch(valid)
+  }
   function reset() {
     settingsRevision++
-    applyStored({})
-    loaded.value = false
-    saveError.value = ''
-    loadPromise = null
-    saveQueue = Promise.resolve()
+    const localMode = storedThemeMode() || 'system'
+    applyStored({ theme_mode: localMode })
+    themeModeInitialized.value = !getSessionToken()
+    loaded.value = false; loading.value = false; saveError.value = ''; saveStatus.value = 'idle'
+    lastSavedAt.value = null; pendingCount.value = 0; loadPromise = null; saveQueue = Promise.resolve()
   }
   onScopeDispose(subscribeSessionChange(event => { if (event.resetContext) reset() }))
 
@@ -147,68 +178,122 @@ export const useSettingsStore = defineStore('settings', () => {
     if (!userStore.isLoggedIn) return false
     if (loadPromise) return loadPromise
     const revision = settingsRevision
-    const requestedToken = getSessionToken()
-    const request = (async () => {
+    loading.value = true
+    const request = saveQueue.catch(() => {}).then(async () => {
+      if (revision !== settingsRevision) return false
       try {
         const res = await api.get('/auth/prefs')
-        if (revision !== settingsRevision || requestedToken !== getSessionToken()) return false
-        if (res.data?.prefs) applyStored(res.data.prefs)
-        loaded.value = true
-        saveError.value = ''
+        if (revision !== settingsRevision) return false
+        const localMode = storedThemeMode()
+        const migrateTheme = Array.isArray(res.data?.storedKeys) && !res.data.storedKeys.includes('theme_mode') && localMode !== null
+        applyStored({ ...(res.data?.prefs || {}), ...(migrateTheme ? { theme_mode: localMode } : {}) })
+        themeModeInitialized.value = true
+        writeStorage('theme_mode', prefs.value.theme_mode)
+        loaded.value = true; saveError.value = ''
+        if (migrateTheme) {
+          try {
+            await api.put('/auth/prefs', { prefs: { theme_mode: localMode } })
+            if (revision !== settingsRevision) return false
+          } catch (error) {
+            if (revision !== settingsRevision) return false
+            saveError.value = getApiErrorMessage(error, '已保留本机主题，暂时无法同步到账号')
+          }
+        }
+        if (!pendingCount.value) saveStatus.value = saveError.value ? 'error' : 'idle'
         return true
       } catch (error) {
-        if (revision === settingsRevision) saveError.value = getApiErrorMessage(error, '设置加载失败，请重试')
+        if (revision === settingsRevision) { saveError.value = getApiErrorMessage(error, '设置加载失败，请重试'); saveStatus.value = 'error' }
         return false
-      }
-    })()
+      } finally { if (revision === settingsRevision) loading.value = false }
+    })
     loadPromise = request
+    saveQueue = request
     try { return await request } finally { if (loadPromise === request) loadPromise = null }
   }
 
-  function savePreference(key, value, target) {
+  function enqueueSave(patch, persist) {
     const revision = settingsRevision
-    const requestedToken = getSessionToken()
+    const token = getSessionToken()
+    if (!token) { saveError.value = '请先登录后保存设置'; saveStatus.value = 'error'; return Promise.resolve(false) }
+    pendingCount.value++
+    saveStatus.value = 'saving'
     const operation = saveQueue.catch(() => {}).then(async () => {
-      if (!requestedToken || revision !== settingsRevision || requestedToken !== getSessionToken()) return false
-      const before = target.value[key]
-      target.value = { ...target.value, [key]: value }
-      applyAppearance()
+      if (revision !== settingsRevision) return false
+      const before = snapshot()
+      applyPatch(patch, true)
       saveError.value = ''
       try {
-        await api.put('/auth/prefs', { prefs: { [key]: value } })
-        return revision === settingsRevision
+        const res = await persist(patch)
+        if (revision !== settingsRevision) return false
+        const normalized = {}
+        for (const key of Object.keys(patch)) {
+          const value = res?.data?.prefs?.[key]
+          const spec = PREFERENCE_SCHEMA[key]
+          normalized[key] = (spec.type === 'bool' && typeof value === 'boolean') || (spec.type === 'enum' && spec.values.includes(value)) ? value : patch[key]
+        }
+        applyPatch(normalized, true)
+        lastSavedAt.value = Date.now()
+        return true
       } catch (error) {
         if (revision === settingsRevision) {
-          target.value = { ...target.value, [key]: before }
-          applyAppearance()
+          applyPatch(Object.fromEntries(Object.keys(patch).map(key => [key, before[key]])), true)
           saveError.value = getApiErrorMessage(error, '保存失败，已恢复原设置')
         }
         return false
+      } finally {
+        if (revision === settingsRevision) {
+          pendingCount.value = Math.max(0, pendingCount.value - 1)
+          saveStatus.value = pendingCount.value ? 'saving' : saveError.value ? 'error' : 'saved'
+        }
       }
     })
     saveQueue = operation
     return operation
   }
-
-  function setNavPref(key, value) {
-    if (Object.hasOwn(nav.value, key)) return savePreference(key, !!value, nav)
-    if (Object.hasOwn(tools.value, key)) return savePreference(key, !!value, tools)
-    return Promise.resolve(false)
+  function setPrefs(input) {
+    let patch
+    try { patch = validatePreferencePatch(input) }
+    catch (error) { saveError.value = error.message; saveStatus.value = 'error'; return Promise.resolve(false) }
+    return enqueueSave(patch, value => api.put('/auth/prefs', { prefs: value }))
   }
-
   function setPref(key, value) {
-    if (!Object.hasOwn(prefs.value, key)) return Promise.resolve(false)
-    return savePreference(key, value, prefs)
+    if (key === 'theme_mode' && !getSessionToken()) return setThemeMode(value)
+    if (!Object.hasOwn(PREF_SCHEMA, key)) return Promise.resolve(false)
+    return setPrefs({ [key]: value })
+  }
+  function setThemeMode(value) {
+    if (!PREF_SCHEMA.theme_mode.values.includes(value)) return Promise.resolve(false)
+    if (getSessionToken()) return setPref('theme_mode', value)
+    applyPatch({ theme_mode: value }, true)
+    saveError.value = ''; saveStatus.value = 'idle'
+    return Promise.resolve(true)
+  }
+  function setNavPref(key, value) {
+    if (!Object.hasOwn(DEFAULT_NAV, key) && !Object.hasOwn(DEFAULT_TOOLS, key)) return Promise.resolve(false)
+    return setPrefs({ [key]: !!value })
+  }
+  function resetPreferences(group = 'all') {
+    let patch
+    try { patch = preferenceDefaults(group) }
+    catch (error) { saveError.value = error.message; saveStatus.value = 'error'; return Promise.resolve(false) }
+    return enqueueSave(patch, async value => {
+      try { return await api.post('/auth/prefs/reset', { scope: group }) }
+      catch (error) {
+        if (![404, 405].includes(error.response?.status)) throw error
+        return api.put('/auth/prefs', { prefs: value })
+      }
+    })
+  }
+  function exportPreferences() { return { format: 'school-wall-preferences', version: 1, prefs: validatePreferencePatch(snapshot()) } }
+  function importPreferences(text) {
+    try { return setPrefs(parsePreferenceImport(text)) }
+    catch (error) { saveError.value = error.message; saveStatus.value = 'error'; return Promise.resolve(false) }
   }
 
   return {
-    nav, tools, prefs, loaded, visibleNav, accent, saveError,
-    loadSettings, setNavPref, setPref, applyAppearance, reset,
+    nav, tools, prefs, loaded, loading, visibleNav, accent, themeModeInitialized, saveError, saveStatus, lastSavedAt, saving, pendingCount,
+    loadSettings, setNavPref, setPref, setPrefs, setThemeMode, applyAppearance, reset, resetPreferences, exportPreferences, importPreferences,
   }
 })
 
-// 没有这一段时，开发中修改本文件会保留旧的 store 实例：
-// 新代码读 settingsStore.prefs 会拿到 undefined 而报错，必须硬刷新才恢复。
-if (import.meta.hot) {
-  import.meta.hot.accept(acceptHMRUpdate(useSettingsStore, import.meta.hot))
-}
+if (import.meta.hot) import.meta.hot.accept(acceptHMRUpdate(useSettingsStore, import.meta.hot))

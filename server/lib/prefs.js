@@ -4,7 +4,7 @@
 //
 // 历史上 PUT /auth/prefs 把所有值 `!!v` 转成布尔，所以只能存开关。
 // 现在按 schema 逐项校验：bool 存布尔，enum 只接受白名单里的字符串，
-// 未知键直接丢弃，非法值回落到默认值而不是整体 400 —— 避免前端多传一个键就全盘保存失败。
+// 旧保存接口忽略未知键和非法值，保留已存合法值；读取时才为缺失/损坏值补默认。
 
 const PREF_SCHEMA = {
   // ===== 导航栏选项卡（与前端 NAV_ITEMS 一致） =====
@@ -51,16 +51,38 @@ const PREF_SCHEMA = {
   always_focus_ring: { type: 'bool', def: false },
   disable_blur:      { type: 'bool', def: false },
 
-  // ===== 主题色 =====
+  // ===== 外观与聊天 =====
   accent: { type: 'enum', values: ['indigo', 'teal', 'forest', 'amber', 'rose', 'slate'], def: 'teal' },
+  theme_mode:        { type: 'enum', values: ['system', 'light', 'dark'], def: 'system' },
+  wallpaper_enabled: { type: 'bool', def: true },
+  chat_send_shortcut:   { type: 'enum', values: ['enter', 'modifier'], def: 'enter' },
+  chat_density:         { type: 'enum', values: ['comfortable', 'compact'], def: 'comfortable' },
+  chat_show_timestamps: { type: 'bool', def: true },
+  chat_poll_interval:   { type: 'enum', values: ['10', '20', '30', '60'], def: '20' },
 };
+
+// 导航的 theme/wallpaper 只控制工具入口；实际显示分别由外观分类的新字段控制。
+const PREF_SCOPES = Object.freeze({
+  all: Object.freeze(Object.keys(PREF_SCHEMA)),
+  appearance: Object.freeze(['accent', 'theme_mode', 'wallpaper_enabled', 'reduce_motion',
+    'high_contrast', 'always_focus_ring', 'disable_blur']),
+  chat: Object.freeze(['chat_send_shortcut', 'chat_density', 'chat_show_timestamps', 'chat_poll_interval']),
+  notifications: Object.freeze(['badge_interaction', 'badge_announcement', 'badge_system', 'badge_report',
+    'unread_interval', 'notify_on_comment', 'notify_on_like']),
+  navigation: Object.freeze(['home', 'publish', 'search', 'votes', 'chat', 'inbox', 'treehole',
+    'bookmarks', 'help', 'theme', 'wallpaper']),
+  reading: Object.freeze(['feed_sort', 'feed_category', 'density', 'time_format', 'font_scale', 'auto_load_images']),
+  publishing: Object.freeze(['default_anonymous_post', 'default_markdown', 'confirm_before_post', 'default_anonymous_confession']),
+});
+
+const isPrefsObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 
 // 把存储值 + 默认值合并成完整、类型正确的偏好对象
 function mergePrefs(stored) {
-  const src = stored && typeof stored === 'object' ? stored : {};
+  const src = isPrefsObject(stored) ? stored : {};
   const out = {};
   for (const [key, spec] of Object.entries(PREF_SCHEMA)) {
-    const raw = src[key];
+    const raw = Object.prototype.hasOwnProperty.call(src, key) ? src[key] : undefined;
     if (spec.type === 'bool') {
       out[key] = typeof raw === 'boolean' ? raw : spec.def;
     } else if (spec.type === 'enum') {
@@ -74,10 +96,10 @@ function mergePrefs(stored) {
 
 // 只保留 schema 里存在且取值合法的键
 function sanitizePrefs(input) {
-  const src = input && typeof input === 'object' ? input : {};
+  const src = isPrefsObject(input) ? input : {};
   const out = {};
   for (const [key, spec] of Object.entries(PREF_SCHEMA)) {
-    if (!(key in src)) continue;
+    if (!Object.prototype.hasOwnProperty.call(src, key)) continue;
     const raw = src[key];
     if (spec.type === 'bool' && typeof raw === 'boolean') {
       out[key] = raw;
@@ -86,6 +108,29 @@ function sanitizePrefs(input) {
     }
   }
   return out;
+}
+
+// 返回可公开的安全契约；每次复制数组，调用者不能改动服务端允许值或重置范围。
+function getPrefsSchema() {
+  const schema = {};
+  for (const [key, spec] of Object.entries(PREF_SCHEMA)) {
+    const scope = Object.keys(PREF_SCOPES).find(name => name !== 'all' && PREF_SCOPES[name].includes(key));
+    schema[key] = { type: spec.type, default: spec.def, scope };
+    if (spec.type === 'enum') schema[key].values = [...spec.values];
+  }
+  return {
+    version: 1, schema, defaults: mergePrefs({}),
+    scopes: Object.fromEntries(Object.entries(PREF_SCOPES).map(([scope, keys]) => [scope, [...keys]])),
+  };
+}
+
+function resetPrefs(stored, scope) {
+  if (typeof scope !== 'string' || !Object.prototype.hasOwnProperty.call(PREF_SCOPES, scope)) {
+    throw new TypeError('无效的偏好重置范围');
+  }
+  const prefs = mergePrefs(stored);
+  for (const key of PREF_SCOPES[scope]) prefs[key] = PREF_SCHEMA[key].def;
+  return prefs;
 }
 
 // 供后端其它路由读取某个用户的单项偏好（如互动通知开关）
@@ -99,4 +144,4 @@ function readPrefs(db, userId) {
   }
 }
 
-module.exports = { PREF_SCHEMA, mergePrefs, sanitizePrefs, readPrefs };
+module.exports = { PREF_SCHEMA, PREF_SCOPES, mergePrefs, sanitizePrefs, readPrefs, getPrefsSchema, resetPrefs };

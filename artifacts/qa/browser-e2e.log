@@ -1,3 +1,0 @@
-(node:72255) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
-(Use `node --trace-warnings ...` to show where the warning was created)
-{"checks":["real login and session restore","real unread badge 200 and numeric contract","create post, like, bookmark, comment and clear sent draft","comment deletion confirmation cancellation preserves data","search query and results render","vote selection, confirmation and persisted result","dashboard nonce, quoted username settings modal and real announcement publish","final desktop/mobile layout and dark/reduced motion screenshots"],"errors":[]}

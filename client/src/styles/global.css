@@ -85,6 +85,18 @@
      避免两处各写一个数字、改一处忘一处 */
   --container: 1000px;
   --container-wide: 1280px;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  --app-nav-height: 64px;
+  --app-header-height: calc(var(--app-nav-height) + var(--safe-area-top));
+  --visual-viewport-height: 100dvh;
+  --visual-viewport-width: 100vw;
+  --visual-viewport-offset-top: 0px;
+  --keyboard-inset-bottom: 0px;
+  --conversation-gap: 8px;
+  --app-content-height: max(0px, calc(var(--visual-viewport-height) - var(--app-header-height) - var(--conversation-gap)));
 
   --transition: 0.2s ease;
   --transition-slow: 0.3s ease;
@@ -130,7 +142,7 @@ html[data-density='compact'] .msg-card,
 html[data-density='compact'] .settings-card { padding: var(--space-3); }
 html[data-density='compact'] .posts-list { gap: var(--space-2); }
 html[data-density='compact'] .empty-state { padding: var(--space-5) var(--space-4); }
-html[data-density='compact'] .main-content { padding-top: 72px; }
+html[data-density='compact'] .main-content { padding-top: calc(var(--app-header-height) + 8px); }
 
 /* 手动「减少动效」：与系统偏好同等力度，且同样要清掉 stagger 延迟 */
 html[data-reduce-motion='on'] .stagger-item,
@@ -269,7 +281,6 @@ body {
   background: var(--bg-deep);
   min-height: 100vh;
   min-height: 100dvh;
-  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -295,6 +306,23 @@ html[data-reduce-motion='on'], html[data-reduce-motion='on'] *, html[data-reduce
   :focus-visible { outline-color: Highlight; }
   input[type='checkbox'], input[type='radio'] { appearance: auto; }
   .btn, .glass, .glass-strong { border: 1px solid CanvasText; }
+}
+
+/* 尺寸约束落在实际内容上，不裁切 body 来隐藏布局缺陷。 */
+img, video, canvas { max-width: 100%; }
+.main-content > *, .form-row > * { min-width: 0; }
+.md-body { min-width: 0; overflow-wrap: anywhere; }
+.md-body th, .md-body td { overflow-wrap: anywhere; }
+html[data-keyboard-open='on'] .fab-root,
+html[data-keyboard-open='on'] .back-to-top,
+html[data-app-layout='conversation'] .back-to-top { display: none; }
+@media (max-width: 1080px), (pointer: coarse) {
+  .btn, .btn-sm { min-height: 44px; }
+  .post-card .post-actions .action-btn { min-height: 44px; min-width: 44px; }
+  button { touch-action: manipulation; }
+}
+@media (max-height: 480px) and (orientation: landscape) {
+  .modal-overlay { padding: 8px max(12px, var(--safe-area-right)) 8px max(12px, var(--safe-area-left)); }
 }
 
 /* ----- 毛玻璃卡片 ----- */
@@ -978,10 +1006,6 @@ body.light-theme .ok-msg {
    ========================================== */
 
 @media (max-width: 768px) {
-  .main-content {
-    padding: 70px var(--space-3) var(--space-5);
-  }
-
   .form-row { flex-direction: column; }
 
   input, textarea, select {
@@ -1014,10 +1038,6 @@ body.light-theme .ok-msg {
 }
 
 @media (max-width: 480px) {
-  .main-content {
-    padding: 66px var(--space-2) var(--space-4);
-  }
-
   h1 { font-size: var(--font-xl); }
   h2 { font-size: var(--font-lg); }
   h3 { font-size: var(--font-md); }
@@ -1030,6 +1050,5 @@ body.light-theme .ok-msg {
 
 /* 极窄屏（<=360px）：再压一档留白，避免内容被挤到只剩一两列 */
 @media (max-width: 360px) {
-  .main-content { padding: 64px 6px var(--space-3); }
   .post-card { padding: var(--space-3); }
 }

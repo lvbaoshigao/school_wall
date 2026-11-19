@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { authRequired, wallContext } = require('../middleware/auth');
 const { activeWallMember, treeConversation, canAccessTree, countAccessibleTreeUnread } = require('../lib/treeAccess');
 const { userCan } = require('../lib/permissions');
+const { presentMessages, canQuoteMessage } = require('../lib/messagePresentation');
 
 const router = express.Router();
 
@@ -34,48 +35,116 @@ function validateTreeAccess(req, res, next) {
 
 const validTypes = ['private', 'confession', 'system', 'announcement', 'interaction', 'tree_hole', 'report_notification', 'role_application'];
 
-// 获取与某用户的私信会话（仅双方消息，服务端过滤 + 分页）
-// 原来客户端为了开一个会话要拉全量 /inbox + /sent 再在前端 filter，
-// 长会话下每轮轮询都要把整箱消息搬一遍，等于把服务端已经能做的过滤丢给客户端。
+const messageColumns = 'm.id,m.sender_id,m.receiver_id,m.wall_id,m.type,m.title,m.content,m.is_anonymous,m.is_read,m.is_revoked,m.reply_to_id,m.reply_to_content,m.link,m.created_at,m.client_message_id';
+
+function canSendPrivate(req, otherId) {
+  if (req.user.banRestricted || isBlocked(req, req.user.id, otherId)) return false;
+  const receiver = req.db.prepare("SELECT id FROM users WHERE id=? AND status='active'").get(otherId);
+  if (!receiver) return false;
+  const friend = req.db.prepare("SELECT 1 FROM friends WHERE status='accepted' AND ((user_id=? AND friend_id=?) OR (user_id=? AND friend_id=?)) LIMIT 1").get(req.user.id, otherId, otherId, req.user.id);
+  if (friend) return true;
+  return !!req.db.prepare("SELECT 1 FROM wall_members a JOIN wall_members b ON a.wall_id=b.wall_id JOIN walls w ON w.id=a.wall_id WHERE a.user_id=? AND b.user_id=? AND a.status='active' AND b.status='active' AND w.status='active' LIMIT 1").get(req.user.id, otherId);
+}
+
+function markVisibleMessagesRead(req, messages) {
+  const ids = messages.filter(m => m.receiver_id === req.user.id && !m.is_read).map(m => m.id);
+  if (!ids.length) return 0;
+  let changes = 0;
+  for (let offset = 0; offset < ids.length; offset += 400) {
+    const batch = ids.slice(offset, offset + 400);
+    changes += req.db.prepare('UPDATE messages SET is_read=1 WHERE id IN (' + batch.map(() => '?').join(',') + ') AND receiver_id=? AND receiver_deleted=0').run(...batch, req.user.id).changes;
+  }
+  messages.forEach(m => { if (m.receiver_id === req.user.id) m.is_read = 1; });
+  return changes;
+}
+
+// 最近会话按本人仍可见的最后一条私信排序，不读取树洞或表白信的身份。
+router.get('/conversations', authRequired, (req, res) => {
+  const limit = req.query.limit === undefined ? 30 : positiveId(req.query.limit);
+  const before = req.query.before === undefined ? 0 : positiveId(req.query.before);
+  if (!limit || limit > 100 || (req.query.before !== undefined && !before) || ['after', 'around_id', 'q'].some(key => req.query[key] !== undefined)) return res.status(400).json({ error: '分页参数无效' });
+  const params = [req.user.id, req.user.id, req.user.id, req.user.id];
+  let sql = "SELECT peer_id AS user_id,MAX(id) AS last_message_id,SUM(CASE WHEN receiver_id=? AND is_read=0 THEN 1 ELSE 0 END) AS unread_count FROM (SELECT m.id,m.receiver_id,m.is_read,CASE WHEN m.sender_id=? THEN m.receiver_id ELSE m.sender_id END AS peer_id FROM messages m WHERE m.type='private' AND m.is_anonymous=0 AND m.sender_id IS NOT NULL AND m.sender_id!=m.receiver_id AND ((m.sender_id=? AND m.sender_deleted=0) OR (m.receiver_id=? AND m.receiver_deleted=0))) GROUP BY peer_id";
+  if (before) { sql += ' HAVING MAX(id)<?'; params.push(before); }
+  sql += ' ORDER BY last_message_id DESC LIMIT ?';
+  params.push(limit + 1);
+  const rows = req.db.prepare(sql).all(...params);
+  const hasMore = rows.length > limit;
+  const conversations = rows.slice(0, limit).map(row => {
+    const peer = req.db.prepare('SELECT id,nickname,avatar,status FROM users WHERE id=?').get(row.user_id);
+    const available = peer?.status === 'active';
+    const last = req.db.prepare('SELECT ' + messageColumns + ' FROM messages m WHERE m.id=?').get(row.last_message_id);
+    return {
+      user_id: row.user_id,
+      other_user: { id: row.user_id, nickname: available ? (peer.nickname || '用户') : '用户暂不可用', avatar: available ? peer.avatar : '', available },
+      last_message: presentMessages(req, [last])[0],
+      last_message_id: row.last_message_id,
+      last_time: last.created_at,
+      unread_count: row.unread_count,
+      can_send: canSendPrivate(req, row.user_id),
+    };
+  });
+  const next = conversations.at(-1)?.last_message_id || null;
+  res.json({ conversations, hasMore, next_before_id: next, next_before: next });
+});
+
+// 所有游标都在授权后的双人私信集合内工作，搜索和定位不会扩展可见范围。
 router.get('/conversation/:userId', authRequired, (req, res) => {
   const otherId = positiveId(req.params.userId);
-  if (!Number.isInteger(otherId) || otherId <= 0) {
-    return res.status(400).json({ error: '用户 ID 无效' });
-  }
+  if (!otherId) return res.status(400).json({ error: '用户 ID 无效' });
   const limit = req.query.limit === undefined ? 100 : positiveId(req.query.limit);
-  const before = req.query.before === undefined ? 0 : positiveId(req.query.before);
-  if (!limit || limit > 200 || (req.query.before !== undefined && !before)) return res.status(400).json({ error: '分页参数无效' });
-
-  let sql = `
-    SELECT m.id, m.sender_id, m.receiver_id, m.content, m.is_read, m.is_revoked,
-           m.reply_to_id, m.reply_to_content, m.created_at
-    FROM messages m
-    WHERE m.type = 'private'
-      AND ((m.sender_id = ? AND m.receiver_id = ? AND m.sender_deleted=0) OR (m.sender_id = ? AND m.receiver_id = ? AND m.receiver_deleted=0))
-  `;
+  const cursors = {};
+  for (const name of ['before', 'after', 'around_id']) {
+    if (req.query[name] !== undefined) {
+      cursors[name] = positiveId(req.query[name]);
+      if (!cursors[name]) return res.status(400).json({ error: '分页参数无效' });
+    }
+  }
+  const markRead = req.query.mark_read === undefined ? '1' : req.query.mark_read;
+  if (!limit || limit > 200 || Object.keys(cursors).length > 1 || !['0', '1'].includes(markRead)) return res.status(400).json({ error: '分页参数组合无效' });
+  let keyword = null;
+  if (req.query.q !== undefined) {
+    if (typeof req.query.q !== 'string' || !req.query.q.trim() || req.query.q.length > 100 || cursors.after || cursors.around_id) return res.status(400).json({ error: '搜索参数组合无效' });
+    keyword = req.query.q.trim();
+  }
+  let where = "m.type='private' AND m.is_anonymous=0 AND ((m.sender_id=? AND m.receiver_id=? AND m.sender_deleted=0) OR (m.sender_id=? AND m.receiver_id=? AND m.receiver_deleted=0))";
   const params = [req.user.id, otherId, otherId, req.user.id];
-  if (before > 0) {
-    sql += ' AND m.id < ?';
-    params.push(before);
+  if (keyword !== null) {
+    where += " AND m.content LIKE ? ESCAPE '\\'";
+    params.push('%' + keyword.replace(/[\\%_]/g, '\\$&') + '%');
   }
-  // 倒序取最近 limit 条，再在内存里翻正，避免大数据量下 ORDER BY ASC + LIMIT 取到最旧的
-  sql += ' ORDER BY m.id DESC LIMIT ?';
-  params.push(limit);
-
-  const rows = req.db.prepare(sql).all(...params);
-  const messages = rows.reverse();
-
-  // 一次性把这批消息里发给我的标为已读，替代前端逐条 PUT
-  const unreadIds = messages.filter(m => m.receiver_id === req.user.id && !m.is_read).map(m => m.id);
-  if (unreadIds.length) {
-    const holes = unreadIds.map(() => '?').join(',');
-    req.db.prepare(`UPDATE messages SET is_read = 1 WHERE id IN (${holes}) AND receiver_id = ? AND receiver_deleted=0`)
-      .run(...unreadIds, req.user.id);
-    messages.forEach(m => { if (m.receiver_id === req.user.id) m.is_read = 1; });
+  const select = 'SELECT ' + messageColumns + ' FROM messages m WHERE ' + where;
+  let messages;
+  if (cursors.around_id) {
+    const anchor = req.db.prepare(select + ' AND m.id=?').get(...params, cursors.around_id);
+    if (!anchor) return res.status(404).json({ error: '消息不存在或不可见' });
+    let lower = req.db.prepare(select + ' AND m.id<? ORDER BY m.id DESC LIMIT ?').all(...params, anchor.id, Math.floor((limit - 1) / 2));
+    const higher = req.db.prepare(select + ' AND m.id>? ORDER BY m.id ASC LIMIT ?').all(...params, anchor.id, limit - 1 - lower.length);
+    const remaining = limit - 1 - lower.length - higher.length;
+    if (remaining) {
+      const extra = req.db.prepare(select + ' AND m.id<? ORDER BY m.id DESC LIMIT ?').all(...params, lower.at(-1)?.id || anchor.id, remaining);
+      lower = lower.concat(extra);
+    }
+    messages = lower.reverse().concat(anchor, higher);
+  } else {
+    const after = !!cursors.after;
+    const cursor = cursors.after || cursors.before;
+    const cursorSql = cursor ? (' AND m.id' + (after ? '>' : '<') + '?') : '';
+    const rowParams = cursor ? [...params, cursor, limit + 1] : [...params, limit + 1];
+    const rows = req.db.prepare(select + cursorSql + ' ORDER BY m.id ' + (after ? 'ASC' : 'DESC') + ' LIMIT ?').all(...rowParams);
+    messages = rows.slice(0, limit);
+    if (!after) messages.reverse();
   }
-
-  const hasMore = rows.length === limit;
-  res.json({ messages, hasMore, unreadMarked: unreadIds.length });
+  const oldest = messages[0]?.id || null;
+  const newest = messages.at(-1)?.id || null;
+  const hasMoreBefore = oldest !== null && !!req.db.prepare('SELECT 1 FROM messages m WHERE ' + where + ' AND m.id<? LIMIT 1').get(...params, oldest);
+  const hasMoreAfter = newest !== null && !!req.db.prepare('SELECT 1 FROM messages m WHERE ' + where + ' AND m.id>? LIMIT 1').get(...params, newest);
+  const unreadMarked = markRead === '1' ? markVisibleMessagesRead(req, messages) : 0;
+  const hasMore = cursors.after ? hasMoreAfter : (cursors.around_id ? hasMoreBefore || hasMoreAfter : hasMoreBefore);
+  res.json({
+    messages: presentMessages(req, messages), hasMore, hasMoreBefore, hasMoreAfter,
+    next_before_id: oldest, next_after_id: newest, next_before: oldest, unreadMarked,
+  });
 });
 
 // 批量标记已读（会话用）
@@ -116,7 +185,7 @@ router.get('/inbox', authRequired, (req, res) => {
   let messages = req.db.prepare(`
     SELECT m.id, m.conversation_id,
       CASE WHEN m.is_anonymous = 1 THEN NULL ELSE m.sender_id END as sender_id,
-      m.receiver_id, m.wall_id, m.type, m.title, m.content, m.is_anonymous, m.is_read, m.is_revoked, m.reply_to_id, m.reply_to_content, m.link, m.created_at,
+      m.receiver_id, m.wall_id, m.type, m.title, m.content, m.is_anonymous, m.is_read, m.is_revoked, m.reply_to_id, m.reply_to_content, m.link, m.created_at, m.client_message_id,
       CASE
         WHEN m.type = 'announcement' THEN '管理员'
         WHEN m.is_anonymous = 1 OR m.sender_id IS NULL THEN NULL
@@ -161,7 +230,7 @@ router.get('/inbox', authRequired, (req, res) => {
   });
   const totalUnread = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
 
-  res.json({ messages, unreadCounts, totalUnread });
+  res.json({ messages: presentMessages(req, messages), unreadCounts, totalUnread });
 });
 
 // 待处理申请：只返回当前用户真正有权审批的条目，按类型分组。
@@ -223,7 +292,7 @@ router.get('/approvals', authRequired, (req, res) => {
 // 获取已发送的消息（包括私信、表白信）
 router.get('/sent', authRequired, (req, res) => {
   const messages = req.db.prepare(`
-    SELECT m.id, m.sender_id, m.receiver_id, m.wall_id, m.type, m.title, m.content, m.is_anonymous, m.is_read, m.is_revoked, m.reply_to_id, m.reply_to_content, m.link, m.created_at, u.nickname as receiver_nickname
+    SELECT m.id, m.sender_id, m.receiver_id, m.wall_id, m.type, m.title, m.content, m.is_anonymous, m.is_read, m.is_revoked, m.reply_to_id, m.reply_to_content, m.link, m.created_at, m.client_message_id, u.nickname as receiver_nickname
     FROM messages m
     JOIN users u ON m.receiver_id = u.id
     WHERE m.sender_id = ? AND m.sender_deleted=0 AND m.type IN ('private', 'confession')
@@ -231,62 +300,75 @@ router.get('/sent', authRequired, (req, res) => {
     LIMIT 500
   `).all(req.user.id);
 
-  res.json(messages);
+  res.json(presentMessages(req, messages));
 });
 
 // 发送私信/表白信
 router.post('/', authRequired, (req, res) => {
-  const { type, content, reply_to_id } = req.body;
+  const { type, content, reply_to_id, client_message_id } = req.body;
   const receiverId = positiveId(req.body.receiver_id);
   const title = req.body.title === undefined ? '' : req.body.title;
   const anonymous = req.body.is_anonymous;
-  if (!receiverId || typeof content !== 'string' || !content.trim() || typeof title !== 'string') {
-    return res.status(400).json({ error: '消息参数无效' });
-  }
+  if (!receiverId || typeof content !== 'string' || !content.trim() || typeof title !== 'string') return res.status(400).json({ error: '消息参数无效' });
   if (!['private', 'confession'].includes(type)) return res.status(400).json({ error: '消息类型错误' });
   if (content.length > 2000 || title.length > 100) return res.status(400).json({ error: '内容不能超过2000字，标题不能超过100字' });
   if (anonymous !== undefined && ![true, false, 0, 1].includes(anonymous)) return res.status(400).json({ error: '匿名参数无效' });
   if (type === 'private' && anonymous) return res.status(400).json({ error: '私信不支持匿名，请使用表白信' });
-  const isAnonymous = type === 'confession' && !!anonymous;
-  const receiver = req.db.prepare("SELECT id FROM users WHERE id=? AND status='active'").get(receiverId);
-  if (!receiver) return res.status(404).json({ error: '收件人不存在或不可用' });
   if (receiverId === req.user.id) return res.status(400).json({ error: '不能给自己发消息' });
-  if (isBlocked(req, req.user.id, receiverId)) return res.status(403).json({ error: '无法向该用户发送消息' });
-
-  let wallId = 0;
-  if (type === 'confession') {
-    wallId = optionalWallId(req);
-    if (wallId <= 0) return res.status(400).json({ error: '校园墙上下文无效' });
-    if (!activeWallMember(req, wallId, req.user.id) || !activeWallMember(req, wallId, receiverId)) {
-      return res.status(403).json({ error: '双方必须是同一有效校园墙的成员' });
-    }
-  } else {
-    const friend = req.db.prepare("SELECT 1 FROM friends WHERE status='accepted' AND ((user_id=? AND friend_id=?) OR (user_id=? AND friend_id=?)) LIMIT 1").get(req.user.id, receiverId, receiverId, req.user.id);
-    const shared = req.db.prepare("SELECT 1 FROM wall_members a JOIN wall_members b ON a.wall_id=b.wall_id JOIN walls w ON w.id=a.wall_id WHERE a.user_id=? AND b.user_id=? AND a.status='active' AND b.status='active' AND w.status='active' LIMIT 1").get(req.user.id, receiverId);
-    if (!friend && !shared) return res.status(403).json({ error: '只能私信好友或同一校园墙的成员' });
+  let clientId = null;
+  if (client_message_id !== undefined && client_message_id !== null) {
+    if (typeof client_message_id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(client_message_id)) return res.status(400).json({ error: '客户端消息 ID 无效' });
+    clientId = client_message_id;
   }
-
+  const wallId = type === 'confession' ? optionalWallId(req) : 0;
+  if (type === 'confession' && wallId <= 0) return res.status(400).json({ error: '校园墙上下文无效' });
   let replyId = 0;
-  let replyContent = '';
   if (reply_to_id !== undefined && reply_to_id !== null && reply_to_id !== 0) {
     replyId = positiveId(reply_to_id);
     if (!replyId) return res.status(400).json({ error: '引用消息 ID 无效' });
-    const reply = req.db.prepare('SELECT content, is_revoked, sender_id, receiver_id, type, wall_id, is_anonymous, sender_deleted, receiver_deleted FROM messages WHERE id=?').get(replyId);
-    // 引用只能留在原双方和消息类型内；参与者也不能将另一段私密会话转发给第三人。
-    const samePair = reply && ((reply.sender_id === req.user.id && reply.receiver_id === receiverId) || (reply.sender_id === receiverId && reply.receiver_id === req.user.id));
-    if (!samePair || reply.type !== type || reply.wall_id !== wallId || reply.is_revoked || reply.is_anonymous || (reply.sender_id === req.user.id ? reply.sender_deleted : reply.receiver_deleted)) {
-      return res.status(403).json({ error: '不能引用此消息' });
-    }
-    replyContent = reply.content.substring(0, 100);
   }
+  const payload = { receiver_id: receiverId, type, wall_id: wallId, title: title.trim(), content: content.trim(), is_anonymous: type === 'confession' && anonymous ? 1 : 0, reply_to_id: replyId };
+  const acknowledge = (stored, deduplicated) => res.json({
+    id: stored.id, message: '发送成功', client_message_id: stored.client_message_id || null,
+    deduplicated, message_item: presentMessages(req, [stored])[0],
+  });
+  const existingMessage = () => clientId ? req.db.prepare('SELECT * FROM messages WHERE sender_id=? AND client_message_id=?').get(req.user.id, clientId) : null;
+  const acknowledgeExisting = stored => {
+    if (stored.sender_deleted || stored.is_revoked) return res.status(409).json({ error: '原消息已删除或撤回，请勿重复发送', code: 'CLIENT_MESSAGE_UNAVAILABLE' });
+    if (Object.entries(payload).some(([key, value]) => stored[key] !== value)) return res.status(409).json({ error: '客户端消息 ID 已用于不同内容', code: 'CLIENT_MESSAGE_CONFLICT' });
+    return acknowledge(stored, true);
+  };
+  // A retry acknowledges an already committed write; it never resends or revives it.
+  const existing = existingMessage();
+  if (existing) return acknowledgeExisting(existing);
 
-  // 匿名只影响展示，保留服务端归属供撤回、举报和本人发件箱使用。
-  const link = isAnonymous ? '' : '/chat/' + req.user.id;
-  const result = req.db.prepare(`
-    INSERT INTO messages (sender_id, receiver_id, wall_id, type, title, content, is_anonymous, reply_to_id, reply_to_content, link)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(req.user.id, receiverId, wallId, type, title.trim(), content.trim(), isAnonymous ? 1 : 0, replyId, replyContent, link);
-  res.json({ id: result.lastInsertRowid, message: '发送成功' });
+  const receiver = req.db.prepare("SELECT id FROM users WHERE id=? AND status='active'").get(receiverId);
+  if (!receiver) return res.status(404).json({ error: '收件人不存在或不可用' });
+  if (isBlocked(req, req.user.id, receiverId)) return res.status(403).json({ error: '无法向该用户发送消息' });
+  if (type === 'confession') {
+    if (!activeWallMember(req, wallId, req.user.id) || !activeWallMember(req, wallId, receiverId)) return res.status(403).json({ error: '双方必须是同一有效校园墙的成员' });
+  } else if (!canSendPrivate(req, receiverId)) {
+    return res.status(403).json({ error: '只能私信好友或同一校园墙的成员' });
+  }
+  let replyContent = '';
+  if (replyId) {
+    const source = req.db.prepare('SELECT * FROM messages WHERE id=?').get(replyId);
+    const target = { ...payload, sender_id: req.user.id };
+    if (!canQuoteMessage(req, source, target) || source.is_revoked) return res.status(403).json({ error: '不能引用此消息' });
+    replyContent = source.content.substring(0, 100);
+  }
+  const link = payload.is_anonymous ? '' : '/chat/' + req.user.id;
+  let result;
+  try {
+    result = req.db.prepare('INSERT INTO messages (sender_id,receiver_id,wall_id,type,title,content,is_anonymous,reply_to_id,reply_to_content,link,client_message_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(req.user.id, receiverId, wallId, type, payload.title, payload.content, payload.is_anonymous, replyId, replyContent, link, clientId);
+  } catch (error) {
+    const raced = existingMessage();
+    if (raced) return acknowledgeExisting(raced);
+    throw error;
+  }
+  const stored = req.db.prepare('SELECT * FROM messages WHERE id=?').get(result.lastInsertRowid);
+  return acknowledge(stored, false);
 });
 
 // 批量标记已读
@@ -546,19 +628,20 @@ router.get('/tree-hole/conversations', authRequired, (req, res) => {
 router.get('/tree-hole/:conversationId', authRequired, validateTreeAccess, (req, res) => {
   const userId = req.user.id;
   const convId = req.params.conversationId;
-
-  const check = req.db.prepare(
-    "SELECT id FROM messages WHERE type='tree_hole' AND conversation_id = ? AND (sender_id = ? OR receiver_id = ?) LIMIT 1"
-  ).get(convId, userId, userId);
-  if (!check) return res.status(403).json({ error: '无权访问此对话' });
-
-  const messages = req.db.prepare(
-    "SELECT id, sender_id, receiver_id, content, is_read, is_revoked, created_at FROM messages WHERE type='tree_hole' AND conversation_id = ? AND ((sender_id=? AND sender_deleted=0) OR (receiver_id=? AND receiver_deleted=0)) ORDER BY id ASC"
-  ).all(convId, userId, userId);
-
-  req.db.prepare(
-    "UPDATE messages SET is_read = 1 WHERE type='tree_hole' AND conversation_id = ? AND receiver_id = ? AND receiver_deleted=0 AND is_read = 0"
-  ).run(convId, userId);
+  const paginated = req.query.limit !== undefined;
+  const limit = paginated ? positiveId(req.query.limit) : 0;
+  const before = req.query.before === undefined ? 0 : positiveId(req.query.before);
+  const markRead = req.query.mark_read === undefined ? '1' : req.query.mark_read;
+  if ((paginated && (!limit || limit > 200)) || (req.query.before !== undefined && (!before || !paginated)) || !['0', '1'].includes(markRead) || ['after', 'around_id', 'q'].some(key => req.query[key] !== undefined)) return res.status(400).json({ error: '分页参数无效' });
+  let sql = "SELECT id,sender_id,receiver_id,content,is_read,is_revoked,created_at FROM messages WHERE type='tree_hole' AND conversation_id=? AND ((sender_id=? AND sender_deleted=0) OR (receiver_id=? AND receiver_deleted=0))";
+  const params = [convId, userId, userId];
+  if (before) { sql += ' AND id<?'; params.push(before); }
+  sql += ' ORDER BY id ' + (paginated ? 'DESC LIMIT ?' : 'ASC');
+  if (paginated) params.push(limit + 1);
+  const rows = req.db.prepare(sql).all(...params);
+  const hasMore = paginated && rows.length > limit;
+  const messages = paginated ? rows.slice(0, limit).reverse() : rows;
+  const unreadMarked = markRead === '1' ? markVisibleMessagesRead(req, messages) : 0;
 
   const closed = !!req.db.prepare("SELECT 1 FROM messages WHERE type='tree_hole' AND conversation_id=? AND content='[对话已关闭]' AND is_revoked=1 LIMIT 1").get(convId);
   const firstMsg = req.treeConversation;
@@ -574,6 +657,11 @@ router.get('/tree-hole/:conversationId', authRequired, validateTreeAccess, (req,
       is_revoked: m.is_revoked,
       created_at: m.created_at,
     })),
+    conversation_id: convId,
+    hasMore,
+    next_before_id: messages[0]?.id || null,
+    next_before: messages[0]?.id || null,
+    unreadMarked,
     is_closed: closed,
     is_initiator: isInitiator,
     other_user_id: null,

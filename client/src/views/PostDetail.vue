@@ -287,7 +287,11 @@ onBeforeUnmount(() => { disposed = true; requestId++; commentsRequest++; control
 </template>
 
 <style scoped>
-.detail-page { max-width: 54rem; margin-inline: auto; }
+.detail-page { max-width: 54rem; min-width: 0; margin-inline: auto; }
+.author-info { min-width: 0; overflow-wrap: anywhere; }
+.comment-meta { min-width: 0; flex-wrap: wrap; }
+.post-actions .action-btn { min-width: 44px; min-height: 44px; }
+.comments-pagination > * { max-width: 100%; }
 .detail-heading { font-size: var(--font-sm); color: var(--text-muted); font-weight: 500; margin-bottom: var(--space-5); }
 
 .post-detail { padding: 24px; margin-bottom: 16px; }
@@ -328,8 +332,8 @@ onBeforeUnmount(() => { disposed = true; requestId++; commentsRequest++; control
 .post-actions { flex-wrap: wrap; gap: var(--space-2); }
 .action-btn { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2.75rem; }
 .action-btn:hover { background: var(--bg-card-hover); }
-.delete-comment-btn { min-width: 2.75rem; min-height: 2.75rem; color: var(--text-secondary); opacity: 1; }
-.image-button { padding: 0; border: 0; background: var(--bg-input); border-radius: var(--radius-md); overflow: hidden; cursor: zoom-in; max-width: 100%; }
+.delete-comment-btn { min-width: 44px; min-height: 44px; color: var(--text-secondary); opacity: 1; }
+.image-button { min-width: min(44px, 100%); min-height: 44px; padding: 0; border: 0; background: var(--bg-input); border-radius: var(--radius-md); overflow: hidden; cursor: zoom-in; max-width: 100%; }
 .post-img { display: block; max-width: 100%; }
 .comments-pagination { display: grid; justify-items: center; gap: var(--space-3); padding-top: var(--space-5); font-size: var(--font-sm); }
 @media (max-width: 768px) { .post-detail, .comments-section { padding: var(--space-4); } .comment-content { padding-left: 0; } .post-images { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); } .post-img { width: 100%; aspect-ratio: 1; } }

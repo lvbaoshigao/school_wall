@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, provide, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, provide, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useUserStore } from './stores/user'
 import { useWallStore } from './stores/wall'
@@ -8,7 +8,8 @@ import Navbar from './components/Navbar.vue'
 import ToastContainer from './components/ToastContainer.vue'
 import BackToTop from './components/BackToTop.vue'
 import PublishFab from './components/PublishFab.vue'
-import api from './api'
+import api, { readStorage } from './api'
+import { useToast } from './composables/useToast'
 
 const userStore = useUserStore()
 const wallStore = useWallStore()
@@ -25,25 +26,45 @@ watch(() => route.path, async () => {
 // 主页要用三栏（左分类 / 帖子 / 右墙介绍），需要比其它页面更宽的容器；
 // 其余页面维持 1000px 单栏，避免正文行宽过长。
 const isWideLayout = computed(() => route.name === 'Home')
+const isConversationLayout = computed(() => route.name === 'ChatRoom' || route.name === 'TreeHoleChat')
+const isSettingsLayout = computed(() => route.name === 'Settings')
+const toast = useToast()
+const themeSaving = ref(false)
+const mounted = ref(false)
 
 const wallpaperUrl = ref('')
 const wallpaperLoaded = ref(false)
-function initialTheme() {
-  try {
-    const saved = localStorage.getItem('theme')
-    if (saved === 'light' || saved === 'dark') return saved
-  } catch {}
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-}
-const currentTheme = ref(initialTheme())
+const systemTheme = window.matchMedia?.('(prefers-color-scheme: dark)')
+const systemDark = ref(systemTheme?.matches || false)
+// 初始化期间只读本地兼容值；迁移与持久化都由设置 store 负责。
+const themeMode = computed(() => {
+  if (settingsStore.themeModeInitialized) return settingsStore.prefs.theme_mode
+  const savedMode = readStorage('theme_mode')
+  if (['system', 'light', 'dark'].includes(savedMode)) return savedMode
+  const legacy = readStorage('theme')
+  return legacy === 'light' || legacy === 'dark' ? legacy : 'system'
+})
+const currentTheme = computed(() => themeMode.value === 'system' ? (systemDark.value ? 'dark' : 'light') : themeMode.value)
+const wallpaperEnabled = computed(() => settingsStore.prefs.wallpaper_enabled !== false)
 let wallpaperRequest = 0
 
-// 主题管理
-function toggleTheme() {
-  currentTheme.value = currentTheme.value === 'dark' ? 'light' : 'dark'
-  try { localStorage.setItem('theme', currentTheme.value) } catch {}
-  applyTheme()
+async function setThemeMode(mode) {
+  if (!['system', 'light', 'dark'].includes(mode) || themeSaving.value) return false
+  themeSaving.value = true
+  try {
+    const saved = await (settingsStore.setThemeMode ? settingsStore.setThemeMode(mode) : settingsStore.setPref('theme_mode', mode))
+    if (!saved) toast.error(settingsStore.saveError || '主题保存失败，请重试')
+    return saved
+  } catch {
+    toast.error('主题保存失败，请重试')
+    return false
+  } finally { themeSaving.value = false }
 }
+function toggleTheme() {
+  return setThemeMode(currentTheme.value === 'dark' ? 'light' : 'dark')
+}
+function onSystemThemeChange(event) { systemDark.value = event.matches }
+watch(currentTheme, applyTheme, { immediate: true })
 
 function applyTheme() {
   if (currentTheme.value === 'light') {
@@ -56,9 +77,44 @@ function applyTheme() {
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', color)
 }
 
-provide('theme', { current: currentTheme, toggle: toggleTheme })
+provide('theme', { current: currentTheme, toggle: toggleTheme, mode: themeMode, setMode: setThemeMode })
+
+// 同一套变量供私聊、匿名聊天及短屏菜单消费，缩放时不把 pinch zoom 当作软键盘。
+let viewportFrame = 0
+const viewportProperties = ['--visual-viewport-height', '--visual-viewport-width', '--visual-viewport-offset-top', '--keyboard-inset-bottom']
+function updateViewport() {
+  viewportFrame = 0
+  const viewport = window.visualViewport
+  const height = Math.max(0, viewport?.height ?? window.innerHeight)
+  const width = Math.max(0, viewport?.width ?? window.innerWidth)
+  const top = Math.max(0, viewport?.offsetTop || 0)
+  const scale = viewport?.scale || 1
+  const inset = Math.abs(scale - 1) < 0.05 ? Math.max(0, window.innerHeight - height - top) : 0
+  const editing = document.activeElement?.matches?.('textarea, input:not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]), [contenteditable="true"]')
+  const root = document.documentElement
+  root.style.setProperty('--visual-viewport-height', height + 'px')
+  root.style.setProperty('--visual-viewport-width', width + 'px')
+  root.style.setProperty('--visual-viewport-offset-top', top + 'px')
+  root.style.setProperty('--keyboard-inset-bottom', inset + 'px')
+  root.dataset.keyboardOpen = editing && inset > 120 ? 'on' : 'off'
+}
+function scheduleViewport() {
+  if (!viewportFrame) viewportFrame = window.requestAnimationFrame(updateViewport)
+}
+watch(isConversationLayout, conversation => {
+  document.documentElement.dataset.appLayout = conversation ? 'conversation' : 'page'
+}, { immediate: true })
+watch(wallpaperEnabled, enabled => {
+  if (enabled && mounted.value) getRandomWallpaper()
+  else if (!enabled) {
+    wallpaperRequest++
+    wallpaperUrl.value = ''
+    wallpaperLoaded.value = false
+  }
+})
 
 async function getRandomWallpaper() {
+  if (!wallpaperEnabled.value) return
   const requestId = ++wallpaperRequest
   wallpaperLoaded.value = false
   // 先请求本地壁纸服务：本地图片可控、无第三方依赖、断网也能出图。
@@ -94,23 +150,46 @@ function onWallpaperError() {
 }
 
 onMounted(async () => {
+  mounted.value = true
   applyTheme()
+  updateViewport()
+  systemTheme?.addEventListener?.('change', onSystemThemeChange)
+  window.addEventListener('resize', scheduleViewport)
+  window.addEventListener('orientationchange', scheduleViewport)
+  window.visualViewport?.addEventListener('resize', scheduleViewport)
+  window.visualViewport?.addEventListener('scroll', scheduleViewport)
+  document.addEventListener('focusin', scheduleViewport)
+  document.addEventListener('focusout', scheduleViewport)
   if (userStore.token) {
     await userStore.fetchUser()
     if (userStore.isLoggedIn) {
-      wallStore.fetchMyWalls()
-      settingsStore.loadSettings()
+      await Promise.all([wallStore.fetchMyWalls(), settingsStore.loadSettings()])
     }
   }
-  getRandomWallpaper()
+  if (mounted.value) getRandomWallpaper()
+})
+onBeforeUnmount(() => {
+  mounted.value = false
+  wallpaperRequest++
+  systemTheme?.removeEventListener?.('change', onSystemThemeChange)
+  window.removeEventListener('resize', scheduleViewport)
+  window.removeEventListener('orientationchange', scheduleViewport)
+  window.visualViewport?.removeEventListener('resize', scheduleViewport)
+  window.visualViewport?.removeEventListener('scroll', scheduleViewport)
+  document.removeEventListener('focusin', scheduleViewport)
+  document.removeEventListener('focusout', scheduleViewport)
+  if (viewportFrame) window.cancelAnimationFrame(viewportFrame)
+  for (const name of viewportProperties) document.documentElement.style.removeProperty(name)
+  delete document.documentElement.dataset.keyboardOpen
+  delete document.documentElement.dataset.appLayout
 })
 </script>
 
 <template>
-  <div class="app-container">
+  <div class="app-container" :class="{ 'app-conversation': isConversationLayout }">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
 
-    <div class="bg-wallpaper" :class="{ loaded: wallpaperLoaded }">
+    <div v-if="wallpaperEnabled" class="bg-wallpaper" :class="{ loaded: wallpaperLoaded }">
       <img
         v-if="wallpaperUrl"
         :src="wallpaperUrl"
@@ -128,8 +207,10 @@ onMounted(async () => {
       @change-wallpaper="getRandomWallpaper"
       @toggle-theme="toggleTheme"
       :theme="currentTheme"
+      :theme-mode="themeMode"
+      :theme-saving="themeSaving"
     />
-    <main id="main-content" ref="mainRef" tabindex="-1" class="main-content" :class="{ 'main-wide': isWideLayout }">
+    <main id="main-content" ref="mainRef" tabindex="-1" class="main-content" :class="{ 'main-wide': isWideLayout, 'main-conversation': isConversationLayout, 'main-settings': isSettingsLayout }">
       <router-view v-slot="{ Component, route }">
         <!-- key 必须是 route.name 而不是 route.fullPath：
              放在 keep-alive 内部的组件一旦 key 变化就会被视为不同组件而强制重建，
@@ -142,7 +223,7 @@ onMounted(async () => {
     </main>
 
     <ToastContainer />
-    <BackToTop />
+    <BackToTop v-if="!isConversationLayout" />
     <PublishFab />
   </div>
 </template>
@@ -228,8 +309,10 @@ onMounted(async () => {
   max-width: var(--container);
   margin: 0 auto;
   outline: none;
-  scroll-margin-top: 80px;
-  padding: 84px var(--space-4) var(--space-6);
+  width: 100%;
+  min-width: 0;
+  scroll-margin-top: var(--app-header-height);
+  padding: calc(var(--app-header-height) + 20px) max(var(--space-4), var(--safe-area-right)) max(var(--space-6), calc(88px + var(--safe-area-bottom))) max(var(--space-4), var(--safe-area-left));
 }
 
 /* 主页专用：加宽到 1280px 好放下左右两栏。
@@ -237,5 +320,26 @@ onMounted(async () => {
    中间帖子列宽度与改动前基本一致（约 796px vs 812px），正文观感不变。 */
 .main-wide {
   max-width: var(--container-wide);
+}
+.main-settings { max-width: var(--container-wide); }
+.main-content.main-conversation {
+  position: fixed;
+  inset-inline: 0;
+  top: var(--visual-viewport-offset-top);
+  height: var(--visual-viewport-height);
+  min-height: 0;
+  max-width: var(--container);
+  padding-top: calc(var(--app-header-height) + var(--conversation-gap));
+  padding-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+.main-conversation > * { min-height: 0; min-width: 0; flex: 1; }
+.app-conversation :deep(.navbar) { top: var(--visual-viewport-offset-top); }
+@media (max-width: 768px) {
+  .main-content { padding-inline: max(12px, var(--safe-area-left)) max(12px, var(--safe-area-right)); padding-top: calc(var(--app-header-height) + 12px); }
+}
+@media (max-width: 360px) {
+  .main-content { padding-inline: max(8px, var(--safe-area-left)) max(8px, var(--safe-area-right)); }
 }
 </style>

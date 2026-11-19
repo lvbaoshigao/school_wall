@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { ref, computed } from 'vue'
 import { parse, compileTemplate } from '@vue/compiler-sfc'
+import { createSocialScope, anonymousMessages, mergeMessages, pollMilliseconds, isNearBottom } from '../src/components/chat-social/socialState.js'
 
 // Execute the real SFC setup against deterministic API, lifecycle and timer doubles.
 // This suite performs no HTTP requests and never opens a database.
@@ -28,7 +29,10 @@ function setup(name, exports, custom = {}) {
     useUserStore: () => ({ isLoggedIn: true, user: { id: 7 }, can: () => true, fetchPermissions: async () => {} }),
     useWallStore: () => wall, useSettingsStore: () => ({ prefs: { default_anonymous_confession: false } }),
     useToast: () => Object.fromEntries(['success', 'error', 'info', 'warning'].map(kind => [kind, message => notices.push([kind, message])])),
-    useTimeAgo: () => ({ timeAgo: value => value }), useMarkdown: () => ({ truncateText: value => value }), useFocusTrap: () => {},
+    createSocialScope, anonymousMessages, mergeMessages, pollMilliseconds, isNearBottom,
+    getSessionToken: () => 'isolated-feature-test-token',
+    getApiErrorMessage: (error, fallback) => error?.response?.data?.error || fallback,
+    useTimeAgo: () => ({ timeAgo: value => value, fullTime: value => value }), useMarkdown: () => ({ truncateText: value => value }), useFocusTrap: () => {},
     api, marked: { setOptions() {}, parse: value => value }, DOMPurify: { sanitize: value => value },
     document: { visibilityState: 'visible', addEventListener: name => events.add(name), removeEventListener: name => events.delete(name) },
     window: { innerWidth: 360, innerHeight: 780, getSelection: () => '' }, navigator: {}, location: {},
