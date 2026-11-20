@@ -7,7 +7,7 @@
 - 新客户端使用部署站点的 HTTPS 源加 /api/v1，例如由应用配置提供 origin，再拼接 /api/v1。SDK 的 baseURL 是**完整版本前缀**，不会自动追加 /api/v1。
 - 旧 /api 路由、HTTP 状态和业务数据形状保持兼容。v1 复用相同鉴权、限流、墙权限和数据，不是另一套数据库。
 - GET /api/v1 和 GET /api/v1/capabilities 返回静态能力信息；仍经过部署 IP 守卫和限流，不公开账号、运行状态、密钥或用户数据。
-- GET /api/v1/openapi.json 返回原始 OpenAPI JSON，**不包络**。下载附件、流和二进制响应（如 /auth/export）也保持原格式；SDK 的 request() 面向 JSON 包络，不能用于导出下载或读取 OpenAPI 原文件。
+- GET /api/v1/openapi.json 返回原始 OpenAPI JSON，**不包络**。下载附件、流和二进制响应也保持原格式。SDK 的默认 request() 按 JSON 包络读取；完整静态注册表为 getOpenApi 选择原始 JSON 模式，为 exportOwnData 和备份下载选择二进制模式，调用方不要自行 JSON.parse 下载正文。
 - 请求路径只允许正常版本路径；未知版本返回 404 UNSUPPORTED_API_VERSION，危险路径编码返回 400 INVALID_API_PATH。不要依赖大小写、重复斜杠或编码绕行。
 
 成功 JSON：
@@ -40,7 +40,7 @@ HTTP 状态不被伪装成 200。响应头 X-API-Version: 1 和 X-Request-ID 可
 
 ## 认证、墙上下文与隐私
 
-登录 POST /auth/login 使用调用方输入的 username/password；不发布或假设任何默认公开用户名、密码。成功返回 data.token 和 data.user。除明确标注的发现信息、登录及静态文档外，核心接口需要 Authorization: Bearer <token>。
+登录 POST /auth/login 使用调用方输入的 username/password；不发布或假设任何默认公开用户名、密码。成功返回 data.token 和 data.user。除明确标注的登录、注册、首次设置、健康检查、壁纸及版本发现/静态文档外，标准 API 需要 Authorization: Bearer <token>。公开并不代表绕过部署 IP 守卫或各路由限流；健康检查按既有顺序位于这两者之前。
 
 JWT 目前有效期为 7 天，但修改密码、封禁、账号删除等会提前失效。PUT /auth/password 使用 {oldPassword,newPassword}，返回新 token 并使旧 token_version 失效。没有 refresh/session 续签接口。SDK 不存储 token，不使用 localStorage，不自动接受登录/改密返回的 token；调用方应将其写入平台安全存储并更新 getToken() 的来源。
 
@@ -49,6 +49,30 @@ JWT 目前有效期为 7 天，但修改密码、封禁、账号删除等会提�
 匿名帖子/投票的公共响应中 author_id、昵称等为 null，IP 哈希不外发。收到的匿名表白信隐藏发送者身份；不要从引用、会话卡片或旧预览反推。树洞继续沿用已有专用接口和匿名身份规则，本 SDK 不把树洞映射成普通私聊，也不承诺树洞引用能力。
 
 DELETE /messages/{id} 和 DELETE /messages/chat/{userId} 都是**单侧隐藏**：只影响当前账号视图，另一方仍可见。PUT /messages/{id}/revoke 才是发送方在服务器判定的 5 分钟内对双方撤回。引用预览依当前用户可见性动态生成，原消息不可见/撤回后不得显示缓存的敏感预览。
+
+## 全量覆盖与调用边界
+
+本规范覆盖真实 Express 注册的 **154 个显式方法/路径组合、139 个路径模板**：144 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 10 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；新增 102 个操作不改变现有服务策略。
+
+| 范围 | 操作数 | 鉴权与用途 |
+| --- | ---: | --- |
+| 普通族及有权限的墙内操作 | 108 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
+| 管理族、建墙审核及看板票据入口 | 36 | 管理操作仍要求对应 global 或 wall 权限；票据入口要求 global.dashboard |
+| /dashboard/api 内部操作 | 10 | 看板票据或 Cookie；Cookie 写操作另需 CSRF；不由公共移动客户端调用 |
+
+公共 SDK 操作目录覆盖 **143 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 10 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
+
+OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabilities、/openapi.json 外，标准 /api 路径可通过旧 /api 前缀使用。旧 /api 本身不是能力发现入口。内部操作逐项 servers: [{url:"/"}]，最终路径严格为同一部署源上的 /dashboard/api/...，不能把它们拼到 /api/v1 下，也不能把根服务器地址当作任意外域授权。
+
+静态文件（/uploads、/rele 等）、站点页面和 SPA 路由不计 API。GET 的隐式 HEAD 行为由 Express 或发现路由提供：响应头遵循 GET，响应无正文；它们不另计为新业务操作。允许源的浏览器 CORS 预检 OPTIONS 由全局 CORS 中间件处理，不代表绕过 Bearer、Cookie、IP 白名单或操作权限，也不增加任意跨源访问许可。发现入口的其他方法返回 405。
+
+### 同源看板与管理安全边界
+
+取得看板票据：携带普通 Bearer 调 POST /api/v1/dashboard/session，要求 global.dashboard。服务器种入 sw_dash HttpOnly、SameSite=Strict、Path=/dashboard、有效期一小时的 Cookie；HTTPS 请求另带 Secure。此响应仍为 v1 JSON 包络，不返回 Cookie 中的票据值。禁止把票据放进 query 或公开日志。
+
+/dashboard/api/... 是已有内部原始 JSON/二进制 API，成功和错误均不使用 v1 包络。Cookie 认证的写操作要求 X-Dashboard-Csrf 与票据内 CSRF 值匹配；若请求带 Origin，还必须精确匹配服务器所见 protocol://host。只接受既有 aud=dashboard 票据的 Bearer 作为脚本认证替代；普通账号 JWT 不能直接冒充看板票据。所有内部操作要求 global.dashboard；数据库管理还要求 global.db.manage，并经过既有管理面 IP 守卫。
+
+公共移动 SDK 始终拒绝内部端点和看板票据代理，不提供绕过开关。确需维护看板的受控客户端必须先确认选定 HTTPS 部署 origin，以该 origin 解析根路径，单独管理看板 Cookie/票据与 CSRF，核对 operation.security、x-required-permissions 和响应类型；不得沿用公共调用的普通 Bearer、X-Wall-Id 或跨源目标。本文仅记录既有接口，不新增权限、公开票据或放宽 Origin/CORS。
 
 ## 核心端点与界限
 
@@ -145,11 +169,11 @@ try {
 }
 ~~~
 
-所有 SDK 方法返回 {data,error:null,meta,status,headers}；sendMessage 另返回 clientMessageId。它不自动重试任何请求，不自动登录、刷新 token、换墙或写浏览器存储。HTTP 失败、协议失败和网络失败均抛 ApiError；网络/本地失败 status=0，HTTP 错误保留真实 status。NETWORK_ERROR、TIMEOUT、ABORTED 不代表服务器一定未提交。sendMessage 的 ApiError.clientMessageId 可关联待发记录；业务错误 409 不应自动换 ID。
+所有成功 SDK 方法保留 {data,error:null,meta,status,headers} 外形；普通 JSON 操作的 data 是业务值，getOpenApi 的 data 是原始规范对象，exportOwnData 和备份下载的 data 是 ArrayBuffer。原始成功响应的 meta 由实际响应头合成，缺失的 requestId 保持为空，不伪造服务端包络。sendMessage 另返回 clientMessageId。它不自动重试任何请求，不自动登录、刷新 token、换墙或写浏览器存储。HTTP 失败、协议失败和网络失败均抛 ApiError；网络/本地失败 status=0，HTTP 错误保留真实 status。NETWORK_ERROR、TIMEOUT、ABORTED 不代表服务器一定未提交。sendMessage 的 ApiError.clientMessageId 可关联待发记录；业务错误 409 不应自动换 ID。
 
 AbortSignal 和 timeoutMs 覆盖 token/wall 回调、fetch 和响应解析；0 可禁用定时器。已取消的请求不发送。SDK 通过 redirect:error 避免自动跨站重定向携带认证信息，credentials:omit 不依赖 Cookie。通用 request() 只接受版本前缀下的相对路径，不接受任意外域 URL 或路径穿越。运行时需提供标准 fetch、Headers/Response、AbortController、URL/URLSearchParams 与安全 crypto；可注入 fetch 和 crypto，不提供不安全随机回退。
 
-TypeScript 的 NodeNext/Bundler 消费 .mjs 时，会通过 [mobile-client.d.mts](../sdk/mobile-client.d.mts) 转到完整 .d.ts；不需要增加项目依赖。所有公共方法的声明与实际 JSON 业务形状一致。若应用需要本 SDK 未列出的真实端点，可用 request<T>()，并按照 OpenAPI 明确声明返回 data 类型。
+TypeScript 的 NodeNext/Bundler 消费 .mjs 时，会通过 [mobile-client.d.mts](../sdk/mobile-client.d.mts) 转到完整 .d.ts；不需要增加项目依赖。已有易用方法继续保持原签名；新增 API 使用静态 operationId 注册表，由 callOperation 校验路径参数及允许的 query 键。操作默认继承规范的 Bearer 策略，X-Wall-Id 仅在该操作接受墙上下文时使用。不要通过通用 request<T>() 访问内部 Dashboard 或自行拼接未知路径。
 
 ## 时间、图片与部署约束
 
@@ -163,10 +187,18 @@ TypeScript 的 NodeNext/Bundler 消费 .mjs 时，会通过 [mobile-client.d.mts
 
 生产必须使用 HTTPS，避免明文 bearer/password。浏览器/WebView 跨源调用只允许部署明确配置的 CORS 源；v1 不放宽 CORS，不新增 Cookie 会话。原生 HTTP 客户端虽不受浏览器 CORS 机制约束，仍必须满足服务器认证、IP 守卫、墙成员身份及权限。不要使用外部图片代理/日志平台传输证据或完整 token。
 
+## 本轮契约验收
+
+2026-11-20 的全量契约核对以真实隔离 index 实例的 Express 注册为权威：154 个显式方法/路径组合双向对账，无缺口、无额外项、无重复；1282 个规范内引用可解析，154 个 operationId 唯一，旧 52 个 ID 不变。10 个内部 API 的逐操作根服务器与路径参数均已复核。OpenAPI 3.0.3 标准验证通过，已有 14 项 SDK 契约回归通过。此记录只陈述已执行的契约检查，不把文档覆盖等同于所有管理写操作的实际执行。
+
+该规范不新增任何注册或访问策略。审批队列全局授权漏查墙级 deny 的既有差异已由消息负责人修正，并验证拒绝/恢复授权后的下一请求行为；字段保持兼容。备份返回 application/octet-stream、用户导出返回 application/gzip、OpenAPI 返回原始 application/json；其他成功 JSON 由 v1 适配器包络。Cookie/CSRF 看板 API 保持原始响应，排除静态文件和 HTML 页面。
+
 ## 验证与当前限制
 
-2026-11-19 本轮整合记录：后端 223 项、前端常规回归 130 项、部署兼容 22 项均通过；4 个显式启用的浏览器入口另行通过（设置、私聊、既有焦点/弹窗、响应式）。响应式实际检查 36 个页面尺寸组合，含 320/360/390/768/1024px、844×390 横屏、320px 小字号和模拟软键盘，未发现横向溢出、过小触摸目标或页面脚本异常。默认 `npm test` 跳过这 4 个需隔离 URL 的浏览器入口，不连接运行中的应用。OpenAPI 标准验证及严格 TypeScript NodeNext 类型消费验证均通过，未增加项目依赖。上轮临时测试产物及本轮隔离数据库、日志和截图按清理要求删除；回归测试源码保留用于后续验证。
+完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成，`--check` 仅检查版本一致性而不写文件。旧 SDK 回归与新增全操作覆盖回归合计 20/20 通过，包含 143 个入口的 method/path 分发、组件引用、可选请求体、原始 JSON、二进制和失败详情；TypeScript NodeNext 类型消费通过。整合验收与查询次数证据见 [后端优化报告](BACKEND-OPTIMIZATION.md)。
 
-回归入口：node --test server/test/phase2-sdk*.test.js。类型消费夹具另用 npm exec --yes --package=typescript -- tsc --noEmit --strict --allowJs --checkJs --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM sdk/typecheck-usage.cjs 验证；仅使用临时 npm 执行包，不修改任何项目依赖。测试只使用 fetch mock、内存 SQLite 和临时 loopback HTTP 服务，不导入运行中的 index，不执行 initDB，不使用真实库、账号或部署数据。旧安全回归保持原样。
+2026-11-19 上轮整合记录：后端 223 项、前端常规回归 130 项、部署兼容 22 项均通过；4 个显式启用的浏览器入口另行通过（设置、私聊、既有焦点/弹窗、响应式）。响应式实际检查 36 个页面尺寸组合，含 320/360/390/768/1024px、844×390 横屏、320px 小字号和模拟软键盘，未发现横向溢出、过小触摸目标或页面脚本异常。默认 `npm test` 跳过这 4 个需隔离 URL 的浏览器入口，不连接运行中的应用。OpenAPI 标准验证及严格 TypeScript NodeNext 类型消费验证均通过，未增加项目依赖。上轮临时测试产物及本轮隔离数据库、日志和截图按清理要求删除；回归测试源码保留用于后续验证。
+
+回归入口：node --test server/test/phase2-sdk.test.js server/test/phase3-sdk-coverage.test.js。类型消费夹具另用 npm exec --yes --package=typescript -- tsc --noEmit --strict --allowJs --checkJs --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM sdk/typecheck-usage.cjs 验证；仅使用临时 npm 执行包，不修改任何项目依赖。测试只使用 fetch mock、内存 SQLite 和临时 loopback HTTP 服务，不导入运行中的 index，不执行 initDB，不使用真实库、账号或部署数据。旧安全回归保持原样。
 
 当前限制：无 token refresh、离线冲突合并、后台推送、WebSocket 或设备管理；历史本地时间缺少 offset；after 不包含既有消息的变更事件；朋友列表及墙列表仍是原有数组而不是统一分页；帖子搜索 total 是截断数量。调用方应按 capabilities/真实端点工作，不将文档或 SDK 视为未来功能承诺。

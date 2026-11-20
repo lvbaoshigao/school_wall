@@ -43,7 +43,7 @@ test('shared UI browser navigation, modal and image accessibility regressions', 
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
       assert.equal(overflow, false, name + ' has no horizontal overflow')
       if (storageState) {
-        if (width < 1081) {
+        if (width < 1121) {
           const trigger = page.getByRole('button', { name: '打开菜单', exact: true })
           await trigger.click()
           await page.getByRole('group', { name: '移动端导航' }).waitFor()
@@ -58,7 +58,7 @@ test('shared UI browser navigation, modal and image accessibility regressions', 
           assert.equal(await page.locator('#nav-account-menu button').first().evaluate(element => element === document.activeElement), true)
           await page.keyboard.press('Escape')
           assert.equal(await trigger.evaluate(element => element === document.activeElement), true)
-          if (width === 1140) assert.equal(await page.getByRole('button', { name: '搜索帖子', exact: true }).isVisible(), true)
+          if (width === 1140) assert.equal(await page.getByRole('searchbox', { name: '搜索帖子', exact: true }).isVisible(), true, 'centered search remains available at intermediate desktop width')
         }
       }
       await screenshot(page, name)

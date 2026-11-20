@@ -44,6 +44,43 @@ function mountPage(f, query = {}, hash = '') {
   return { page, route, stop: () => scope.stop() }
 }
 
+test('glass defaults to enabled and its positive control preserves the existing stored preference', async () => {
+  const f = fixture(); const mounted = mountPage(f, { section: 'appearance' })
+  const item = buildSettingsCatalog(f.NAV_ITEMS).find(item => item.key === 'disable_blur')
+  try {
+    assert.equal(item.label, '毛玻璃效果')
+    assert.equal(f.store.prefs.disable_blur, false)
+    assert.equal(mounted.page.valueFor(item), true)
+    await mounted.page.saveSetting(item, false)
+    assert.equal(f.store.prefs.disable_blur, true)
+    assert.equal(mounted.page.valueFor(item), false)
+    assert.equal(f.calls.findLast(call => call.method === 'put').body.prefs.disable_blur, true)
+    await mounted.page.saveSetting(item, true)
+    assert.equal(f.store.prefs.disable_blur, false)
+    assert.equal(mounted.page.valueFor(item), true)
+    mounted.page.pendingImport.value = { patch: { disable_blur: true } }
+    assert.equal(mounted.page.importPreview.value[0].value, '关闭')
+    mounted.page.pendingImport.value = { patch: { disable_blur: false } }
+    assert.equal(mounted.page.importPreview.value[0].value, '开启')
+  } finally { mounted.stop(); f.store.$dispose() }
+})
+
+test('glass respects a saved off preference and rolls a failed on toggle back', async () => {
+  const f = fixture()
+  f.api.get = async () => ({ data: { prefs: { disable_blur: true }, storedKeys: ['disable_blur'] } })
+  await f.store.loadSettings()
+  const mounted = mountPage(f, { section: 'appearance' })
+  const item = buildSettingsCatalog(f.NAV_ITEMS).find(item => item.key === 'disable_blur')
+  try {
+    assert.equal(mounted.page.valueFor(item), false)
+    f.api.put = async () => { throw new Error('isolated save failure') }
+    await mounted.page.saveSetting(item, true)
+    assert.equal(f.store.prefs.disable_blur, true)
+    assert.equal(mounted.page.valueFor(item), false)
+    assert.ok(f.store.saveError)
+  } finally { mounted.stop(); f.store.$dispose() }
+})
+
 const envelope = prefs => JSON.stringify({ format: 'school-wall-preferences', version: 1, prefs })
 
 test('front and server schemas have identical 39 keys defaults values and reset scopes', () => {

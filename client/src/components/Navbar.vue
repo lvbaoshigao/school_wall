@@ -45,6 +45,11 @@ const user = computed(() => userStore.user)
 const currentWall = computed(() => wallStore.currentWall)
 const myWalls = computed(() => wallStore.myWalls.filter(wall => !wall.member_status || wall.member_status === 'active'))
 const unreadScope = computed(() => [userStore.sessionRevision, userStore.user?.id, wallStore.currentWallId].join(':'))
+const primaryKeys = new Set(['home', 'publish', 'chat', 'inbox'])
+const primaryNav = computed(() => settingsStore.visibleNav.filter(item => primaryKeys.has(item.key)))
+const secondaryNav = computed(() => settingsStore.visibleNav.filter(item => !primaryKeys.has(item.key) && item.type !== 'search'))
+const moreActive = computed(() => secondaryNav.value.some(item => item.type === 'link' ? isActive(item) : item.children?.some(child => isActive(child))))
+function disableLeavingPanel(element) { element.setAttribute('inert', '') }
 // 树洞入口按「在当前墙是否拥有树洞权限」显示。
 // 重构前这里还带了 || isGlobalAdmin，但服务端从来只认 wall_members.wall_role ——
 // 不是志愿者的全局管理员点进去只会看到空队列、接入时 403，属于死入口，这次一并去掉。
@@ -139,7 +144,7 @@ function onNavFocusout(event) {
 }
 
 function onResize() {
-  if (window.innerWidth > 1080) showMobileMenu.value = false
+  if (window.innerWidth > 1120) showMobileMenu.value = false
 }
 
 onMounted(() => {
@@ -300,11 +305,13 @@ function renderAnnouncement(content) {
       <div class="nav-left">
         <button v-if="mobileBack" class="nav-btn nav-icon-btn nav-back mobile-only" :aria-label="mobileBack.label" :title="mobileBack.label" @click="go(mobileBack.path)"><Icon name="chevron-left" :size="20" /></button>
         <div v-if="isLoggedIn" class="dropdown-wrapper wall-switcher">
-          <button class="wall-btn" aria-controls="nav-wall-menu" :aria-expanded="showWallMenu" @click="toggleNavMenu('wall')" :title="currentWall?.description || '切换校园墙'">
+          <button class="wall-btn" aria-controls="nav-wall-menu" :aria-expanded="showWallMenu" @click="toggleNavMenu('wall')" :title="currentWall?.name || currentWall?.description || '切换校园墙'"
+                  :aria-label="(currentWall?.name || '选择校园墙') + '，切换校园墙'">
             <Icon name="school" :size="15" />
             <span class="wall-name">{{ currentWall?.name || '选择校园墙' }}</span>
             <Icon name="chevron-down" :size="14" />
           </button>
+          <Transition name="nav-scale" @before-leave="disableLeavingPanel">
           <div v-if="showWallMenu" id="nav-wall-menu" class="dropdown wall-dropdown">
             <div class="dropdown-header"><strong>我的校园墙</strong></div>
             <div class="dropdown-divider"></div>
@@ -317,6 +324,7 @@ function renderAnnouncement(content) {
             <div class="dropdown-divider"></div>
             <button class="dropdown-item" @click="go('/walls')">加入 / 申请建墙</button>
           </div>
+          </Transition>
         </div>
         <router-link v-else to="/" class="logo" @click="showMobileMenu = false">
           <Icon name="school" :size="20" />校园墙
@@ -358,61 +366,68 @@ function renderAnnouncement(content) {
               aria-describedby="nav-search-help"
             />
           </div>
+          <Transition name="nav-scale" @before-leave="disableLeavingPanel">
           <div v-if="showSearchMenu" id="nav-search-panel" class="dropdown search-dropdown" @mousedown.prevent>
             <div id="nav-search-help" class="search-dropdown-tip text-muted">搜索帖子内容，或输入追踪码 RPT-XXXX 查询举报进度</div>
             <div class="dropdown-divider"></div>
             <button class="dropdown-item" @click="goSearch">搜索「{{ searchQuery || '…' }}」</button>
           </div>
+          </Transition>
         </div>
+        <button v-else-if="isLoggedIn && settingsStore.nav.search !== false" class="nav-btn nav-search-shortcut nav-search-shortcut-visible" aria-label="搜索帖子" @click="go('/search')"><Icon name="search" :size="17" />搜索帖子</button>
       </div>
 
-      <!-- 右：工具与导航 -->
+      <!-- 核心入口有固定上限；辅助入口收进更多，给等宽两翼保留可靠空间。 -->
       <div class="nav-right desktop-only">
         <template v-if="isLoggedIn">
-          <button v-if="settingsStore.nav.search !== false" class="nav-btn nav-icon-btn nav-search-shortcut" :class="{ 'nav-search-shortcut-visible': !isHomePage }" aria-label="搜索帖子" title="搜索帖子" @click="go('/search')"><Icon name="search" :size="17" /></button>
-          <template v-for="item in settingsStore.visibleNav" :key="item.key">
-            <!-- 下拉型（发布/求助） -->
-            <div v-if="item.type === 'dropdown'" class="dropdown-wrapper">
-              <button class="nav-btn" :aria-controls="'nav-menu-' + item.key" :aria-expanded="openDropdown === item.key" @click="toggleDropdown(item.key)">
+          <div class="nav-primary-links">
+            <template v-for="item in primaryNav" :key="item.key">
+              <div v-if="item.type === 'dropdown'" class="dropdown-wrapper">
+                <button class="nav-btn" :aria-controls="'nav-menu-' + item.key" :aria-expanded="openDropdown === item.key" @click="toggleDropdown(item.key)">
+                  {{ item.label }}<Icon name="chevron-down" :size="14" />
+                </button>
+                <Transition name="nav-scale" @before-leave="disableLeavingPanel">
+                  <div v-if="openDropdown === item.key" :id="'nav-menu-' + item.key" class="dropdown" @click="openDropdown = ''">
+                    <button v-for="child in item.children" :key="child.path" class="dropdown-item" @click="go(child.path)">{{ child.label }}</button>
+                  </div>
+                </Transition>
+              </div>
+              <button v-else-if="item.type === 'link'" class="nav-btn nav-btn-with-dot" :class="{ 'nav-active': isActive(item) }" :aria-current="isActive(item) ? 'page' : undefined" @click="go(item.path)">
                 {{ item.label }}
-                <Icon name="chevron-down" :size="14" />
+                <span v-if="item.key === 'chat' && unreadChat > 0" class="nav-dot" role="status" aria-label="有未读消息"></span>
+                <span v-if="item.key === 'inbox' && unreadSystem > 0" class="nav-dot" role="status" aria-label="有未读消息"></span>
+                <span v-if="item.key === 'inbox' && unreadCount > 0" class="unread-badge" role="status" :aria-label="unreadCount + ' 条未读'">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
               </button>
-              <div v-if="openDropdown === item.key" :id="'nav-menu-' + item.key" class="dropdown" @click="openDropdown = ''">
-                <button v-for="c in item.children" :key="c.path" class="dropdown-item" @click="go(c.path)">{{ c.label }}</button>
-              </div>
+            </template>
+            <div v-if="secondaryNav.length" class="dropdown-wrapper nav-more-wrapper">
+              <button class="nav-btn" :class="{ 'nav-active': moreActive }" aria-controls="nav-more-menu" :aria-expanded="openDropdown === 'more'" @click="toggleDropdown('more')">更多<Icon name="chevron-down" :size="14" /></button>
+              <Transition name="nav-scale" @before-leave="disableLeavingPanel">
+                <div v-if="openDropdown === 'more'" id="nav-more-menu" class="dropdown more-dropdown">
+                  <template v-for="item in secondaryNav" :key="item.key">
+                    <template v-if="item.type === 'dropdown'">
+                      <div class="dropdown-section-label">{{ item.label }}</div>
+                      <button v-for="child in item.children" :key="child.path" class="dropdown-item" :aria-current="isActive(child) ? 'page' : undefined" @click="go(child.path)">{{ child.label }}</button>
+                    </template>
+                    <button v-else class="dropdown-item" :aria-current="isActive(item) ? 'page' : undefined" @click="go(item.path)">{{ item.label }}<span v-if="item.key === 'treehole' && unreadTreeHole > 0" class="nav-dot-inline" role="status" aria-label="有未读消息"></span></button>
+                  </template>
+                </div>
+              </Transition>
             </div>
-            <!-- 链接型（type: 'search' 由上方独立搜索框渲染，此处跳过） -->
-            <button
-              v-else-if="item.type === 'link'"
-              class="nav-btn nav-btn-with-dot"
-              :class="{ 'nav-active': isActive(item) }"
-              :aria-current="isActive(item) ? 'page' : undefined"
-              @click="go(item.path)"
-            >
-              {{ item.label }}
-              <span v-if="item.key === 'chat' && unreadChat > 0" class="nav-dot" role="status" aria-label="有未读消息"></span>
-              <span v-if="item.key === 'inbox' && unreadSystem > 0" class="nav-dot" role="status" aria-label="有未读消息"></span>
-              <span v-if="item.key === 'inbox' && unreadCount > 0" class="unread-badge" role="status" :aria-label="`${unreadCount} 条未读`">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-            </button>
-          </template>
-
-          <div class="dropdown-wrapper">
-            <button class="avatar-btn" aria-label="账号菜单" :aria-expanded="showMenu" aria-controls="nav-account-menu" @click="toggleNavMenu('account')">
-              <AvatarIcon :src="userAvatar" :name="userName" size="md" />
-            </button>
-            <div v-if="showMenu" id="nav-account-menu" class="dropdown" @click="showMenu = false">
-              <div class="dropdown-header">
-                <strong>{{ userName }}</strong>
-                <span class="text-muted">@{{ user?.username }}</span>
+          </div>
+          <div class="dropdown-wrapper nav-account-wrapper">
+            <button class="avatar-btn" aria-label="账号菜单" :aria-expanded="showMenu" aria-controls="nav-account-menu" @click="toggleNavMenu('account')"><AvatarIcon :src="userAvatar" :name="userName" size="md" /></button>
+            <Transition name="nav-scale" @before-leave="disableLeavingPanel">
+              <div v-if="showMenu" id="nav-account-menu" class="dropdown account-dropdown" @click="showMenu = false">
+                <div class="dropdown-header"><strong>{{ userName }}</strong><span class="text-muted">@{{ user?.username }}</span></div>
+                <div class="dropdown-divider"></div>
+                <button class="dropdown-item" @click="go('/profile')">个人主页</button>
+                <button class="dropdown-item" @click="go('/settings')">设置</button>
+                <button v-if="canOpenAdmin" class="dropdown-item" @click="go('/admin')">管理后台</button>
+                <button v-if="userStore.can('global.dashboard')" class="dropdown-item" @click="openDashboard">运行看板</button>
+                <div class="dropdown-divider"></div>
+                <button class="dropdown-item danger" @click="logout">退出登录</button>
               </div>
-              <div class="dropdown-divider"></div>
-              <button class="dropdown-item" @click="go('/profile')">个人主页</button>
-              <button class="dropdown-item" @click="go('/settings')">设置</button>
-              <button v-if="canOpenAdmin" class="dropdown-item" @click="go('/admin')">管理后台</button>
-              <button v-if="userStore.can('global.dashboard')" class="dropdown-item" @click="openDashboard">运行看板</button>
-              <div class="dropdown-divider"></div>
-              <button class="dropdown-item danger" @click="logout">退出登录</button>
-            </div>
+            </Transition>
           </div>
         </template>
         <template v-else>
@@ -429,7 +444,7 @@ function renderAnnouncement(content) {
     </div>
 
     <!-- 移动端菜单面板 -->
-    <Transition name="slide">
+    <Transition name="nav-scale" @before-leave="disableLeavingPanel">
       <div v-if="showMobileMenu" id="nav-mobile-panel" class="mobile-menu" role="group" aria-label="移动端导航">
         <template v-if="isLoggedIn">
           <div class="mobile-user-info">
@@ -534,48 +549,70 @@ function renderAnnouncement(content) {
 
 <style scoped>
 .navbar {
+  /* Safe-area spacing belongs to the outer rail; the centered capsule is its own surface. */
   position: fixed;
-  top: 0;
+  top: var(--visual-viewport-offset-top);
   left: 0;
   right: 0;
   z-index: var(--z-nav);
-  background: var(--surface-nav);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--border);
-  padding-top: var(--safe-area-top);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: var(--safe-area-top) max(var(--navbar-shell-side-gap), var(--safe-area-right)) 0 max(var(--navbar-shell-side-gap), var(--safe-area-left));
+  background: transparent;
+  border: 0;
+  pointer-events: none;
 }
 
 .navbar.menu-open { z-index: calc(var(--z-floating) + 1); }
+.navbar :focus-visible { outline-offset: 2px; }
 
 /* 两种主题沿用同一套语义 token。 */
 
-/* 三栏布局。两侧按内容占位（auto），中栏吸收剩余空间并在不够时先收窄。
-   不用 `1fr auto 1fr`：那样两侧是弹性的、中栏是定宽的，空间不够时被榨干的是两侧 ——
-   左栏会被压到比内容还窄，里面的工具按钮（不可收缩）就溢出去压在搜索框上。
-   现在反过来，让唯一可以无损收窄的搜索框去让路。 */
+/* 两翼等宽，中心保留固定搜索宽度；核心入口数量有上限，辅助入口在更多面板中。
+   minmax(0, 1fr) 允许墙名称截断，所有按钮仍保持完整触摸目标。 */
 .nav-inner {
-  max-width: var(--container);
-  margin: 0 auto;
+  position: relative;
+  isolation: isolate;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 216px minmax(0, 1fr);
   align-items: center;
-  gap: var(--space-2);
+  width: 100%;
+  max-width: var(--navbar-shell-width);
+  min-width: 0;
   height: var(--app-nav-height);
-  padding: 0 max(var(--space-3), var(--safe-area-right)) 0 max(var(--space-3), var(--safe-area-left));
+  margin: var(--navbar-shell-top-gap) auto;
+  padding: 0 clamp(10px, 1.35vw, 18px);
+  gap: 16px;
+  overflow: visible;
+  pointer-events: auto;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: var(--radius-pill);
+  background: var(--surface-nav);
+  -webkit-backdrop-filter: var(--nav-glass-filter);
+  backdrop-filter: var(--nav-glass-filter);
+  box-shadow: var(--navbar-shell-shadow), inset 0 1px 0 var(--navbar-shell-highlight);
 }
+.nav-inner::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: 1px;
+  border-radius: inherit;
+  background: linear-gradient(180deg, var(--navbar-shell-sheen), transparent 58%);
+  pointer-events: none;
+}
+.nav-inner > * { position: relative; z-index: 1; min-width: 0; }
 
 /* 主页正文容器放宽到了 1280px（App.vue 的 .main-wide），
    顶栏内容不跟着放宽的话，左侧墙切换器会缩在左分类栏右边，对不齐。 */
-.nav-inner-wide {
-  max-width: var(--container-wide);
-}
+.nav-inner-wide { max-width: var(--navbar-shell-width); }
 
-.nav-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.nav-center { display: flex; align-items: center; justify-content: center; min-width: 0; }
+.nav-left { display: flex; align-items: center; gap: 16px; min-width: 0; grid-column: 1; }
+.nav-center { display: flex; align-items: center; justify-content: center; min-width: 0; grid-column: 2; }
 /* 两个图标按钮已经是最小尺寸，再压就变形，因此不参与收缩；
    左栏要让位时由旁边的墙切换器（有 ellipsis）收窄。 */
-.nav-tools { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.nav-tools { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 .logo {
   min-height: 44px;
@@ -630,14 +667,15 @@ function renderAnnouncement(content) {
 .search-dropdown { right: auto; left: 50%; transform: translateX(-50%); min-width: 260px; }
 .search-dropdown-tip { font-size: 12px; padding: 8px 12px; }
 
-/* 不设 min-width: 0 —— 这一栏是 flex-end 对齐，一旦允许收窄到内容以下，
-   按钮（都是 nowrap）会从左边溢出去盖住中间的搜索框。
-   让它按内容占位，空间不够时由中栏的搜索框收窄来让路。 */
+/* 右翼只包含核心导航和独立账号组，与左翼共用等宽轨道。 */
 .nav-right {
   display: flex;
+  min-width: 0;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
+  gap: 16px;
+  grid-column: 3;
+  justify-self: end;
 }
 
 /* 顶栏三类元素（墙切换 / 搜索 / 导航项）统一为等高胶囊 */
@@ -646,7 +684,9 @@ function renderAnnouncement(content) {
   align-items: center;
   gap: 4px;
   min-height: 44px;
-  padding: 0 11px;
+  padding: 0 8px;
+  min-width: 44px;
+  flex-shrink: 0;
   background: none;
   border: 1px solid transparent;
   color: var(--text-secondary);
@@ -730,21 +770,24 @@ function renderAnnouncement(content) {
   min-width: 160px;
   padding: 6px;
   z-index: 1001;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  background: var(--surface-raised);
+  background: var(--surface-panel);
+  -webkit-backdrop-filter: var(--glass-strong-filter);
+  backdrop-filter: var(--glass-strong-filter);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
-  /* 入场：自上方 4px 轻沉 + 淡入（只写 from，结束态用元素自身样式，
-     不干扰 search-dropdown 的 translateX(-50%) 居中） */
-  animation: dropIn 0.18s var(--ease);
-  transform-origin: top;
+  transform-origin: top right;
 }
 
-@keyframes dropIn {
-  from { opacity: 0; translate: 0 -4px; }
-}
+.nav-scale-enter-active, .nav-scale-leave-active { transition: opacity 0.16s var(--ease), scale 0.16s var(--ease); }
+.nav-scale-enter-from, .nav-scale-leave-to { opacity: 0; scale: 0.94; }
+.nav-scale-leave-active { pointer-events: none; }
+.wall-dropdown { transform-origin: top left; }
+.search-dropdown { transform-origin: top center; }
+.account-dropdown, .more-dropdown { transform-origin: top right; }
+.nav-primary-links { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dropdown-section-label { padding: 10px 12px 4px; color: var(--text-muted); font-size: var(--font-xs); }
+.more-dropdown .dropdown-item[aria-current="page"] { background: var(--accent-soft); color: var(--text-link); }
 
 .dropdown::before {
   content: '';
@@ -809,19 +852,22 @@ function renderAnnouncement(content) {
 
 .mobile-menu {
   position: absolute;
-  top: var(--app-header-height);
+  top: calc(var(--app-header-height) + var(--navbar-shell-top-gap));
   left: 0;
   right: 0;
-  background: var(--surface-raised);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--border);
+  background: var(--surface-panel);
+  -webkit-backdrop-filter: var(--glass-strong-filter);
+  backdrop-filter: var(--glass-strong-filter);
   padding: 12px;
-  z-index: 999;
-  max-height: max(0px, calc(var(--visual-viewport-height) - var(--app-header-height)));
+  z-index: 2;
+  max-height: max(0px, calc(var(--visual-viewport-height) - var(--visual-viewport-offset-top) - var(--app-header-height) - 16px));
   overscroll-behavior: contain;
-  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  padding-bottom: max(12px, var(--safe-area-bottom));
   overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 24px;
+  pointer-events: auto;
+  box-shadow: var(--navbar-shell-shadow);
 }
 
 .mobile-user-info {
@@ -868,7 +914,7 @@ function renderAnnouncement(content) {
   cursor: pointer;
   padding: 0 10px;
   border-radius: var(--radius-pill);
-  max-width: 180px;
+  max-width: 160px;
   transition: background 0.25s var(--ease);
 }
 .wall-btn .wall-name {
@@ -896,14 +942,13 @@ function renderAnnouncement(content) {
 
 /* 窄一些的桌面宽度下，中栏被压到剩不下多少，搜索框留着也没法用了 ——
    直接收起，把空间还给导航项。搜索仍可从 /search 页面进入。 */
-@media (max-width: 1280px) {
-  .nav-center { display: none; }
-  .nav-search-shortcut { display: inline-flex; }
-}
+/* The bounded core link group leaves a fixed center track free, even with all optional links enabled. */
 
-@media (max-width: 1080px) {
-  /* 移动端只剩左侧标识 + 汉堡按钮，三栏网格退回两端对齐 */
-  .nav-inner { display: flex; justify-content: space-between; }
+@media (min-width: 1121px) { .mobile-menu { display: none; } }
+
+@media (max-width: 1120px) {
+  /* Secondary links fold into the existing mobile panel; no destination is removed. */
+  .nav-inner { display: flex; justify-content: space-between; padding-inline: 8px; }
   .nav-left { flex: 1; max-width: calc(100% - 52px); }
   .wall-switcher, .wall-btn { max-width: 100%; }
   .mobile-menu-btn, .nav-back { flex-shrink: 0; }
@@ -911,8 +956,24 @@ function renderAnnouncement(content) {
   .mobile-only { display: inline-flex !important; }
 }
 
-.slide-enter-active, .slide-leave-active { transition: all 0.3s ease; }
-.slide-enter-from, .slide-leave-to { opacity: 0; transform: translateY(-10px); }
+.mobile-menu { transform-origin: top center; }
+html[data-blur='off'] .navbar .nav-inner,
+html[data-blur='off'] .navbar .mobile-menu,
+html[data-blur='off'] .navbar .dropdown { background: var(--surface-raised); }
+html[data-high-contrast='on'] .navbar .nav-inner,
+html[data-high-contrast='on'] .navbar .mobile-menu {
+  background: var(--surface-raised);
+  border: 2px solid var(--text-primary);
+  box-shadow: none;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .navbar .nav-inner, .navbar .mobile-menu, .navbar .dropdown { background: var(--surface-raised); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (max-width: 1120px) {
+  .navbar .nav-inner { border-radius: 24px; }
+  .nav-back { display: inline-flex; }
+}
+
 
 /* 公告小红点 */
 .ann-btn { position: relative; }
@@ -971,5 +1032,4 @@ function renderAnnouncement(content) {
   .mobile-menu { padding-top: 4px; }
   .mobile-user-info { padding-block: 4px; }
 }
-@media (min-width: 1081px) { .mobile-menu { display: none; } }
 </style>

@@ -17,13 +17,21 @@
   --warning: #e2c18a;
   --warning-light: var(--warning);
 
-  --bg-deep: #142521;
-  --bg-main: #1b302b;
-  --surface-card: rgba(27, 48, 42, 0.96);
-  --surface-raised: #203a32;
-  --surface-nav: rgba(20, 37, 33, 0.96);
-  --page-ambient: #1e3931;
-  --overlay: rgba(8, 23, 17, 0.64);
+  --bg-deep: #17181c;
+  --bg-main: #202126;
+  --surface-card: rgba(32, 33, 38, 0.78);
+  --surface-card-solid: #202126;
+  --surface-panel: rgba(39, 40, 46, 0.86);
+  --surface-raised: #27282e;
+  --surface-nav: rgba(27, 28, 33, 0.82);
+  --surface-nav-solid: #1b1c21;
+  --glass-filter: blur(20px) saturate(135%);
+  --glass-strong-filter: blur(28px) saturate(140%);
+  --glass-mobile-filter: blur(12px) saturate(125%);
+  --glass-mobile-strong-filter: blur(16px) saturate(130%);
+  --nav-glass-filter: blur(24px) saturate(145%);
+  --page-ambient: #25262e;
+  --overlay: rgba(12, 13, 17, 0.64);
   --z-nav: 1000;
   --z-floating: 1500;
   --z-modal: 9999;
@@ -35,19 +43,19 @@
 
   --border: rgba(255, 255, 255, 0.1);
   --border-strong: rgba(255, 255, 255, 0.2);
-  --control-border: #789787;
+  --control-border: #858793;
   /* 原为 rgba(201,185,154,.2) —— 旧米色主题残留，不随主题色变化 */
   --border-accent: color-mix(in srgb, var(--accent-1) 20%, transparent);
 
-  --text-primary: #edf5ef;
-  --text-secondary: #d1e0d6;
+  --text-primary: #f1f1f4;
+  --text-secondary: #d2d3dc;
   /* 辅助文字也保持正文 AA 对比度，不以降低透明度制造层级。 */
-  --text-muted: #aec6b8;
+  --text-muted: #c2c4cf;
   --text-link: #acd8c3;
 
-  --shadow-sm: 0 2px 8px rgba(6, 28, 17, 0.1);
-  --shadow-md: 0 8px 32px rgba(6, 28, 17, 0.15);
-  --shadow-lg: 0 12px 48px rgba(6, 28, 17, 0.25);
+  --shadow-sm: 0 2px 8px rgba(10, 11, 18, 0.1);
+  --shadow-md: 0 8px 32px rgba(10, 11, 18, 0.15);
+  --shadow-lg: 0 12px 48px rgba(10, 11, 18, 0.25);
 
   /* 圆角刻度：全站只用这 6 档，不再出现 3/6/10/14px 之类的散值 */
   --radius-xs: 4px;
@@ -85,12 +93,24 @@
      避免两处各写一个数字、改一处忘一处 */
   --container: 1000px;
   --container-wide: 1280px;
+  /* Shared capsule geometry keeps content, sticky rails, menus, and chat in sync. */
+  --navbar-shell-width: 1180px;
+  --navbar-shell-side-gap: 12px;
+  --navbar-shell-top-gap: 8px;
+  --navbar-shell-shadow: 0 10px 30px rgba(var(--accent-shadow-rgb), 0.16);
+  --navbar-shell-highlight: rgba(255, 255, 255, 0.14);
+  --navbar-shell-sheen: rgba(255, 255, 255, 0.06);
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
   --app-nav-height: 64px;
-  --app-header-height: calc(var(--app-nav-height) + var(--safe-area-top));
+  --page-top-gap: 36px;
+  --wallpaper-image-opacity: 1;
+  --wallpaper-image-filter: brightness(0.76) saturate(0.9);
+  --wallpaper-overlay-top: 18%;
+  --wallpaper-overlay-bottom: 40%;
+  --app-header-height: calc(var(--safe-area-top) + var(--app-nav-height) + var(--navbar-shell-top-gap));
   --visual-viewport-height: 100dvh;
   --visual-viewport-width: 100vw;
   --visual-viewport-offset-top: 0px;
@@ -142,7 +162,7 @@ html[data-density='compact'] .msg-card,
 html[data-density='compact'] .settings-card { padding: var(--space-3); }
 html[data-density='compact'] .posts-list { gap: var(--space-2); }
 html[data-density='compact'] .empty-state { padding: var(--space-5) var(--space-4); }
-html[data-density='compact'] .main-content { padding-top: calc(var(--app-header-height) + 8px); }
+html[data-density='compact'] .main-content:not(.main-conversation) { padding-top: calc(var(--app-header-height) + var(--page-top-gap)); }
 
 /* 手动「减少动效」：与系统偏好同等力度，且同样要清掉 stagger 延迟 */
 html[data-reduce-motion='on'] .stagger-item,
@@ -165,10 +185,11 @@ html[data-blur='off'] .glass-strong,
 html[data-blur='off'] .navbar,
 html[data-blur='off'] .dropdown,
 html[data-blur='off'] .mobile-menu {
-  backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
-html[data-blur='off'] .wallpaper-img { filter: brightness(0.55) !important; }
+html[data-blur='off'] .wallpaper-img { filter: var(--wallpaper-image-filter) !important; }
+html[data-high-contrast='on'] { --wallpaper-image-opacity: 0.35; --wallpaper-overlay-top: 58%; --wallpaper-overlay-bottom: 72%; }
 
 /* 始终显示焦点框：键盘用户之外，鼠标点击也保留可见焦点 */
 html[data-focus-ring='always'] :focus {
@@ -196,6 +217,7 @@ html[data-high-contrast='on'] body.light-theme {
 }
 html[data-high-contrast='on'] .glass,
 html[data-high-contrast='on'] .glass-strong { border-width: 1.5px; }
+html[data-high-contrast='on'] .navbar .nav-inner { background: var(--surface-raised); border: 2px solid var(--text-primary); box-shadow: none; }
 
 /* ----- 通用入场动画（非线性，无回弹） ----- */
 @keyframes riseIn {
@@ -231,13 +253,22 @@ html[data-high-contrast='on'] .glass-strong { border-width: 1.5px; }
 /* ----- 亮色主题 ----- */
 body.light-theme {
   color-scheme: light;
-  --bg-deep: #f1f5f0;
-  --bg-main: #fbfcf9;
-  --surface-card: rgba(255, 255, 252, 0.96);
-  --surface-raised: #fffffc;
-  --surface-nav: rgba(249, 252, 247, 0.97);
-  --page-ambient: #e4eee5;
-  --overlay: rgba(21, 43, 33, 0.52);
+  --bg-deep: #f4f3f5;
+  --wallpaper-image-filter: brightness(1) saturate(0.9);
+  --wallpaper-overlay-top: 28%;
+  --wallpaper-overlay-bottom: 48%;
+  --bg-main: #fcfbfd;
+  --surface-card: rgba(255, 255, 255, 0.82);
+  --surface-card-solid: #ffffff;
+  --surface-panel: rgba(255, 255, 255, 0.9);
+  --surface-raised: #ffffff;
+  --surface-nav: rgba(252, 251, 253, 0.84);
+  --surface-nav-solid: #fcfbfd;
+  --navbar-shell-highlight: rgba(255, 255, 255, 0.84);
+  --navbar-shell-sheen: rgba(255, 255, 255, 0.5);
+  --navbar-shell-shadow: 0 10px 28px rgba(29, 30, 38, 0.12);
+  --page-ambient: #ebeaf0;
+  --overlay: rgba(28, 29, 35, 0.52);
   --focus-ring: #266b59;
   --danger: #a4403f;
   --success: #2d6f48;
@@ -249,12 +280,12 @@ body.light-theme {
 
   --border: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.15);
-  --control-border: #768d7d;
+  --control-border: #8a8b98;
   --border-accent: color-mix(in srgb, var(--accent-1) 15%, transparent);
 
-  --text-primary: #1c342c;
-  --text-secondary: #405c50;
-  --text-muted: #5a7063;
+  --text-primary: #252630;
+  --text-secondary: #50525e;
+  --text-muted: #575966;
   --text-link: #2b6c5e;
 
   --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.06);
@@ -302,6 +333,9 @@ html[data-reduce-motion='on'], html[data-reduce-motion='on'] *, html[data-reduce
 @media (prefers-reduced-motion: reduce) {
   html, *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
+@media (prefers-reduced-transparency: reduce) {
+  .navbar .nav-inner, .navbar .mobile-menu, .navbar .dropdown { background: var(--surface-raised); }
+}
 @media (forced-colors: active) {
   :focus-visible { outline-color: Highlight; }
   input[type='checkbox'], input[type='radio'] { appearance: auto; }
@@ -316,7 +350,11 @@ img, video, canvas { max-width: 100%; }
 html[data-keyboard-open='on'] .fab-root,
 html[data-keyboard-open='on'] .back-to-top,
 html[data-app-layout='conversation'] .back-to-top { display: none; }
-@media (max-width: 1080px), (pointer: coarse) {
+@media (max-width: 1120px) {
+  :root { --app-nav-height: 60px; --navbar-shell-top-gap: 7px; --navbar-shell-side-gap: 8px; --page-top-gap: 24px; }
+}
+@media (pointer: coarse) {
+  :root { --navbar-shell-side-gap: 8px; }
   .btn, .btn-sm { min-height: 44px; }
   .post-card .post-actions .action-btn { min-height: 44px; min-width: 44px; }
   button { touch-action: manipulation; }
@@ -328,8 +366,8 @@ html[data-app-layout='conversation'] .back-to-top { display: none; }
 /* ----- 毛玻璃卡片 ----- */
 .glass {
   background: var(--surface-card);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
@@ -337,9 +375,9 @@ html[data-app-layout='conversation'] .back-to-top { display: none; }
 }
 
 .glass-strong {
-  background: var(--surface-raised);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
+  background: var(--surface-panel);
+  -webkit-backdrop-filter: var(--glass-strong-filter);
+  backdrop-filter: var(--glass-strong-filter);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
@@ -348,14 +386,60 @@ html[data-app-layout='conversation'] .back-to-top { display: none; }
 /* 亮色主题下的 glass 调整 */
 body.light-theme .glass {
   background: var(--surface-card);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
 }
 
 body.light-theme .glass-strong {
-  background: var(--surface-raised);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  background: var(--surface-panel);
+  -webkit-backdrop-filter: var(--glass-strong-filter);
+  backdrop-filter: var(--glass-strong-filter);
+}
+
+/* 共享毛玻璃表面：标题与设置侧栏也使用相同的壁纸柔化效果。 */
+.home-topbar, .settings-masthead, .settings-search, .category-navigation {
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+.navbar { --text-muted: var(--text-secondary); }
+
+/* 开关沿用账号中的 disable_blur，默认 false 即默认启用毛玻璃。 */
+html[data-blur='off'] body,
+html[data-high-contrast='on'] body {
+  --surface-card: var(--surface-card-solid);
+  --surface-panel: var(--surface-raised);
+  --surface-nav: var(--surface-nav-solid);
+  --glass-filter: none;
+  --glass-strong-filter: none;
+  --nav-glass-filter: none;
+  --glass-mobile-filter: none;
+  --glass-mobile-strong-filter: none;
+}
+html[data-high-contrast='on'] .glass-strong { background: var(--surface-raised); }
+
+@media (prefers-reduced-transparency: reduce) {
+  body, body.light-theme {
+    --surface-card: var(--surface-card-solid);
+    --surface-panel: var(--surface-raised);
+    --surface-nav: var(--surface-nav-solid);
+    --glass-filter: none;
+    --glass-strong-filter: none;
+    --nav-glass-filter: none;
+  --glass-mobile-filter: none;
+  --glass-mobile-strong-filter: none;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  body, body.light-theme {
+    --surface-card: var(--surface-card-solid);
+    --surface-panel: var(--surface-raised);
+    --surface-nav: var(--surface-nav-solid);
+    --glass-filter: none;
+    --glass-strong-filter: none;
+    --nav-glass-filter: none;
+  --glass-mobile-filter: none;
+  --glass-mobile-strong-filter: none;
+  }
 }
 
 /* ----- 输入框 ----- */
@@ -630,8 +714,8 @@ h4 { font-size: var(--font-md); line-height: var(--leading-normal); font-weight:
 
 /* 空状态里的引导按钮：毛玻璃质感 */
 .empty-state .btn {
-  backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   background: var(--btn-fill);
   border: 1px solid var(--btn-ring);
   box-shadow: var(--btn-shadow);
@@ -1025,12 +1109,12 @@ body.light-theme .ok-msg {
      （navbar + dropdown + 卡片），低端安卓 GPU 会明显掉帧。
      设置页仍可手动开关，这里只是给移动端一个更合理的默认。 */
   .glass {
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: var(--glass-mobile-filter);
+    backdrop-filter: var(--glass-mobile-filter);
   }
   .glass-strong {
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: var(--glass-mobile-strong-filter);
+    backdrop-filter: var(--glass-mobile-strong-filter);
   }
 
   /* 移动端卡片密度收紧，一屏能看到更多内容 */

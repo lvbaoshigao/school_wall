@@ -23,6 +23,15 @@ async function verifyMobileDeclarations() {
   const available = sent.data.message_item.reply_to?.available ?? false;
   await api.getMessages(2, { around_id: messageId, mark_read: 0 });
   await api.resetPreferences('chat');
+  await api.callOperation('getApiInfo');
+  await api.operations.getOpenApi();
+  const archive = await api.exportOwnData();
+  /** @type {number} */
+  const archiveBytes = archive.data.byteLength;
+  // @ts-expect-error only documented operation IDs are callable
+  api.callOperation('notAnOperation');
+  // @ts-expect-error only documented directory operations are present
+  api.operations.notAnOperation();
   const error = new ApiError('test', { status: 409, clientMessageId: cid });
   /** @type {string | null} */
   const retryCid = error.clientMessageId;

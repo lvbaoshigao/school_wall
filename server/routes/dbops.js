@@ -173,7 +173,7 @@ function buildRouter(authenticate) {
   r.get('/backups/:name/download', (req, res) => {
     const fp = backupFilePath(req.params.name);
     if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: '备份不存在' });
-    res.download(fp, req.params.name);
+    res.type('application/octet-stream').download(fp, req.params.name);
   });
 
   r.delete('/backups/:name', (req, res) => {

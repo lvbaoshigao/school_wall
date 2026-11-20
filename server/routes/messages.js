@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { authRequired, wallContext } = require('../middleware/auth');
-const { activeWallMember, treeConversation, canAccessTree, countAccessibleTreeUnread } = require('../lib/treeAccess');
+const { activeWallMember, treeConversation, canAccessTree, countAccessibleTreeUnread, primeTreeAccess, primeWallMembers, treeVolunteer } = require('../lib/treeAccess');
 const { userCan } = require('../lib/permissions');
 const { presentMessages, canQuoteMessage } = require('../lib/messagePresentation');
 
@@ -54,6 +54,7 @@ function markVisibleMessagesRead(req, messages) {
     const batch = ids.slice(offset, offset + 400);
     changes += req.db.prepare('UPDATE messages SET is_read=1 WHERE id IN (' + batch.map(() => '?').join(',') + ') AND receiver_id=? AND receiver_deleted=0').run(...batch, req.user.id).changes;
   }
+  if (changes > 0) req.db.markDirty?.();
   messages.forEach(m => { if (m.receiver_id === req.user.id) m.is_read = 1; });
   return changes;
 }
@@ -68,20 +69,23 @@ router.get('/conversations', authRequired, (req, res) => {
   if (before) { sql += ' HAVING MAX(id)<?'; params.push(before); }
   sql += ' ORDER BY last_message_id DESC LIMIT ?';
   params.push(limit + 1);
-  const rows = req.db.prepare(sql).all(...params);
+  // Each request reads current blocks, friendships and memberships in the same query.
+  const query = 'WITH summaries AS (' + sql + "), relations AS (SELECT CASE WHEN user_id=? THEN friend_id ELSE user_id END AS peer_id,MAX(status='blocked') AS blocked,MAX(status='accepted') AS accepted FROM friends WHERE user_id=? OR friend_id=? GROUP BY peer_id), shared AS (SELECT DISTINCT b.user_id AS peer_id FROM wall_members a JOIN walls w ON w.id=a.wall_id AND w.status='active' JOIN wall_members b ON b.wall_id=a.wall_id AND b.status='active' WHERE a.user_id=? AND a.status='active' AND b.user_id IN (SELECT user_id FROM summaries)) SELECT " + messageColumns + ",s.user_id,s.last_message_id,s.unread_count,u.nickname AS peer_nickname,u.avatar AS peer_avatar,u.status AS peer_status,CASE WHEN u.status='active' AND COALESCE(r.blocked,0)=0 AND (COALESCE(r.accepted,0)=1 OR shared.peer_id IS NOT NULL) THEN 1 ELSE 0 END AS can_send FROM summaries s JOIN messages m ON m.id=s.last_message_id LEFT JOIN users u ON u.id=s.user_id LEFT JOIN relations r ON r.peer_id=s.user_id LEFT JOIN shared ON shared.peer_id=s.user_id ORDER BY s.last_message_id DESC";
+  const rows = req.db.prepare(query).all(...params, req.user.id, req.user.id, req.user.id, req.user.id);
   const hasMore = rows.length > limit;
-  const conversations = rows.slice(0, limit).map(row => {
-    const peer = req.db.prepare('SELECT id,nickname,avatar,status FROM users WHERE id=?').get(row.user_id);
-    const available = peer?.status === 'active';
-    const last = req.db.prepare('SELECT ' + messageColumns + ' FROM messages m WHERE m.id=?').get(row.last_message_id);
+  const page = rows.slice(0, limit);
+  const fields = messageColumns.split(',').map(name => name.slice(2));
+  const lastMessages = presentMessages(req, page.map(row => Object.fromEntries(fields.map(field => [field, row[field]]))));
+  const conversations = page.map((row, index) => {
+    const available = row.peer_status === 'active';
     return {
       user_id: row.user_id,
-      other_user: { id: row.user_id, nickname: available ? (peer.nickname || '用户') : '用户暂不可用', avatar: available ? peer.avatar : '', available },
-      last_message: presentMessages(req, [last])[0],
+      other_user: { id: row.user_id, nickname: available ? (row.peer_nickname || '用户') : '用户暂不可用', avatar: available ? row.peer_avatar : '', available },
+      last_message: lastMessages[index],
       last_message_id: row.last_message_id,
-      last_time: last.created_at,
+      last_time: row.created_at,
       unread_count: row.unread_count,
-      can_send: canSendPrivate(req, row.user_id),
+      can_send: !req.user.banRestricted && !!row.can_send,
     };
   });
   const next = conversations.at(-1)?.last_message_id || null;
@@ -115,6 +119,7 @@ router.get('/conversation/:userId', authRequired, (req, res) => {
   }
   const select = 'SELECT ' + messageColumns + ' FROM messages m WHERE ' + where;
   let messages;
+  let moreInDirection = false;
   if (cursors.around_id) {
     const anchor = req.db.prepare(select + ' AND m.id=?').get(...params, cursors.around_id);
     if (!anchor) return res.status(404).json({ error: '消息不存在或不可见' });
@@ -132,13 +137,16 @@ router.get('/conversation/:userId', authRequired, (req, res) => {
     const cursorSql = cursor ? (' AND m.id' + (after ? '>' : '<') + '?') : '';
     const rowParams = cursor ? [...params, cursor, limit + 1] : [...params, limit + 1];
     const rows = req.db.prepare(select + cursorSql + ' ORDER BY m.id ' + (after ? 'ASC' : 'DESC') + ' LIMIT ?').all(...rowParams);
+    moreInDirection = rows.length > limit;
     messages = rows.slice(0, limit);
     if (!after) messages.reverse();
   }
   const oldest = messages[0]?.id || null;
   const newest = messages.at(-1)?.id || null;
-  const hasMoreBefore = oldest !== null && !!req.db.prepare('SELECT 1 FROM messages m WHERE ' + where + ' AND m.id<? LIMIT 1').get(...params, oldest);
-  const hasMoreAfter = newest !== null && !!req.db.prepare('SELECT 1 FROM messages m WHERE ' + where + ' AND m.id>? LIMIT 1').get(...params, newest);
+  const hasMoreBefore = oldest !== null && ((cursors.after || cursors.around_id)
+    ? !!req.db.prepare('SELECT 1 FROM messages m WHERE ' + where + ' AND m.id<? LIMIT 1').get(...params, oldest) : moreInDirection);
+  const hasMoreAfter = newest !== null && ((cursors.before || cursors.around_id)
+    ? !!req.db.prepare('SELECT 1 FROM messages m WHERE ' + where + ' AND m.id>? LIMIT 1').get(...params, newest) : (!!cursors.after && moreInDirection));
   const unreadMarked = markRead === '1' ? markVisibleMessagesRead(req, messages) : 0;
   const hasMore = cursors.after ? hasMoreAfter : (cursors.around_id ? hasMoreBefore || hasMoreAfter : hasMoreBefore);
   res.json({
@@ -202,13 +210,10 @@ router.get('/inbox', authRequired, (req, res) => {
     LIMIT 500
   `).all(...params);
 
-  // 隐藏已失去资格的树洞会话，避免从普通收件箱绕过树洞的访问守卫。
-  const treeAccess = new Map();
-  const visibleTree = convId => {
-    if (!treeAccess.has(convId)) treeAccess.set(convId, canAccessTree(req, treeConversation(req, convId)));
-    return treeAccess.get(convId);
-  };
-  messages = messages.filter(m => m.type !== 'tree_hole' || visibleTree(m.conversation_id));
+  const counts = req.db.prepare("SELECT type,CASE WHEN type='tree_hole' THEN conversation_id ELSE '' END AS conversation_id,COUNT(*) AS c FROM messages WHERE receiver_id=? AND receiver_deleted=0 AND is_read=0 GROUP BY type,CASE WHEN type='tree_hole' THEN conversation_id ELSE '' END").all(req.user.id);
+  const treeUnread = counts.filter(row => row.type === 'tree_hole');
+  primeTreeAccess(req, [...messages.filter(m => m.type === 'tree_hole').map(m => m.conversation_id), ...treeUnread.map(row => row.conversation_id)]);
+  messages = messages.filter(m => m.type !== 'tree_hole' || canAccessTree(req, treeConversation(req, m.conversation_id)));
   messages.forEach(m => {
     if (m.type === 'tree_hole') {
       m.sender_id = null;
@@ -217,17 +222,9 @@ router.get('/inbox', authRequired, (req, res) => {
     }
   });
 
-  // 各类型未读数
-  const unreadCounts = {};
-  validTypes.forEach(t => {
-    const row = req.db.prepare(
-      'SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND receiver_deleted=0 AND type = ? AND is_read = 0'
-    ).get(req.user.id, t);
-    unreadCounts[t] = row ? row.c : 0;
-    if (t === 'tree_hole') {
-      unreadCounts[t] = countAccessibleTreeUnread(req);
-    }
-  });
+  const unreadCounts = Object.fromEntries(validTypes.map(type => [type, 0]));
+  counts.forEach(row => { if (row.type !== 'tree_hole' && validTypes.includes(row.type)) unreadCounts[row.type] += row.c; });
+  unreadCounts.tree_hole = countAccessibleTreeUnread(req, treeUnread);
   const totalUnread = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
 
   res.json({ messages: presentMessages(req, messages), unreadCounts, totalUnread });
@@ -252,7 +249,7 @@ router.get('/approvals', authRequired, (req, res) => {
   // 我能审批哪些墙的进墙申请。全局作用域下持有该权限的人（原全局管理员）覆盖所有墙；
   // 其余人按「我加入的墙 + 被单独授权过的墙」逐个判定。
   const myWalls = globalAdmin
-    ? req.db.prepare("SELECT id FROM walls WHERE status='active'").all().map(r => r.id)
+    ? req.db.prepare("SELECT id FROM walls WHERE status='active'").all().map(r => r.id).filter(w => req.can('wall.member.approve', w))
     : req.db.prepare(`
         SELECT wall_id AS id FROM wall_members WHERE user_id=? AND status='active'
         UNION
@@ -536,91 +533,37 @@ router.post('/tree-hole', authRequired, wallContext, (req, res) => {
 // 且分配到的志愿者还没回应过的对话）
 router.get('/tree-hole/conversations', authRequired, (req, res) => {
   const userId = req.user.id;
+  const mine = req.db.prepare("WITH mine AS (SELECT conversation_id,MAX(created_at) AS last_time,MAX(id) AS last_id,COUNT(*) AS msg_count,SUM(CASE WHEN receiver_id=? AND is_read=0 THEN 1 ELSE 0 END) AS unread_count FROM messages WHERE type='tree_hole' AND conversation_id!='' AND ((sender_id=? AND sender_deleted=0) OR (receiver_id=? AND receiver_deleted=0)) GROUP BY conversation_id), states AS (SELECT m.conversation_id,MAX(CASE WHEN m.content='[对话已关闭]' AND m.is_revoked=1 THEN 1 ELSE 0 END) AS is_closed FROM messages m JOIN mine ON mine.conversation_id=m.conversation_id WHERE m.type='tree_hole' GROUP BY m.conversation_id) SELECT mine.conversation_id,mine.last_time,mine.msg_count,mine.unread_count,last.content AS last_message,last.sender_id AS last_sender_id,states.is_closed FROM mine JOIN messages last ON last.id=mine.last_id JOIN states ON states.conversation_id=mine.conversation_id ORDER BY mine.last_time DESC").all(userId, userId, userId);
+  primeTreeAccess(req, mine.map(row => row.conversation_id));
+  const myConversations = mine.filter(row => canAccessTree(req, treeConversation(req, row.conversation_id))).map(row => ({
+    conversation_id: row.conversation_id,
+    last_time: row.last_time,
+    msg_count: row.msg_count,
+    unread_count: row.unread_count,
+    last_message: row.last_message ? row.last_message.substring(0, 50) : '',
+    is_mine: row.last_sender_id === userId,
+    is_initiator: treeConversation(req, row.conversation_id).sender_id === userId,
+    is_closed: !!row.is_closed,
+  }));
 
-  // 我的对话
-  let myConversations = req.db.prepare(`
-    SELECT conversation_id,
-      MAX(created_at) as last_time,
-      COUNT(*) as msg_count,
-      SUM(CASE WHEN receiver_id = ? AND is_read = 0 THEN 1 ELSE 0 END) as unread_count
-    FROM messages
-    WHERE type = 'tree_hole' AND conversation_id != '' AND ((sender_id = ? AND sender_deleted=0) OR (receiver_id = ? AND receiver_deleted=0))
-    GROUP BY conversation_id
-    ORDER BY last_time DESC
-  `).all(userId, userId, userId);
-
-  myConversations = myConversations.filter(conv => canAccessTree(req, treeConversation(req, conv.conversation_id)));
-  myConversations.forEach(conv => {
-    const lastMsg = req.db.prepare(
-      "SELECT content, sender_id FROM messages WHERE type='tree_hole' AND conversation_id = ? AND ((sender_id=? AND sender_deleted=0) OR (receiver_id=? AND receiver_deleted=0)) ORDER BY id DESC LIMIT 1"
-    ).get(conv.conversation_id, userId, userId);
-    conv.last_message = lastMsg ? lastMsg.content.substring(0, 50) : '';
-    conv.is_mine = lastMsg ? lastMsg.sender_id === userId : false;
-
-    const firstMsg = req.db.prepare(
-      "SELECT sender_id FROM messages WHERE type='tree_hole' AND conversation_id = ? ORDER BY id ASC LIMIT 1"
-    ).get(conv.conversation_id);
-    conv.is_initiator = firstMsg ? firstMsg.sender_id === userId : false;
-
-    const closed = req.db.prepare(
-      "SELECT id FROM messages WHERE type='tree_hole' AND conversation_id = ? AND content = '[对话已关闭]' AND is_revoked = 1 LIMIT 1"
-    ).get(conv.conversation_id);
-    conv.is_closed = !!closed;
-  });
-
-  // 待响应的倾诉：对话在我做志愿者的墙里、我不是参与者、没关闭，
-  // 且「分配到的志愿者一句话都还没说」—— 也就是发起人等不到人回应的那些。
-  // 旧写法用 assignee_id = 0 判定，而创建时就会分配志愿者（assignee_id 非 0），
-  // 真正命中 0 的反倒是 reply/close 插入的行，于是队列里全是点进去必然失败的对话。
-  // 我在哪些墙有树洞权限：候选取「我加入的墙」并上「被单独授权过的墙」，
-  // 再逐个用 can() 判定，名号带来的与单独授予的都能覆盖到。
-  const candidateWalls = req.db.prepare(`
-    SELECT wall_id FROM wall_members WHERE user_id=? AND status='active'
-    UNION
-    SELECT wall_id FROM user_permissions WHERE user_id=? AND perm='wall.tree_hole' AND wall_id>0
-  `).all(userId, userId).map(r => r.wall_id);
-  const myWallIds = candidateWalls.filter(w => activeWallMember(req, w, userId) && req.can('wall.tree_hole', w));
-  let pendingConversations = [];
-  if (myWallIds.length > 0) {
-    const holes = myWallIds.map(() => '?').join(',');
-    pendingConversations = req.db.prepare(`
-      SELECT m.conversation_id,
-        MIN(m.created_at) as first_time,
-        COUNT(*) as msg_count
-      FROM messages m
-      WHERE m.type = 'tree_hole' AND m.conversation_id != ''
-        AND m.wall_id IN (${holes})
-        AND m.conversation_id NOT IN (
-          SELECT DISTINCT conversation_id FROM messages
-          WHERE type = 'tree_hole' AND conversation_id != '' AND (sender_id = ? OR receiver_id = ?)
-        )
-        AND m.conversation_id NOT IN (
-          SELECT DISTINCT conversation_id FROM messages
-          WHERE type = 'tree_hole' AND conversation_id != ''
-            AND assignee_id != 0 AND sender_id = assignee_id
-        )
-        AND m.conversation_id NOT IN (
-          SELECT DISTINCT conversation_id FROM messages
-          WHERE type = 'tree_hole' AND conversation_id != ''
-            AND content = '[对话已关闭]' AND is_revoked = 1
-        )
-      GROUP BY m.conversation_id
-      ORDER BY first_time DESC
-    `).all(...myWallIds, userId, userId);
-
-    pendingConversations = pendingConversations.filter(conv => {
-      const first = treeConversation(req, conv.conversation_id);
-      if (!first || !activeWallMember(req, first.wall_id, first.sender_id) || isBlocked(req, userId, first.sender_id)) return false;
-      return !!req.db.prepare("SELECT id FROM users WHERE id=? AND status='active'").get(first.sender_id);
-    });
-    pendingConversations.forEach(conv => {
-      const firstMsg = req.db.prepare(
-        "SELECT content FROM messages WHERE type='tree_hole' AND conversation_id = ? ORDER BY created_at ASC LIMIT 1"
-      ).get(conv.conversation_id);
-      conv.first_message = firstMsg ? firstMsg.content.substring(0, 80) : '';
-    });
+  const candidateWalls = req.db.prepare("SELECT wall_id FROM wall_members WHERE user_id=? AND status='active' UNION SELECT wall_id FROM user_permissions WHERE user_id=? AND perm='wall.tree_hole' AND wall_id>0").all(userId, userId).map(row => row.wall_id);
+  primeWallMembers(req, candidateWalls.map(wallId => [wallId, userId]));
+  const myWallIds = candidateWalls.filter(wallId => treeVolunteer(req, wallId));
+  const pending = [];
+  for (let offset = 0; offset < myWallIds.length; offset += 400) {
+    const batch = myWallIds.slice(offset, offset + 400);
+    const holes = batch.map(() => '?').join(',');
+    const rows = req.db.prepare("WITH candidates AS (SELECT conversation_id,MIN(created_at) AS first_time,COUNT(*) AS msg_count FROM messages WHERE type='tree_hole' AND conversation_id!='' AND wall_id IN (" + holes + ") GROUP BY conversation_id), states AS (SELECT m.conversation_id,MIN(m.id) AS first_id,MAX(CASE WHEN m.sender_id=? OR m.receiver_id=? THEN 1 ELSE 0 END) AS participated,MAX(CASE WHEN m.assignee_id!=0 AND m.sender_id=m.assignee_id THEN 1 ELSE 0 END) AS answered,MAX(CASE WHEN m.content='[对话已关闭]' AND m.is_revoked=1 THEN 1 ELSE 0 END) AS closed FROM messages m JOIN candidates c ON c.conversation_id=m.conversation_id WHERE m.type='tree_hole' GROUP BY m.conversation_id) SELECT c.conversation_id,c.first_time,c.msg_count,first.id,first.sender_id,first.receiver_id,first.wall_id,first.assignee_id,first.content,first.created_at FROM candidates c JOIN states s ON s.conversation_id=c.conversation_id JOIN messages first ON first.id=s.first_id JOIN users u ON u.id=first.sender_id AND u.status='active' WHERE s.participated=0 AND s.answered=0 AND s.closed=0 AND NOT EXISTS (SELECT 1 FROM friends f WHERE f.status='blocked' AND ((f.user_id=? AND f.friend_id=first.sender_id) OR (f.friend_id=? AND f.user_id=first.sender_id))) ORDER BY c.first_time DESC").all(...batch, userId, userId, userId, userId);
+    pending.push(...rows);
   }
-
+  primeTreeAccess(req, pending.map(row => row.conversation_id), pending);
+  primeWallMembers(req, pending.map(row => [row.wall_id, row.sender_id]));
+  const pendingConversations = pending.filter(row => treeVolunteer(req, row.wall_id) && activeWallMember(req, row.wall_id, row.sender_id)).sort((a, b) => String(b.first_time || '').localeCompare(String(a.first_time || '')) ).map(row => ({
+    conversation_id: row.conversation_id,
+    first_time: row.first_time,
+    msg_count: row.msg_count,
+    first_message: row.content ? row.content.substring(0, 80) : '',
+  }));
   res.json({ my: myConversations, pending: pendingConversations });
 });
 

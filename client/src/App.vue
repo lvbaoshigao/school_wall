@@ -287,8 +287,8 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: blur(2px) brightness(0.68);
-  opacity: 0.22;
+  filter: var(--wallpaper-image-filter);
+  opacity: var(--wallpaper-image-opacity);
 }
 
 .wallpaper-overlay {
@@ -297,11 +297,11 @@ onBeforeUnmount(() => {
   left: 0;
   width: 100%;
   height: 100%;
-  /* 壁纸作为低对比背景纹理，避免抢占帖子与状态文字的阅读层级。 */
+  /* 保留可辨认的原图，正文的对比度由卡片表面承担。 */
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--bg-deep) 80%, transparent) 0%,
-    color-mix(in srgb, var(--bg-deep) 95%, transparent) 100%
+    color-mix(in srgb, var(--bg-deep) var(--wallpaper-overlay-top), transparent) 0%,
+    color-mix(in srgb, var(--bg-deep) var(--wallpaper-overlay-bottom), transparent) 100%
   );
 }
 
@@ -312,12 +312,10 @@ onBeforeUnmount(() => {
   width: 100%;
   min-width: 0;
   scroll-margin-top: var(--app-header-height);
-  padding: calc(var(--app-header-height) + 20px) max(var(--space-4), var(--safe-area-right)) max(var(--space-6), calc(88px + var(--safe-area-bottom))) max(var(--space-4), var(--safe-area-left));
+  padding: calc(var(--app-header-height) + var(--page-top-gap)) max(var(--space-4), var(--safe-area-right)) max(var(--space-6), calc(88px + var(--safe-area-bottom))) max(var(--space-4), var(--safe-area-left));
 }
 
-/* 主页专用：加宽到 1280px 好放下左右两栏。
-   两侧栏（140 + 280 + 32 间距）全部来自原先浪费掉的留白，
-   中间帖子列宽度与改动前基本一致（约 796px vs 812px），正文观感不变。 */
+/* 主页两侧栏保持等宽，侧栏合计宽度不变，正文阅读宽度保持稳定。 */
 .main-wide {
   max-width: var(--container-wide);
 }
@@ -337,7 +335,7 @@ onBeforeUnmount(() => {
 .main-conversation > * { min-height: 0; min-width: 0; flex: 1; }
 .app-conversation :deep(.navbar) { top: var(--visual-viewport-offset-top); }
 @media (max-width: 768px) {
-  .main-content { padding-inline: max(12px, var(--safe-area-left)) max(12px, var(--safe-area-right)); padding-top: calc(var(--app-header-height) + 12px); }
+  .main-content { padding-inline: max(12px, var(--safe-area-left)) max(12px, var(--safe-area-right)); padding-top: calc(var(--app-header-height) + var(--page-top-gap)); }
 }
 @media (max-width: 360px) {
   .main-content { padding-inline: max(8px, var(--safe-area-left)) max(8px, var(--safe-area-right)); }

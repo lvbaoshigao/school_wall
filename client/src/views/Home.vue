@@ -353,7 +353,7 @@ onMounted(() => {
 .topic-toggle { flex-shrink: 0; min-width: 44px; min-height: 44px; }
 
 /* 话题分类入口：与它控制的左栏同侧 */
-.home-topbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-bottom: var(--space-5); }
+.home-topbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-bottom: var(--space-5); padding: var(--space-4) var(--space-5); background: var(--surface-card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .feed-heading h1 { font-size: var(--font-2xl); letter-spacing: -.035em; margin-bottom: var(--space-1); }
 .feed-heading p { font-size: var(--font-sm); }
 .topic-toggle { border-radius: var(--radius-pill); }
@@ -418,8 +418,8 @@ onMounted(() => {
 /* 主体布局 */
 .main-layout { display: flex; gap: 16px; align-items: flex-start; min-width: 0; width: 100%; }
 .category-sidebar {
-  width: 140px; flex-shrink: 0; padding: 12px; border-radius: var(--radius-lg);
-  position: sticky; top: calc(var(--app-header-height) + 12px);
+  width: 210px; flex-shrink: 0; padding: 12px; border-radius: var(--radius-lg);
+  position: sticky; top: calc(var(--app-header-height) + var(--page-top-gap));
 }
 .sidebar-title {
   font-size: 13px; font-weight: 600; color: var(--text-muted);
@@ -440,10 +440,10 @@ onMounted(() => {
 
 /* 右栏：校园墙介绍 + 话题热榜。与左分类栏一样 sticky，跟随滚动停在顶栏下方 */
 .wall-sidebar {
-  width: 280px;
+  width: 210px;
   flex-shrink: 0;
   position: sticky;
-  top: calc(var(--app-header-height) + 12px);
+  top: calc(var(--app-header-height) + var(--page-top-gap));
   display: flex;
   flex-direction: column;
   gap: var(--space-4);

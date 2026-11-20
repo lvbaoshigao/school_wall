@@ -71,6 +71,27 @@ const POST_SELECT = `
   CASE WHEN p.is_anonymous = 1 THEN NULL ELSE u.class_number END as author_class
 `;
 
+// 只检查当前响应中的帖子。唯一索引 (post_id, user_id) / (user_id, post_id)
+// 将每次 EXISTS 限定为一次按键查找，空页不查询互动表。
+function addViewerState(db, posts, userId, knownBookmarked = false) {
+  if (!posts.length) return;
+  const ids = posts.map(post => post.id);
+  const bookmark = knownBookmarked ? '1' : 'EXISTS(SELECT 1 FROM bookmarks b WHERE b.user_id = ? AND b.post_id = page.id)';
+  const states = db.prepare(`
+    WITH page(id) AS (VALUES ${ids.map(() => '(?)').join(', ')})
+    SELECT page.id,
+      EXISTS(SELECT 1 FROM likes l WHERE l.post_id = page.id AND l.user_id = ?) AS liked,
+      ${bookmark} AS bookmarked
+    FROM page
+  `).all(...ids, userId, ...(knownBookmarked ? [] : [userId]));
+  const byId = new Map(states.map(state => [state.id, state]));
+  for (const post of posts) {
+    const state = byId.get(post.id);
+    post.liked = !!state.liked;
+    post.bookmarked = !!state.bookmarked;
+  }
+}
+
 // 搜索帖子（当前墙内）
 router.get('/search', authRequired, wallContext, (req, res) => {
   const { q } = req.query;
@@ -103,13 +124,7 @@ router.get('/search', authRequired, wallContext, (req, res) => {
   const posts = hasMore ? rows.slice(0, LIMIT) : rows;
   const total = posts.length;
 
-  if (req.user) {
-    const likedRows = req.db.prepare('SELECT post_id FROM likes WHERE user_id = ?').all(req.user.id);
-    const likedSet = new Set(likedRows.map(r => r.post_id));
-    const bmRows = req.db.prepare('SELECT post_id FROM bookmarks WHERE user_id = ?').all(req.user.id);
-    const bmSet = new Set(bmRows.map(r => r.post_id));
-    posts.forEach(p => { p.liked = likedSet.has(p.id); p.bookmarked = bmSet.has(p.id); });
-  }
+  addViewerState(req.db, posts, req.user.id);
 
   res.json({ posts, total, hasMore });
 });
@@ -148,22 +163,11 @@ router.get('/', authRequired, wallContext, (req, res) => {
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset);
 
-  if (req.user) {
-    const likedRows = req.db.prepare('SELECT post_id FROM likes WHERE user_id = ?').all(req.user.id);
-    const likedSet = new Set(likedRows.map(r => r.post_id));
-    posts.forEach(p => { p.liked = likedSet.has(p.id); });
-  }
+  addViewerState(req.db, posts, req.user.id);
 
   // 当前墙用过的分类
   const dbCategories = req.db.prepare('SELECT DISTINCT category FROM posts WHERE wall_id=? ORDER BY category').all(req.wallId).map(r => r.category);
   const allCategories = ['全部', ...new Set([...DEFAULT_CATEGORIES, ...dbCategories])];
-
-  // 注入当前用户的收藏状态
-  if (req.user) {
-    const bmRows = req.db.prepare('SELECT post_id FROM bookmarks WHERE user_id = ?').all(req.user.id);
-    const bmSet = new Set(bmRows.map(r => r.post_id));
-    posts.forEach(p => { p.bookmarked = bmSet.has(p.id); });
-  }
 
   res.json({ posts, total, page, limit, categories: allCategories });
 });
@@ -220,13 +224,7 @@ router.get('/hot', authRequired, wallContext, (req, res) => {
     LIMIT ?
   `).all(req.wallId, limit);
 
-  if (req.user) {
-    const likedRows = req.db.prepare('SELECT post_id FROM likes WHERE user_id = ?').all(req.user.id);
-    const likedSet = new Set(likedRows.map(r => r.post_id));
-    const bmRows = req.db.prepare('SELECT post_id FROM bookmarks WHERE user_id = ?').all(req.user.id);
-    const bmSet = new Set(bmRows.map(r => r.post_id));
-    posts.forEach(p => { p.liked = likedSet.has(p.id); p.bookmarked = bmSet.has(p.id); });
-  }
+  addViewerState(req.db, posts, req.user.id);
 
   res.json({ posts, total: posts.length });
 });
@@ -509,12 +507,7 @@ router.get('/bookmarks/list', authRequired, (req, res) => {
     LIMIT ? OFFSET ?
   `).all(req.user.id, limit, offset);
 
-  // 注入 liked & bookmarked 状态
-  if (posts.length > 0) {
-    const likedRows = req.db.prepare('SELECT post_id FROM likes WHERE user_id = ?').all(req.user.id);
-    const likedSet = new Set(likedRows.map(r => r.post_id));
-    posts.forEach(p => { p.liked = likedSet.has(p.id); p.bookmarked = true; });
-  }
+  addViewerState(req.db, posts, req.user.id, true);
 
   res.json({ posts, total, page, limit });
 });

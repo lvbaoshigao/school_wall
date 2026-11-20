@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { DATA_DIR, DB_PATH } = require('./lib/paths');
+const { readOne, readAll } = require('./lib/dbOptimizations');
 
 class DatabaseWrapper {
   constructor(sqlDb) { this.db = sqlDb; this.dirty = false; }
@@ -14,29 +15,14 @@ class DatabaseWrapper {
         const stmt = db.prepare(sql);
         try {
           if (params.length > 0) stmt.bind(params);
-          if (stmt.step()) {
-            const cols = stmt.getColumnNames();
-            const vals = stmt.get();
-            const row = {};
-            cols.forEach((c, i) => { row[c] = vals[i]; });
-            return row;
-          }
-          return undefined;
+          return readOne(stmt);
         } finally { stmt.free(); }
       },
       all(...params) {
         const stmt = db.prepare(sql);
-        const rows = [];
         try {
           if (params.length > 0) stmt.bind(params);
-          while (stmt.step()) {
-            const cols = stmt.getColumnNames();
-            const vals = stmt.get();
-            const row = {};
-            cols.forEach((c, i) => { row[c] = vals[i]; });
-            rows.push(row);
-          }
-          return rows;
+          return readAll(stmt);
         } finally { stmt.free(); }
       },
       run(...params) {
@@ -592,6 +578,14 @@ async function initDB() {
   wrapper.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_sender_client_id ON messages(sender_id, client_message_id) WHERE client_message_id IS NOT NULL AND client_message_id <> ''");
   wrapper.exec('CREATE INDEX IF NOT EXISTS idx_messages_private_outgoing ON messages(sender_id, receiver_id, id)');
   wrapper.exec('CREATE INDEX IF NOT EXISTS idx_messages_private_incoming ON messages(receiver_id, sender_id, id)');
+  // Tree-hole unread polling groups visible unread rows by conversation. A narrow
+  // partial index avoids scanning all traffic in the receiver/type index and orders
+  // matching rows by conversation without SQLite's temporary GROUP BY b-tree.
+  wrapper.exec("CREATE INDEX IF NOT EXISTS idx_messages_tree_unread ON messages(receiver_id, conversation_id) WHERE type='tree_hole' AND receiver_deleted=0 AND is_read=0");
+  // Tree-hole roots are fetched as MIN(id) grouped by conversation; only their
+  // first-message index entries are needed in this partial ordered index.
+  wrapper.exec("CREATE INDEX IF NOT EXISTS idx_messages_tree_root ON messages(conversation_id, id) WHERE type='tree_hole'");
+  wrapper.exec('CREATE INDEX IF NOT EXISTS idx_vote_options_vote ON vote_options(vote_id, id)');
 
   if (!getSetting(wrapper, 'require_approval')) {
     setSetting(wrapper, 'require_approval', '0');

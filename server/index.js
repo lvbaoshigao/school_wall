@@ -3,9 +3,8 @@ const cors = require('cors');
 const compression = require('compression');
 const fs = require('fs');
 const path = require('path');
-const jwt = require('jsonwebtoken');
 const { initDB, getWrapper, getSetting } = require('./db');
-const { authRequired, SECRET } = require('./middleware/auth');
+const { authRequired, getRateUserId } = require('./middleware/auth');
 const { readPrefs } = require('./lib/prefs');
 const visits = require('./lib/visits');
 const { countAccessibleTreeUnread } = require('./lib/treeAccess');
@@ -35,16 +34,8 @@ function clientIp(req) {
 // 因此带有效 token 的请求按用户 ID 计数，各自独立；匿名流量才退回按 IP。
 // 伪造 token 拿不到独立额度 —— 验签不过就落回 IP 桶。
 function rateKey(req) {
-  const auth = req.headers.authorization;
-  if (typeof auth === 'string' && /^Bearer [^\s]{1,8192}$/.test(auth)) {
-    try {
-      const payload = jwt.verify(auth.slice(7), SECRET, { algorithms: ['HS256'] });
-      if (payload.aud === undefined && Number.isSafeInteger(payload?.id) && payload.id > 0 && Number.isSafeInteger(payload.exp) && Number.isSafeInteger(payload.tv ?? 0)) {
-        const user = getWrapper().prepare('SELECT token_version, status FROM users WHERE id=?').get(payload.id);
-        if (user && (user.token_version || 0) === (payload.tv ?? 0) && user.status === 'active') return `u:${payload.id}`;
-      }
-    } catch {}
-  }
+  const userId = getRateUserId(req, getWrapper());
+  if (userId !== null) return `u:${userId}`;
   return `ip:${clientIp(req)}`;
 }
 
@@ -259,7 +250,7 @@ a:hover{text-decoration:underline}
 
   // ===== API路由 =====
   app.use('/api', apiLimiter, (req, res, next) => {
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    // Let the handler choose its media type. JSON, archives and downloads share this chain.
     // 访问统计。复用限流那套 key（登录后按用户 ID，未登录才按 IP），
     // 校园网整栋楼共用出口 IP，只按 IP 会把一群人算成一个。
     // 统计接口自身不计入，否则前端每分钟轮询一次会把自己刷进去。
@@ -319,28 +310,21 @@ a:hover{text-decoration:underline}
     if (prefs.badge_system) badgeTypes.push('system', 'role_application');
     if (prefs.badge_report) badgeTypes.push('report_notification');
 
-    const chatRow = req.db.prepare(
-      "SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND COALESCE(receiver_deleted, 0) = 0 AND is_read = 0 AND type = 'private'"
-    ).get(req.user.id);
+    // Read the non-tree badge groups in one indexed pass, then apply account preferences.
+    const unreadByType = new Map(req.db.prepare(
+      "SELECT type, COUNT(*) AS c FROM messages WHERE receiver_id=? AND receiver_deleted=0 AND is_read=0 AND type!='tree_hole' GROUP BY type"
+    ).all(req.user.id).map(row => [row.type, row.c]));
+    const chatCount = unreadByType.get('private') || 0;
     const treeHoleCount = countAccessibleTreeUnread(req);
 
-    let sys = 0;
-    if (badgeTypes.length) {
-      const holes = badgeTypes.map(() => '?').join(',');
-      const sysRow = req.db.prepare(
-        `SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND COALESCE(receiver_deleted, 0) = 0 AND is_read = 0 AND type IN (${holes})`
-      ).get(req.user.id, ...badgeTypes);
-      sys = sysRow?.c || 0;
-    }
+    const sys = badgeTypes.reduce((count, type) => count + (unreadByType.get(type) || 0), 0);
 
     res.json({
-      count: sys + (chatRow?.c || 0) + treeHoleCount,
-      chat: chatRow?.c || 0,
+      count: sys + chatCount + treeHoleCount,
+      chat: chatCount,
       treeHole: treeHoleCount,
       system: sys,
-      announcement: (req.db.prepare(
-        "SELECT COUNT(*) as c FROM messages WHERE receiver_id = ? AND COALESCE(receiver_deleted, 0) = 0 AND is_read = 0 AND type = 'announcement'"
-      ).get(req.user.id)?.c || 0),
+      announcement: unreadByType.get('announcement') || 0,
     });
   });
 

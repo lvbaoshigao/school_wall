@@ -73,7 +73,8 @@ function privacyValue(key) {
 function valueFor(item) {
   if (item.source === 'privacy') return privacyValue(item.key)
   if (item.source === 'navigation') return Object.hasOwn(settingsStore.nav, item.key) ? settingsStore.nav[item.key] : settingsStore.tools[item.key]
-  return settingsStore.prefs[item.key]
+  const value = settingsStore.prefs[item.key]
+  return item.invert ? !value : value
 }
 function disabledReason(item) {
   if (item.source === 'privacy' && !userStore.user) return '账户资料还未加载，请稍后重试。'
@@ -95,7 +96,8 @@ async function saveSetting(item, value) {
     } catch (error) { if (revision === userStore.sessionRevision) { accountError.value = getApiErrorMessage(error, '隐私设置未保存，请重试'); accountStatus.value = 'error' } }
     finally { privacySaving.value = false }
   } else {
-    const ok = item.source === 'navigation' ? await settingsStore.setNavPref(item.key, value) : await settingsStore.setPref(item.key, value)
+    const storedValue = item.invert ? !value : value
+    const ok = item.source === 'navigation' ? await settingsStore.setNavPref(item.key, storedValue) : await settingsStore.setPref(item.key, storedValue)
     if (ok) retryOperation.value = null
   }
 }
@@ -107,7 +109,8 @@ const scopeLabels = { all: '全部偏好', appearance: '外观', reading: '阅�
 const pendingImport = ref(null)
 const importPreview = computed(() => Object.entries(pendingImport.value?.patch || {}).map(([key, value]) => {
   const item = catalog.find(entry => entry.key === key && entry.source !== 'privacy')
-  const label = typeof value === 'boolean' ? value ? '开启' : '关闭' : item?.options?.find(option => option.value === value)?.label || value
+  const displayValue = item?.invert ? !value : value
+  const label = typeof displayValue === 'boolean' ? displayValue ? '开启' : '关闭' : item?.options?.find(option => option.value === displayValue)?.label || displayValue
   return { key, name: item?.label || key, value: label }
 }))
 async function readImport(event) {
@@ -235,7 +238,7 @@ h1 { margin: 0; font-size: clamp(1.9rem, 4vw, 2.45rem); line-height: 1.25; font-
 .save-indicator { display: inline-flex; align-items: center; gap: .4rem; padding: .5rem .75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: .77rem; color: var(--text-secondary); flex-shrink: 0; min-height: 2.5rem; }
 .save-indicator.saved { color: var(--text-link); background: var(--accent-soft); border-color: var(--accent-line); }
 .save-indicator.error { color: var(--danger-light); }
-.settings-search { display: flex; align-items: center; gap: .75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-input); padding: .35rem .85rem; margin-bottom: 1.65rem; color: var(--text-muted); }
+.settings-search { display: flex; align-items: center; gap: .75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-card); padding: .35rem .85rem; margin-bottom: 1.65rem; color: var(--text-muted); }
 .settings-search:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .settings-search input { min-width: 0; flex: 1; border: 0; box-shadow: none; outline: none; background: none; color: var(--text-primary); padding: .65rem 0; min-height: 2.75rem; font-size: .9rem; border-radius: 0; }
 .settings-search input:focus-visible { outline: none; }
@@ -243,6 +246,9 @@ h1 { margin: 0; font-size: clamp(1.9rem, 4vw, 2.45rem); line-height: 1.25; font-
 .search-clear { width: 2.75rem; height: 2.75rem; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; display: grid; place-items: center; border-radius: var(--radius-sm); flex-shrink: 0; }
 .search-clear:hover { background: var(--bg-card-hover); }
 .search-count { flex-shrink: 0; font-size: .77rem; font-variant-numeric: tabular-nums; border-left: 1px solid var(--border-strong); padding-left: .8rem; }
+.settings-masthead, .settings-search, .category-navigation { background: var(--surface-card); }
+.settings-masthead { padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.category-navigation { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .settings-layout { display: grid; grid-template-columns: 11.7rem minmax(0, 1fr); gap: 1.8rem; align-items: start; }
 .category-navigation { position: sticky; top: 5.75rem; }
 .category-caption { font-size: .73rem; color: var(--text-muted); padding: .25rem .8rem .7rem; letter-spacing: .05em; }

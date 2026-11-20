@@ -25,7 +25,7 @@ export const SETTINGS_ITEMS = [
   binary('reduce_motion', 'appearance', '减少动效', '减少入场动画和过渡，也会尊重系统的减少动态效果偏好。'),
   binary('high_contrast', 'appearance', '高对比度', '提高文字与边框的对比，减少半透明背景。'),
   binary('always_focus_ring', 'appearance', '始终显示焦点框', '即使使用鼠标操作，也显示当前控件的焦点位置。'),
-  binary('disable_blur', 'appearance', '关闭背景模糊', '减少毛玻璃效果，适合性能较低的设备。'),
+  binary('disable_blur', 'appearance', '毛玻璃效果', '默认开启：药丸和卡片透出柔化的壁纸。关闭后使用不透明表面。高对比度或系统减少透明效果也会使用不透明背景。', { invert: true }),
   choice('feed_sort', 'reading', '动态默认排序', '选择进入主页时优先看到最新内容还是热门讨论。', [['latest', '最新'], ['hot', '热门']]),
   choice('feed_category', 'reading', '默认话题分类', '进入主页后默认显示的话题。', ['全部', '吐槽', '分享', '求助', '讨论', '其他'].map(value => [value, value])),
   choice('density', 'reading', '动态列表密度', '舒适模式留白更多，紧凑模式在一屏内显示更多内容。', [['comfortable', '舒适'], ['compact', '紧凑']]),

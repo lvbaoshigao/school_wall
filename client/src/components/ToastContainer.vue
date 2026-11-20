@@ -64,8 +64,8 @@ const icons = { success: 'check-circle', error: 'x-circle', warning: 'alert-tria
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   font-size: 14px;
-  backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   box-shadow: var(--shadow-md);
   pointer-events: auto;
   max-width: 400px;

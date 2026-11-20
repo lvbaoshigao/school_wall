@@ -148,30 +148,54 @@ function apiV1Middleware() {
 // apiLimiter. It intentionally does nothing for every legacy /api request.
 function apiV1Router({ openApiPath = OPENAPI_PATH } = {}) {
   const router = express.Router();
+  let cached;
+  let loading;
+
+  async function readOpenApi() {
+    const file = await fs.promises.stat(openApiPath);
+    const revision = [file.dev, file.ino, file.size, file.mtimeMs, file.ctimeMs].join(':');
+    if (cached?.revision === revision) return cached.source;
+    if (!file.isFile()) throw new Error('Invalid OpenAPI file');
+    const source = await fs.promises.readFile(openApiPath, 'utf8');
+    const document = JSON.parse(source);
+    if (!isRecord(document) || typeof document.openapi !== 'string' || !isRecord(document.paths)) {
+      throw new Error('Invalid OpenAPI document');
+    }
+    cached = { revision, source };
+    return source;
+  }
+
   router.use((req, res, next) => {
     const state = req[STATE];
-    if (!state) return next();
+    if (!state) return next('router');
     if (state.error) {
       const { status, ...body } = state.error;
       return res.status(status).json(body);
     }
-    const route = (req.path.endsWith('/') ? req.path.slice(0, -1) : req.path).toLowerCase();
-    if (!['', '/capabilities', '/openapi.json'].includes(route)) return next();
-    if (!['GET', 'HEAD'].includes(req.method)) {
-      res.setHeader('Allow', 'GET, HEAD');
-      return res.status(405).json({ error: '此接口仅支持 GET 或 HEAD' });
+    next();
+  });
+  router.get(['/', '/capabilities'], (req, res) => res.json(getApiV1Capabilities()));
+  router.get('/openapi.json', async (req, res, next) => {
+    let source;
+    try {
+      loading ??= readOpenApi().finally(() => { loading = undefined; });
+      source = await loading;
+    } catch {
+      return res.status(503).json({ code: 'OPENAPI_UNAVAILABLE', error: 'API 文档暂不可用' });
     }
-    if (route !== '/openapi.json') return res.json(getApiV1Capabilities());
-    // Read lazily: independently deploying docs must never stop the server boot.
-    fs.readFile(openApiPath, 'utf8', (error, source) => {
-      if (error) return res.status(503).json({ code: 'OPENAPI_UNAVAILABLE', error: 'API 文档暂不可用' });
-      try {
-        const document = JSON.parse(source);
-        if (!isRecord(document) || typeof document.openapi !== 'string' || !isRecord(document.paths)) throw new Error('Invalid OpenAPI');
-      } catch { return res.status(503).json({ code: 'OPENAPI_UNAVAILABLE', error: 'API 文档暂不可用' }); }
-      state.rawJson = true;
-      res.type('application/json').send(source);
-    });
+    try {
+      req[STATE].rawJson = true;
+      return res.type('application/json').send(source);
+    } catch (error) {
+      req[STATE].rawJson = false;
+      return next(error);
+    }
+  });
+  router.use((req, res, next) => {
+    const route = req.path.replace(/\/$/, '').toLowerCase();
+    if (!['', '/capabilities', '/openapi.json'].includes(route)) return next();
+    res.setHeader('Allow', 'GET, HEAD');
+    return res.status(405).json({ error: '此接口仅支持 GET 或 HEAD' });
   });
   return router;
 }

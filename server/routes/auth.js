@@ -637,7 +637,8 @@ router.get('/export', authRequired, (req, res) => {
     res.setHeader('Content-Length', gz.length);
     // 让前端能读到未压缩体积，用于展示压缩率
     res.setHeader('X-Uncompressed-Size', Buffer.byteLength(json, 'utf8'));
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Uncompressed-Size');
+    const exposed = String(res.getHeader('Access-Control-Expose-Headers') || '').split(',').map(value => value.trim()).filter(Boolean);
+    res.setHeader('Access-Control-Expose-Headers', [...new Set([...exposed, 'Content-Disposition', 'X-Uncompressed-Size'])].join(', '));
     res.end(gz);
   } catch (e) {
     res.status(500).json({ error: '导出失败' });

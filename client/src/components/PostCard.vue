@@ -290,7 +290,7 @@ async function doReportPost() {
 
 .post-card:hover {
   box-shadow: var(--shadow-sm);
-  background: var(--bg-card-hover);
+  background: var(--surface-card);
 }
 
 .post-header {

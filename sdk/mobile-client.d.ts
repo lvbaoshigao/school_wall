@@ -1,3 +1,6 @@
+import type { OperationId, OperationParams } from './v1-operations'
+export type { OperationId, OperationParams, OperationSpec } from './v1-operations'
+
 /** IDs are positive safe integers. The API retains endpoint-specific payloads inside v1 data. */
 export type Id = number | string;
 export type Flag = 0 | 1;
@@ -39,7 +42,7 @@ export interface RequestOptions {
 export type Query = Record<string, string | number | boolean | null | undefined>;
 export interface RawRequestOptions extends RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD';
-  query?: Query; body?: unknown; auth?: boolean;
+  query?: Query; body?: unknown; auth?: boolean; responseType?: 'json' | 'raw-json' | 'binary';
 }
 export interface Profile {
   id: number; username: string; nickname: string; real_name: string; show_real_name: Flag;
@@ -147,6 +150,7 @@ export interface Vote {
   total_votes: number; options: VoteOption[]; voted: number | null;
 }
 export interface VoteInput { title: string; description?: string; options: string[]; is_anonymous?: boolean | Flag; end_at?: string; }
+export interface OpenApiDocument { openapi: string; info: Record<string, unknown>; paths: Record<string, unknown>; components?: Record<string, unknown>; }
 export interface Capabilities {
   apiVersion: '1'; basePath: string; legacyBasePath: string;
   authentication: { scheme: string; header: string; format: string; wallHeader: string };
@@ -155,9 +159,13 @@ export interface Capabilities {
 export function createClientMessageId(cryptoSource?: CryptoSource): string;
 export class SchoolWallClient {
   constructor(options?: ClientOptions);
-  readonly baseURL: string;
+  readonly baseURL: string
+  readonly operations: Readonly<Record<OperationId, (params?: OperationParams, options?: RequestOptions) => Promise<ApiResponse<unknown> | ApiResponse<ArrayBuffer>>>>
+  callOperation<T = unknown>(operationId: OperationId, params?: OperationParams, options?: RequestOptions): Promise<ApiResponse<T> | ApiResponse<ArrayBuffer>>
   request<T = unknown>(path: string, options?: RawRequestOptions): Promise<ApiResponse<T>>;
+  getApiInfo(options?: RequestOptions): Promise<ApiResponse<Record<string, unknown>>>;
   getCapabilities(options?: RequestOptions): Promise<ApiResponse<Capabilities>>;
+  getOpenApi(options?: RequestOptions): Promise<ApiResponse<OpenApiDocument>>;
   login(credentials: { username: string; password: string }, options?: RequestOptions): Promise<ApiResponse<{ token: string; user: Profile }>>;
   getMe(options?: RequestOptions): Promise<ApiResponse<Profile>>;
   updateProfile(profile: ProfileUpdate, options?: RequestOptions): Promise<ApiResponse<Profile>>;
@@ -197,5 +205,16 @@ export class SchoolWallClient {
   uploadImage(image: string, options?: RequestOptions): Promise<ApiResponse<{ url: string }>>;
   uploadPrivateImage(image: string, options?: RequestOptions): Promise<ApiResponse<{ url: string }>>;
   uploadAvatar(avatar: string, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment & { avatar: string }>>;
+  deleteAccount(password: string | { password: string }, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  exportOwnData(options?: RequestOptions): Promise<ApiResponse<ArrayBuffer>>;
+  deletePost(postId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  deleteComment(postId: Id, commentId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  likePost(postId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  unlikePost(postId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  deleteFriend(friendId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  blockUser(userId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  unblockUser(userId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  deleteVote(voteId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
+  getTreeMessages(conversationId: string, query?: PageQuery & { before?: Id; mark_read?: '0' | '1' | 0 | 1 }, options?: RequestOptions): Promise<ApiResponse<MessagesPage>>;
 }
 export function createMobileClient(options?: ClientOptions): SchoolWallClient;

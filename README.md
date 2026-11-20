@@ -248,6 +248,8 @@ school_wall/
 
 ## 📡 API 接口
 
+本轮已将实际注册的 **144 个版本化 API 操作与 10 个看板内部操作** 全量对齐规范，并加入真实 Express 路由覆盖回归。性能证据与长药丸导航预览见 [优化与验收说明](docs/BACKEND-OPTIMIZATION.md)。
+
 未来移动客户端使用 `/api/v1`，现有网页使用的 `/api` 保持兼容。v1 JSON 响应统一包含 `data`、`error` 和 `meta`，继续使用 Bearer JWT、`X-Wall-Id` 及原有权限/限流。开放协议不代表匿名开放用户数据，浏览器跨域来源仍需配置 `ALLOWED_ORIGINS`。
 
 - `GET /api/v1/capabilities`：版本、认证方式、分页和容量限制。

@@ -72,22 +72,38 @@ router.get('/', authRequired, wallContext, (req, res) => {
   const total = req.db.prepare('SELECT COUNT(*) as c FROM votes WHERE wall_id=?').get(req.wallId).c;
 
   const votes = req.db.prepare(`
-    SELECT ${VOTE_SELECT}
-    FROM votes v
+    WITH page AS (
+      SELECT * FROM votes WHERE wall_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ? OFFSET ?
+    ),
+    vote_totals AS (
+      SELECT vote_id, COUNT(*) AS total_votes
+      FROM vote_records WHERE vote_id IN (SELECT id FROM page)
+      GROUP BY vote_id
+    )
+    SELECT v.id, v.wall_id, v.title, v.description,
+      CASE WHEN v.is_anonymous = 1 THEN NULL ELSE v.author_id END AS author_id,
+      v.is_anonymous, v.end_at, v.created_at,
+      CASE WHEN v.is_anonymous = 1 THEN NULL ELSE u.nickname END AS author_nickname,
+      COALESCE(vote_totals.total_votes, 0) AS total_votes,
+      my_record.option_id AS voted
+    FROM page v
     LEFT JOIN users u ON v.author_id = u.id
-    WHERE v.wall_id = ?
+    LEFT JOIN vote_totals ON vote_totals.vote_id = v.id
+    LEFT JOIN vote_records my_record ON my_record.vote_id = v.id AND my_record.user_id = ?
     ORDER BY v.created_at DESC, v.id DESC
-    LIMIT ? OFFSET ?
-  `).all(req.wallId, limit, offset);
-
-  votes.forEach(vote => {
-    vote.options = req.db.prepare('SELECT * FROM vote_options WHERE vote_id = ? ORDER BY id').all(vote.id);
-    if (req.user) {
-      const record = req.db.prepare('SELECT option_id FROM vote_records WHERE vote_id = ? AND user_id = ?').get(vote.id, req.user.id);
-      vote.voted = record ? record.option_id : null;
-    }
-  });
-
+  `).all(req.wallId, limit, offset, req.user.id);
+  if (votes.length) {
+    const placeholders = votes.map(() => '?').join(', ');
+    const ids = votes.map(vote => vote.id);
+    const optionByVote = new Map(ids.map(id => [id, []]));
+    const choices = req.db.prepare(
+      'SELECT * FROM vote_options WHERE vote_id IN (' + placeholders + ') ORDER BY vote_id, id'
+    ).all(...ids);
+    for (const option of choices) optionByVote.get(option.vote_id).push(option);
+    for (const vote of votes) vote.options = optionByVote.get(vote.id);
+  }
   res.json({ votes, total, page, limit });
 });
 

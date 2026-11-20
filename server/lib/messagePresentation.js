@@ -9,11 +9,12 @@ function sameParticipants(a, b) {
     (a.sender_id === b.receiver_id && a.receiver_id === b.sender_id));
 }
 
-function canQuoteMessage(req, source, target) {
+function canQuoteMessage(req, source, target, activeWalls) {
   if (!source || !target || target.is_revoked || !visibleToUser(target, req.user.id) || !visibleToUser(source, req.user.id) || source.is_anonymous ||
       source.type !== target.type || !['private', 'confession'].includes(source.type) ||
       (source.wall_id || 0) !== (target.wall_id || 0) || !sameParticipants(source, target)) return false;
   if (source.type === 'confession') {
+    if (activeWalls) return activeWalls.has(source.wall_id);
     return !!req.db.prepare("SELECT 1 FROM walls w JOIN wall_members wm ON wm.wall_id=w.id WHERE w.id=? AND w.status='active' AND wm.user_id=? AND wm.status='active'")
       .get(source.wall_id, req.user.id);
   }
@@ -29,7 +30,26 @@ function presentMessages(req, rows) {
     const records = req.db.prepare('SELECT * FROM messages WHERE id IN (' + placeholders + ')').all(...batch);
     records.forEach(record => originals.set(record.id, record));
   }
+  const wallIds = [...new Set([...originals.values()].filter(row => row.type === 'confession').map(row => row.wall_id))];
+  const activeWalls = new Set();
+  for (let offset = 0; offset < wallIds.length; offset += 400) {
+    const batch = wallIds.slice(offset, offset + 400);
+    req.db.prepare("SELECT w.id FROM walls w JOIN wall_members m ON m.wall_id=w.id WHERE w.id IN (" + batch.map(() => '?').join(',') + ") AND w.status='active' AND m.user_id=? AND m.status='active'").all(...batch, req.user.id).forEach(wall => activeWalls.add(wall.id));
+  }
+  const allowed = new Map();
+  const senderIds = new Set();
+  rows.forEach(row => {
+    const source = originals.get(row.reply_to_id);
+    const permitted = canQuoteMessage(req, source, originals.get(row.id) || row, activeWalls);
+    allowed.set(row.id, permitted);
+    if (permitted && !source.is_revoked) senderIds.add(source.sender_id);
+  });
   const names = new Map();
+  const authors = [...senderIds];
+  for (let offset = 0; offset < authors.length; offset += 400) {
+    const batch = authors.slice(offset, offset + 400);
+    req.db.prepare('SELECT id,nickname FROM users WHERE id IN (' + batch.map(() => '?').join(',') + ')').all(...batch).forEach(user => names.set(user.id, user.nickname || '用户'));
+  }
   return rows.map(row => {
     const output = { ...row };
     delete output.sender_deleted;
@@ -52,14 +72,10 @@ function presentMessages(req, rows) {
     if (!(row.reply_to_id > 0)) return output;
 
     const source = originals.get(row.reply_to_id);
-    const allowed = canQuoteMessage(req, source, original);
-    const revoked = allowed && !!source.is_revoked;
-    const available = allowed && !revoked;
-    let nickname = null;
-    if (available) {
-      if (!names.has(source.sender_id)) names.set(source.sender_id, req.db.prepare('SELECT nickname FROM users WHERE id=?').get(source.sender_id)?.nickname || '用户');
-      nickname = names.get(source.sender_id);
-    }
+    const permitted = allowed.get(row.id);
+    const revoked = permitted && !!source.is_revoked;
+    const available = permitted && !revoked;
+    const nickname = available ? (names.get(source.sender_id) || '用户') : null;
     output.reply_to = {
       id: row.reply_to_id,
       available,

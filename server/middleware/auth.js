@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { DATA_DIR } = require('../lib/paths');
 const { effectivePerms, loadOverrides, isWallPerm } = require('../lib/permissions');
+const requestAuth = require('../lib/requestAuth');
 
 // ===== JWT 密钥 =====
 // 优先使用环境变量；否则在 server/.jwt_secret 持久化一个随机密钥。
@@ -51,7 +52,16 @@ const SECRET = loadSecret();
 // 注意：全局作用域下持有某个 wall.* 权限，语义是「对所有墙生效」。
 // 全局管理员就是靠这条继续拥有跨墙审核能力的。
 function attachPermissions(req) {
-  const overrides = loadOverrides(req.db, req.user.id);
+  let overrides;
+  let overridesLoaded = false;
+  const getOverrides = () => {
+    if (!overridesLoaded) {
+      // Cache only successful queries; permission-database errors remain fail-closed.
+      overrides = loadOverrides(req.db, req.user.id);
+      overridesLoaded = true;
+    }
+    return overrides;
+  };
   const cache = new Map();
 
   // 取用户在某墙的角色。当前上下文的墙直接用 wallContext 解析好的值；
@@ -71,7 +81,7 @@ function attachPermissions(req) {
       cache.set(key, effectivePerms({
         globalRole: req.user.role,
         wallRole: key > 0 ? wallRoleOf(key) : null,
-        overrides,
+        overrides: getOverrides(),
         wallId: key,
       }));
     }
@@ -110,7 +120,8 @@ function settleBan(db, user) {
     const ts = new Date(until).getTime();
     // 时间戳非法时按永久封禁处理，避免 NaN 比较静默放行
     if (!Number.isNaN(ts) && ts < Date.now()) {
-      db.prepare("UPDATE users SET status='active', ban_until='', ban_reason='', ban_level='login' WHERE id=?").run(user.id);
+      const updated = db.prepare("UPDATE users SET status='active', ban_until='', ban_reason='', ban_level='login' WHERE id=?").run(user.id);
+      if (updated?.changes > 0) db.markDirty?.();
       user.status = 'active';
       user.ban_until = '';
       user.ban_reason = '';
@@ -165,44 +176,37 @@ function authRequired(req, res, next) {
     return res.status(401).json({ error: '请先登录' });
   }
   try {
-    const token = header.slice(7);
-    // 显式锁死算法：不给 alg 白名单时，verify 只依赖库内默认值（虽然 jsonwebtoken v9
-    // 已拒绝 none，但显式声明才不受后续升级/降级影响）。
-    req.user = jwt.verify(token, SECRET, { algorithms: ['HS256'] });
-    if (!req.user || req.user.aud !== undefined || !Number.isSafeInteger(req.user.id) || req.user.id <= 0 ||
-        !Number.isSafeInteger(req.user.exp) || !Number.isSafeInteger(req.user.tv ?? 0) || (req.user.tv ?? 0) < 0) {
-      return res.status(401).json({ error: '登录状态无效，请重新登录' });
-    }
-    // 从库实时读取全局角色与状态
-    const user = req.db.prepare('SELECT id, status, ban_until, ban_reason, ban_level, role, token_version FROM users WHERE id = ?').get(req.user.id);
+    // Reuse only the immutable HS256 claims and one synchronous rate-limiter row.
+    // Every later authRequired call reloads the current account state from the database.
+    const authenticated = requestAuth.getRequestAuth(req, req.db, SECRET);
+    if (!authenticated.claims) return res.status(401).json({ error: '登录已过期，请重新登录' });
+    const { user } = authenticated;
     if (!user) return res.status(401).json({ error: '用户不存在' });
     if (!['active', 'banned'].includes(user.status)) {
       return res.status(403).json({ error: '账号当前不可用' });
     }
-
-    // 令牌版本校验：改密码会令 token_version +1，旧 token 即使在 7 天有效期内也立即作废。
-    // payload 缺 tv 视为 0，兼容本次升级前签发的存量 token（用户无感，下次改密后生效）。
-    const tokenTv = req.user.tv ?? 0;
+    const tokenTv = authenticated.claims.tv ?? 0;
     if (tokenTv !== (user.token_version || 0)) {
       return res.status(401).json({ error: '登录状态已失效，请重新登录' });
     }
-
     const state = settleBan(req.db, user);
-    if (state.banned) {
-      if (banLevelCheck(req, user, state)) {
-        return res.status(403).json(banPayload(state, user.ban_reason));
-      }
-      // 非完全拦截级别（如 post/chat），允许通过但标记
-      req.user.banRestricted = state.banLevel;
+    if (state.banned && banLevelCheck(req, user, state)) {
+      return res.status(403).json(banPayload(state, user.ban_reason));
     }
-    req.user.id = user.id;
-    req.user.tv = tokenTv;
-    req.user.role = user.role;
+    // Never mutate or retain the cached JWT payload as the route principal.
+    req.user = { ...authenticated.claims, id: user.id, tv: tokenTv, role: user.role };
+    if (state.banned) req.user.banRestricted = state.banLevel;
     attachPermissions(req);
   } catch {
     return res.status(401).json({ error: '登录已过期，请重新登录' });
   }
   next();
+}
+
+// Shared with the front controller's rate limiter; invalid/revoked credentials fall
+// back to the IP bucket. The helper never grants a user bucket after a DB error.
+function getRateUserId(req, db) {
+  return requestAuth.getRateUserId(req, db, SECRET);
 }
 
 // ===== 校园墙上下文 =====
@@ -237,8 +241,9 @@ function settleWallBan(db, wallId, userId, membership) {
   if (until) {
     const ts = new Date(until).getTime();
     if (!Number.isNaN(ts) && ts < Date.now()) {
-      db.prepare("UPDATE wall_members SET status='active', wall_ban_until='', wall_ban_reason='' WHERE wall_id=? AND user_id=?")
+      const updated = db.prepare("UPDATE wall_members SET status='active', wall_ban_until='', wall_ban_reason='' WHERE wall_id=? AND user_id=?")
         .run(wallId, userId);
+      if (updated?.changes > 0) db.markDirty?.();
       membership.status = 'active';
       membership.wall_ban_until = '';
       membership.wall_ban_reason = '';
@@ -322,5 +327,5 @@ module.exports = {
   authRequired, requirePerm,
   wallContext, wallPathContext,
   settleBan, settleWallBan, banPayload,
-  SECRET,
+  SECRET, getRateUserId,
 };
