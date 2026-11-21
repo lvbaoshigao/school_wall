@@ -1,12 +1,35 @@
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
+const { randomBytes } = require('crypto');
 
 const { DATA_DIR, DB_PATH } = require('./lib/paths');
 const { readOne, readAll } = require('./lib/dbOptimizations');
 
 class DatabaseWrapper {
-  constructor(sqlDb) { this.db = sqlDb; this.dirty = false; }
+  #deferInitialSave;
+  #temporarySecret = null;
+
+  constructor(sqlDb, deferInitialSave) {
+    this.db = sqlDb;
+    this.dirty = false;
+    this.#deferInitialSave = deferInitialSave;
+  }
+
+  get temporarySecret() { return this.#temporarySecret; }
+  get canStartTemporary() {
+    return this.#deferInitialSave && !this.#temporarySecret && !fs.lstatSync(DB_PATH, { throwIfNoEntry: false });
+  }
+
+  // 在同一个同步调用中创建测试用户和切换模式；创建失败时仍可正式初始化。
+  startTemporary(createSession) {
+    if (!this.canStartTemporary) return null;
+    const secret = randomBytes(32);
+    const session = createSession(secret);
+    this.#temporarySecret = secret;
+    return session;
+  }
+
   exec(sql) { this.db.run(sql); }
   prepare(sql) {
     const db = this.db;
@@ -43,11 +66,12 @@ class DatabaseWrapper {
   // 单个用户以 40 次/秒点赞就能让全站请求排队。
   // 改为置脏标记 + 由 startAutoSave 按固定间隔合并落盘后，写请求的边际成本归零，
   // 代价是崩溃时最多丢 FLUSH_INTERVAL 内的改动（见下方常量）。
-  markDirty() { this.dirty = true; }
+  markDirty() { if (!this.#temporarySecret) this.dirty = true; }
 
-  // 强制立即落盘。仅用于初始化完成、进程退出这类必须确保持久化的时刻。
+  // 临时库从不落盘，即使服务退出、强制保存或进程被直接终止。
   saveNow() {
-    if (!this.db) return;
+    if (!this.db || this.#temporarySecret) return false;
+    if (this.#deferInitialSave && getSetting(this, 'initialized', '0') !== '1') return false;
     // 先写临时文件再 rename：rename 在同一文件系统上是原子的。
     // 原先直接覆盖 data.db，一旦在写入中途崩溃或磁盘写满，
     // 唯一的数据文件就会变成半截的损坏文件。
@@ -62,6 +86,8 @@ class DatabaseWrapper {
       fs.chmodSync(tmp, 0o600);
       fs.renameSync(tmp, DB_PATH);
       this.dirty = false;
+      this.#deferInitialSave = false;
+      return true;
     } catch (e) {
       try { fs.unlinkSync(tmp); } catch {}
       throw e;
@@ -124,14 +150,15 @@ function setSetting(db, key, value) {
 // 旧版本升级导入时无需手工删库，重启即自动适配；确需重建时设置 KEEP_DB=0。
 const REBUILD = process.env.KEEP_DB === '0';
 
-async function initDB() {
+async function initDB({ deferInitialSave = false } = {}) {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
   const SQL = await initSqlJs();
+  const exists = fs.existsSync(DB_PATH);
   let sqlDb;
-  if (fs.existsSync(DB_PATH) && !REBUILD) {
+  if (exists && !REBUILD) {
     sqlDb = new SQL.Database(fs.readFileSync(DB_PATH));
   } else {
-    if (fs.existsSync(DB_PATH) && REBUILD) {
+    if (exists && REBUILD) {
       try {
         const bak = DB_PATH + '.bak_' + Date.now();
         fs.copyFileSync(DB_PATH, bak);
@@ -142,7 +169,7 @@ async function initDB() {
     }
     sqlDb = new SQL.Database();
   }
-  wrapper = new DatabaseWrapper(sqlDb);
+  wrapper = new DatabaseWrapper(sqlDb, deferInitialSave && !exists);
   wrapper.pragma('foreign_keys = ON');
 
   wrapper.exec(`
@@ -597,7 +624,7 @@ async function initDB() {
     console.log('[DB] 数据库未初始化，请通过前端完成首次设置（创建超级管理员 + 第一个校园墙）');
   }
 
-  // 迁移/建表的结果必须确保落盘，这里走同步写
+  // 已有库的迁移立即落盘；全新 Web 实例等到正式初始化。
   wrapper.saveNow();
   startAutoSave();
   console.log('[DB] 数据库初始化完成' + (REBUILD ? '（已重建）' : ''));

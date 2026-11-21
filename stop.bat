@@ -1,25 +1,42 @@
 @echo off
 setlocal DisableDelayedExpansion
 set "SW_PORT=3000"
+set "SW_CLIENT_PORT="
 
 :parse_args
 if "%~1"=="" goto run
 if /i "%~1"=="--port" goto read_port
 if /i "%~1"=="-p" goto read_port
-echo ERROR: Unknown argument. Usage: stop.bat [--port PORT]
+if /i "%~1"=="--client-port" goto read_client_port
+echo ERROR: Unknown argument. Usage: stop.bat [--port PORT] [--client-port PORT]
 exit /b 1
 
 :read_port
 if "%~2"=="" (
-    echo ERROR: A port value is required.
+    echo ERROR: A backend port value is required.
     exit /b 1
 )
 set "SW_PORT=%~2"
-shift
-shift
+shift /1
+shift /1
+goto parse_args
+
+:read_client_port
+if "%~2"=="" (
+    echo ERROR: A frontend port value is required.
+    exit /b 1
+)
+set "SW_CLIENT_PORT=%~2"
+shift /1
+shift /1
 goto parse_args
 
 :run
 echo School Wall - Stop
+if defined SW_CLIENT_PORT goto run_both
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0deploy\windows.ps1" -Mode Stop -Port "%SW_PORT%"
+exit /b %ERRORLEVEL%
+
+:run_both
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0deploy\windows.ps1" -Mode Stop -Port "%SW_PORT%" -ClientPort "%SW_CLIENT_PORT%"
 exit /b %ERRORLEVEL%

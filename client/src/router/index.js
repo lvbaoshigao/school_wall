@@ -3,24 +3,18 @@ import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
 import api from '../api'
 
-// 懒检查：系统是否已初始化（只查一次，缓存结果）
-let setupChecked = false
-let systemInitialized = true
+// 只缓存正式初始化；临时状态在后端重启后失效。
+let setupStatus = null
 async function ensureSetupChecked() {
-  if (setupChecked) return systemInitialized
+  if (setupStatus) return setupStatus
   try {
-    const res = await api.get('/setup/status')
-    systemInitialized = res.data.initialized
-    setupChecked = true
-  } catch { return true } // 网络错误允许表单展示，下次导航重新检查
-  return systemInitialized
+    const { data } = await api.get('/setup/status')
+    if (data.initialized) setupStatus = data
+    return data
+  } catch { return { initialized: true } } // 网络错误时保留表单，下次导航重新检查
 }
 
-// 重置缓存：用于首次设置完成后，让路由守卫重新检查
-export function resetSetupCheck() {
-  setupChecked = false
-  systemInitialized = true
-}
+export function resetSetupCheck() { setupStatus = null }
 
 const routes = [
   { path: '/', name: 'Home', component: () => import('../views/Home.vue'), meta: { auth: true, wall: true } },
@@ -64,9 +58,9 @@ router.beforeEach(async (to, from, next) => {
   // 首次导航先恢复账户/权限，避免刷新后界面闪错状态。
   if (userStore.isLoggedIn && !userStore.user && to.path !== '/banned') await userStore.fetchUser()
 
-  // 系统未初始化时，只允许 /login（显示首次设置表单）
-  const initialized = await ensureSetupChecked()
-  if (!initialized && to.path !== '/login') {
+  // 未正式初始化时，仅已登录的临时会话可以进入站点。
+  const { initialized, temporary } = await ensureSetupChecked()
+  if (!initialized && !(temporary && userStore.isLoggedIn) && to.path !== '/login') {
     return next('/login')
   }
 

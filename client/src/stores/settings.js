@@ -52,6 +52,7 @@ export const PREF_SCHEMA = {
   accent: { type: 'enum', values: ['indigo', 'teal', 'forest', 'amber', 'rose', 'slate'], def: 'teal', group: 'appearance' },
   theme_mode: { type: 'enum', values: ['system', 'light', 'dark'], def: 'system', group: 'appearance' },
   wallpaper_enabled: { type: 'bool', def: true, group: 'appearance' },
+  wallpaper_source: { type: 'enum', values: ['bing', 'local'], def: 'bing', group: 'appearance' },
   chat_send_shortcut: { type: 'enum', values: ['enter', 'modifier'], def: 'enter', group: 'chat' },
   chat_density: { type: 'enum', values: ['comfortable', 'compact'], def: 'comfortable', group: 'chat' },
   chat_show_timestamps: { type: 'bool', def: true, group: 'chat' },

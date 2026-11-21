@@ -257,7 +257,7 @@ export class SchoolWallClient {
     for (const [key, value] of Object.entries(queryValues)) {
       if (value == null || key === 'wall_id') continue;
       const definition = queryParams.find(parameter => parameter.name === key);
-      if (definition?.type === 'integer' && !((typeof value === 'number' && Number.isSafeInteger(value)) || (typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value))))) throw invalid('Query parameter must be a safe integer: ' + key);
+      if (definition?.type === 'integer' && !((typeof value === 'number' && Number.isSafeInteger(value)) || (typeof value === 'string' && /^(?:0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value))))) throw invalid('Query parameter must be a safe integer: ' + key);
       if (definition?.type === 'boolean' && typeof value !== 'boolean') throw invalid('Query parameter must be boolean: ' + key);
       if (definition?.type === 'string' && typeof value !== 'string') throw invalid('Query parameter must be a string: ' + key);
     }

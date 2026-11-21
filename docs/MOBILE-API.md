@@ -7,7 +7,7 @@
 - 新客户端使用部署站点的 HTTPS 源加 /api/v1，例如由应用配置提供 origin，再拼接 /api/v1。SDK 的 baseURL 是**完整版本前缀**，不会自动追加 /api/v1。
 - 旧 /api 路由、HTTP 状态和业务数据形状保持兼容。v1 复用相同鉴权、限流、墙权限和数据，不是另一套数据库。
 - GET /api/v1 和 GET /api/v1/capabilities 返回静态能力信息；仍经过部署 IP 守卫和限流，不公开账号、运行状态、密钥或用户数据。
-- GET /api/v1/openapi.json 返回原始 OpenAPI JSON，**不包络**。下载附件、流和二进制响应也保持原格式。SDK 的默认 request() 按 JSON 包络读取；完整静态注册表为 getOpenApi 选择原始 JSON 模式，为 exportOwnData 和备份下载选择二进制模式，调用方不要自行 JSON.parse 下载正文。
+- GET /api/v1/openapi.json 返回原始 OpenAPI JSON，**不包络**。下载附件、流和二进制响应也保持原格式。SDK 的默认 request() 按 JSON 包络读取；完整静态注册表为 getOpenApi 选择原始 JSON 模式，为 exportOwnData、备份下载和 getWallpaperImage 选择二进制模式，调用方不要自行 JSON.parse 下载正文。
 - 请求路径只允许正常版本路径；未知版本返回 404 UNSUPPORTED_API_VERSION，危险路径编码返回 400 INVALID_API_PATH。不要依赖大小写、重复斜杠或编码绕行。
 
 成功 JSON：
@@ -16,7 +16,7 @@
 {"data":{"prefs":{}},"error":null,"meta":{"apiVersion":"1","requestId":"server-generated-opaque-id"}}
 ~~~
 
-上例 prefs 仅演示包络位置；实际偏好接口返回完整 39 项。失败 JSON：
+上例 prefs 仅演示包络位置；实际偏好接口返回完整 40 项。失败 JSON：
 
 ~~~json
 {"data":null,"error":{"code":"UNAUTHENTICATED","message":"请先登录"},"meta":{"apiVersion":"1","requestId":"server-generated-opaque-id"}}
@@ -52,15 +52,15 @@ DELETE /messages/{id} 和 DELETE /messages/chat/{userId} 都是**单侧隐藏**�
 
 ## 全量覆盖与调用边界
 
-本规范覆盖真实 Express 注册的 **154 个显式方法/路径组合、139 个路径模板**：144 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 10 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；新增 102 个操作不改变现有服务策略。
+本规范覆盖真实 Express 注册的 **155 个显式方法/路径组合、140 个路径模板**：145 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 10 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 103 个操作包含新增的公开壁纸图片接口，既有鉴权与内部操作排除策略保持一致。
 
 | 范围 | 操作数 | 鉴权与用途 |
 | --- | ---: | --- |
-| 普通族及有权限的墙内操作 | 108 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
+| 普通族及有权限的墙内操作 | 109 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
 | 管理族、建墙审核及看板票据入口 | 36 | 管理操作仍要求对应 global 或 wall 权限；票据入口要求 global.dashboard |
 | /dashboard/api 内部操作 | 10 | 看板票据或 Cookie；Cookie 写操作另需 CSRF；不由公共移动客户端调用 |
 
-公共 SDK 操作目录覆盖 **143 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 10 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
+公共 SDK 操作目录覆盖 **144 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 10 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
 
 OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabilities、/openapi.json 外，标准 /api 路径可通过旧 /api 前缀使用。旧 /api 本身不是能力发现入口。内部操作逐项 servers: [{url:"/"}]，最终路径严格为同一部署源上的 /dashboard/api/...，不能把它们拼到 /api/v1 下，也不能把根服务器地址当作任意外域授权。
 
@@ -90,6 +90,7 @@ OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabil
 | 好友 | GET /friends、/friends/pending；POST /friends/add、/block、/unblock；PUT /friends/{id}/respond；DELETE /friends/{id} |
 | 投票 | GET/POST /votes；GET/DELETE /votes/{id}；POST /votes/{id}/vote |
 | 上传 | POST /upload/image、/upload/bug-image；PUT /avatar/upload |
+| 壁纸 | GET /wallpaper?source=bing&idx=0；GET /wallpaper/image/{file} 返回缓存 JPEG |
 
 普通 JSON 请求体上限 128 KiB；图片上传 JSON 上限 5 MiB。消息最多 2000 字符，标题 100；帖子正文 2000；评论 500；投票标题 100、描述 500，2–10 个非空且去空格后不同的选项，每项 50 字符。密码上限是 1024 **UTF-8 字节**，新密码至少 6 字符；用户名 3–20 字符且不能带首尾空白/控制字符。资料字段具体上限见 OpenAPI，不传字段表示保留，不要将本地整份陈旧 profile 覆盖回服务器。
 
@@ -105,12 +106,21 @@ GET /auth/prefs/schema 返回 {version:1,schema,defaults,scopes}。schema 每项
 | --- | --- | --- |
 | theme_mode | system / light / dark | system |
 | wallpaper_enabled | boolean | true |
+| wallpaper_source | bing / local | bing |
 | chat_send_shortcut | enter / modifier | enter |
 | chat_density | comfortable / compact | comfortable |
 | chat_show_timestamps | boolean | true |
 | chat_poll_interval | 字符串 10 / 20 / 30 / 60 | 字符串 20 |
 
-手机 Enter 保留换行；发送快捷键是应用 UI 行为，不能替代显式发送按钮。theme/wallpaper 原导航开关控制入口可见性，实际外观分别由 theme_mode/wallpaper_enabled 控制。不要混淆 reading.density 与 chat_density。
+手机 Enter 保留换行；发送快捷键是应用 UI 行为，不能替代显式发送按钮。theme/wallpaper 原导航开关控制入口可见性，实际外观分别由 theme_mode/wallpaper_enabled 控制。wallpaper_source 属于 appearance，重置该组恢复 bing，重置 chat 等其他组会保留已选来源。不要混淆 reading.density 与 chat_density。
+
+## 壁纸来源与图片缓存
+
+GET /wallpaper 默认 source=bing。省略 idx 选择必应当天图片；显式 idx 是 0–7 的整数，按当前可用归档数量取模。source=local 时省略 idx 随机选择本地图片，显式 idx 允许 0–1000000，按本地集合大小取模。非法来源、超范围、数组、对象或小数返回 400。客户端需把已保存的 wallpaper_source 作为 source 传入；公开壁纸接口本身不读取账号偏好。
+
+选择结果包含 file、url、total、idx、source、fallback；source 表示实际来源，必应获取失败且无可用缓存时会回退本地并令 fallback=true。没有本地图片时 file/url 为 null、total/idx 为 0。必应结果另有 copyright 署名。选择响应为 no-store；返回的 url 是部署源根路径，必应使用 /api/wallpaper/image/{file}，本地使用 /rele/{file}，不能直接拼到 /api/v1 后面。
+
+缓存必应图片接口只接受返回的 64 位小写十六进制哈希加 .jpg 文件名，返回原始 image/jpeg 字节；缺失或无效文件返回 404，不会按任意 URL 代理下载。成功响应为 public, max-age=31536000, immutable，支持 ETag/Last-Modified 条件请求和字节范围请求（304 无正文，206 为部分字节）；本地静态图片缓存一天。原生图片组件可用部署源解析返回 URL 并复用 HTTP 缓存。SDK 的 getWallpaperImage 操作通过 /api/v1 别名读取 ArrayBuffer，保留缓存头；SDK fetch 仍设置 cache:no-store，调用方负责缓存下载的字节。两项壁纸操作均不读取或发送 Bearer 和所选墙上下文。
 
 ## 分页、私聊历史、搜索与引用
 
@@ -169,7 +179,7 @@ try {
 }
 ~~~
 
-所有成功 SDK 方法保留 {data,error:null,meta,status,headers} 外形；普通 JSON 操作的 data 是业务值，getOpenApi 的 data 是原始规范对象，exportOwnData 和备份下载的 data 是 ArrayBuffer。原始成功响应的 meta 由实际响应头合成，缺失的 requestId 保持为空，不伪造服务端包络。sendMessage 另返回 clientMessageId。它不自动重试任何请求，不自动登录、刷新 token、换墙或写浏览器存储。HTTP 失败、协议失败和网络失败均抛 ApiError；网络/本地失败 status=0，HTTP 错误保留真实 status。NETWORK_ERROR、TIMEOUT、ABORTED 不代表服务器一定未提交。sendMessage 的 ApiError.clientMessageId 可关联待发记录；业务错误 409 不应自动换 ID。
+所有成功 SDK 方法保留 {data,error:null,meta,status,headers} 外形；普通 JSON 操作的 data 是业务值，getOpenApi 的 data 是原始规范对象，exportOwnData、备份下载和 getWallpaperImage 的 data 是 ArrayBuffer。原始成功响应的 meta 由实际响应头合成，缺失的 requestId 保持为空，不伪造服务端包络。sendMessage 另返回 clientMessageId。它不自动重试任何请求，不自动登录、刷新 token、换墙或写浏览器存储。HTTP 失败、协议失败和网络失败均抛 ApiError；网络/本地失败 status=0，HTTP 错误保留真实 status。NETWORK_ERROR、TIMEOUT、ABORTED 不代表服务器一定未提交。sendMessage 的 ApiError.clientMessageId 可关联待发记录；业务错误 409 不应自动换 ID。
 
 AbortSignal 和 timeoutMs 覆盖 token/wall 回调、fetch 和响应解析；0 可禁用定时器。已取消的请求不发送。SDK 通过 redirect:error 避免自动跨站重定向携带认证信息，credentials:omit 不依赖 Cookie。通用 request() 只接受版本前缀下的相对路径，不接受任意外域 URL 或路径穿越。运行时需提供标准 fetch、Headers/Response、AbortController、URL/URLSearchParams 与安全 crypto；可注入 fetch 和 crypto，不提供不安全随机回退。
 
@@ -187,18 +197,8 @@ TypeScript 的 NodeNext/Bundler 消费 .mjs 时，会通过 [mobile-client.d.mts
 
 生产必须使用 HTTPS，避免明文 bearer/password。浏览器/WebView 跨源调用只允许部署明确配置的 CORS 源；v1 不放宽 CORS，不新增 Cookie 会话。原生 HTTP 客户端虽不受浏览器 CORS 机制约束，仍必须满足服务器认证、IP 守卫、墙成员身份及权限。不要使用外部图片代理/日志平台传输证据或完整 token。
 
-## 本轮契约验收
+## 契约维护与当前限制
 
-2026-11-20 的全量契约核对以真实隔离 index 实例的 Express 注册为权威：154 个显式方法/路径组合双向对账，无缺口、无额外项、无重复；1282 个规范内引用可解析，154 个 operationId 唯一，旧 52 个 ID 不变。10 个内部 API 的逐操作根服务器与路径参数均已复核。OpenAPI 3.0.3 标准验证通过，已有 14 项 SDK 契约回归通过。此记录只陈述已执行的契约检查，不把文档覆盖等同于所有管理写操作的实际执行。
-
-该规范不新增任何注册或访问策略。审批队列全局授权漏查墙级 deny 的既有差异已由消息负责人修正，并验证拒绝/恢复授权后的下一请求行为；字段保持兼容。备份返回 application/octet-stream、用户导出返回 application/gzip、OpenAPI 返回原始 application/json；其他成功 JSON 由 v1 适配器包络。Cookie/CSRF 看板 API 保持原始响应，排除静态文件和 HTML 页面。
-
-## 验证与当前限制
-
-完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成，`--check` 仅检查版本一致性而不写文件。旧 SDK 回归与新增全操作覆盖回归合计 20/20 通过，包含 143 个入口的 method/path 分发、组件引用、可选请求体、原始 JSON、二进制和失败详情；TypeScript NodeNext 类型消费通过。整合验收与查询次数证据见 [后端优化报告](BACKEND-OPTIMIZATION.md)。
-
-2026-11-19 上轮整合记录：后端 223 项、前端常规回归 130 项、部署兼容 22 项均通过；4 个显式启用的浏览器入口另行通过（设置、私聊、既有焦点/弹窗、响应式）。响应式实际检查 36 个页面尺寸组合，含 320/360/390/768/1024px、844×390 横屏、320px 小字号和模拟软键盘，未发现横向溢出、过小触摸目标或页面脚本异常。默认 `npm test` 跳过这 4 个需隔离 URL 的浏览器入口，不连接运行中的应用。OpenAPI 标准验证及严格 TypeScript NodeNext 类型消费验证均通过，未增加项目依赖。上轮临时测试产物及本轮隔离数据库、日志和截图按清理要求删除；回归测试源码保留用于后续验证。
-
-回归入口：node --test server/test/phase2-sdk.test.js server/test/phase3-sdk-coverage.test.js。类型消费夹具另用 npm exec --yes --package=typescript -- tsc --noEmit --strict --allowJs --checkJs --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM sdk/typecheck-usage.cjs 验证；仅使用临时 npm 执行包，不修改任何项目依赖。测试只使用 fetch mock、内存 SQLite 和临时 loopback HTTP 服务，不导入运行中的 index，不执行 initDB，不使用真实库、账号或部署数据。旧安全回归保持原样。
+完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 155 个操作，其中 144 个提供公共 SDK 目录入口，11 个看板票据或内部操作明确排除。测试源码、类型检查夹具与临时验收数据已清理。
 
 当前限制：无 token refresh、离线冲突合并、后台推送、WebSocket 或设备管理；历史本地时间缺少 offset；after 不包含既有消息的变更事件；朋友列表及墙列表仍是原有数组而不是统一分页；帖子搜索 total 是截断数量。调用方应按 capabilities/真实端点工作，不将文档或 SDK 视为未来功能承诺。

@@ -75,10 +75,9 @@ ss -ltn 'sport = :3000'
 sudo systemctl restart school-wall
 sudo nginx -t && sudo systemctl reload nginx
 
-# 无需部署的隔离回归：使用临时目录和替代命令，不加载应用数据库
-node --test deploy/test/*.test.cjs
-(cd server && npm test && npm run audit:security)
-(cd client && npm test && npm run audit:security)
+# 依赖安全检查
+(cd server && npm run audit:security)
+(cd client && npm run audit:security)
 ~~~
 
 安装器的健康检查有连接/总超时，并对实际 /api/health 重试，随后核对回环监听、首页和未知 API 状态。若失败请检查服务与 Nginx 日志。反向代理以校验后的客户端地址覆盖 X-Forwarded-For；仅信任本机 cloudflared 的 CF-Connecting-IP 与协议声明，局域网客户端伪造这些头不能切换代理身份。

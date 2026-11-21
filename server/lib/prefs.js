@@ -55,6 +55,7 @@ const PREF_SCHEMA = {
   accent: { type: 'enum', values: ['indigo', 'teal', 'forest', 'amber', 'rose', 'slate'], def: 'teal' },
   theme_mode:        { type: 'enum', values: ['system', 'light', 'dark'], def: 'system' },
   wallpaper_enabled: { type: 'bool', def: true },
+  wallpaper_source:  { type: 'enum', values: ['bing', 'local'], def: 'bing' },
   chat_send_shortcut:   { type: 'enum', values: ['enter', 'modifier'], def: 'enter' },
   chat_density:         { type: 'enum', values: ['comfortable', 'compact'], def: 'comfortable' },
   chat_show_timestamps: { type: 'bool', def: true },
@@ -64,7 +65,7 @@ const PREF_SCHEMA = {
 // 导航的 theme/wallpaper 只控制工具入口；实际显示分别由外观分类的新字段控制。
 const PREF_SCOPES = Object.freeze({
   all: Object.freeze(Object.keys(PREF_SCHEMA)),
-  appearance: Object.freeze(['accent', 'theme_mode', 'wallpaper_enabled', 'reduce_motion',
+  appearance: Object.freeze(['accent', 'theme_mode', 'wallpaper_enabled', 'wallpaper_source', 'reduce_motion',
     'high_contrast', 'always_focus_ring', 'disable_blur']),
   chat: Object.freeze(['chat_send_shortcut', 'chat_density', 'chat_show_timestamps', 'chat_poll_interval']),
   notifications: Object.freeze(['badge_interaction', 'badge_announcement', 'badge_system', 'badge_report',

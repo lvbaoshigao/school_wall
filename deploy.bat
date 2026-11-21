@@ -15,8 +15,8 @@ if "%~2"=="" (
     exit /b 1
 )
 set "SW_PORT=%~2"
-shift
-shift
+shift /1
+shift /1
 goto parse_args
 
 :run

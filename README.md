@@ -107,7 +107,8 @@
 ### 🖼️ 其他功能
 | 功能 | 说明 |
 |------|------|
-| 随机壁纸 | 从 rele 文件夹随机选取，点击按钮换一张 |
+| 背景壁纸 | 默认必应每日壁纸，可切换本地 rele 图片；点击换图浏览近期风景，离线自动回退 |
+| 滚动导航 | 顶部全宽展开，下滑逐渐收拢为磨砂玻璃药丸；支持亮暗主题与减少动效 |
 | 响应式设计 | 支持桌面端和移动端 |
 | 毛玻璃UI | Glassmorphism 风格界面 |
 | 查看他人主页 | 点击发帖者头像/名字查看 |
@@ -153,39 +154,50 @@ deploy.bat
 deploy.bat --port 8080
 REM 开发模式：后端 3000 + 仅本机 Vite 5173
 start.bat
-REM 仅停止端口上经验证属于本项目的后端
+REM 默认端口被其他程序占用时，可明确指定新端口，代理自动保持一致
+start.bat --port 3001 --client-port 5174
+REM 停止指定端口上经验证属于本项目的后端和开发前端
+stop.bat --port 3001 --client-port 5174
+REM 未指定 --client-port 时仅停止后端
 stop.bat --port 8080
 ~~~
 
-Windows 入口使用随系统提供的 PowerShell、NetTCPIP 与 CIM。停止脚本会核对精确本地端口、Node 可执行程序和本项目绝对入口路径；遇到其他项目的进程会报错退出。开发前端在自己的窗口用 Ctrl+C 停止。Windows 进程终止可能中断未落盘写入，维护前请备份数据。
+Windows 入口使用随系统提供的 PowerShell、NetTCPIP 与 CIM。启动前检查两个端口，Vite 不会自动跳到其他端口；只有后端数据库健康、前端页面和 API 代理全部就绪才报告成功。启动失败会清理本次创建的进程。停止脚本先核对所有目标端口、Node 可执行程序和本项目绝对入口路径，再执行停止；遇到其他项目进程会拒绝操作。开发前端也可在自己的窗口按 Ctrl+C 停止。Windows 进程终止可能中断未落盘写入，维护前请备份数据。
+
+同一项目的旧进程若仍占用原生依赖，即使切换端口也不能重装。启动脚本会在执行 `npm ci` 前报告占用的进程和监听端口；请先在原终端按 Ctrl+C 关闭旧实例，再重试。
 
 ### 配置与持久化
 
 | 变量 | 默认值 / 用途 |
 |------|--------------|
-| PORT | 3000；监听端口，范围 1–65535 |
+| PORT | 3000；后端监听端口，范围 1–65535 |
+| VITE_BACKEND_PORT | 3000；直接运行 Vite 时的后端代理端口；start.bat 由 --port 自动设置 |
+| VITE_PORT | 5173；直接运行 Vite 时的前端端口；start.bat 由 --client-port 自动设置 |
 | HOST | 启动脚本默认 127.0.0.1；显式设置 0.0.0.0 才开放局域网直连 |
-| DATA_DIR | server 目录；data.db、.jwt_secret、uploads、backups 均位于该数据根 |
+| DATA_DIR | server 目录；data.db、.jwt_secret、uploads、backups 与 wallpaper-cache 均位于该数据根 |
 | JWT_SECRET | 可选，至少 16 字符；不设置时自动生成并持久保存 .jwt_secret |
 | TRUST_PROXY | 默认不信任；随附 Nginx 模板只设置为 1，并由代理覆盖客户端转发头 |
 | ALLOWED_ORIGINS | 可选，逗号分隔的额外允许来源；同源部署无需设置 |
 | UPLOAD_MAX_TOTAL_MB | 默认 2048，上传总配额 |
 | UPLOAD_MAX_USER_MB_PER_HOUR | 默认 50，每用户每小时上传额度 |
 
-直接运行时通过 shell 设置环境变量；应用与本地启动脚本不会自动读取 .env。systemd 模板会读取 server/.env，具体格式和 DATA_DIR 可写路径由部署安装器校验。相对 DATA_DIR 按后端工作目录解析，建议使用绝对路径。改变数据根不会自动搬迁旧数据；请停服务后一起迁移数据库、密钥、上传与备份，再更新配置。常规部署固定 KEEP_DB=1，避免误触发删库重建。
+后端直接运行时通过 shell 设置环境变量；应用与本地启动脚本不会自动读取后端 .env。Vite 的 VITE_* 配置可通过环境变量或 client/.env.local 设置。systemd 模板会读取 server/.env，具体格式和 DATA_DIR 可写路径由部署安装器校验。相对 DATA_DIR 按后端工作目录解析，建议使用绝对路径。改变数据根不会自动搬迁旧数据；请停服务后一起迁移数据库、密钥、上传与备份，再更新配置。常规部署固定 KEEP_DB=1，避免误触发删库重建。
 
-### 验证
+### 壁纸与外观
+
+在“设置 → 外观”选择“必应每日壁纸”或“本地随机壁纸”，来源随账号保存。必应图片由后端获取并保存到 DATA_DIR/wallpaper-cache，浏览器只请求本站资源；归档缓存一小时，相同图片复用缓存与 ETag。上游超时或图片无效时回退到 rele，网络中断时保留已经显示的壁纸。关闭背景、毛玻璃、高对比度和减少动效选项继续生效。
+
+### 检查
 
 ~~~bash
-(cd server && npm test && npm run audit:security)
-(cd client && npm test && npm run audit:security)
-# 以下需要服务已由运维启动；本地启动默认端口 3000
+(cd server && npm run audit:security)
+(cd client && npm run audit:security)
+node sdk/generate-v1-operations.cjs --check
+# 服务启动后检查数据库健康；默认后端端口为 3000
 curl --fail --max-time 5 http://127.0.0.1:3000/api/health
-# 部署脚本的隔离回归测试，不启动真实应用或修改系统
-node --test deploy/test/*.test.cjs
 ~~~
 
-/api/health 会实际查询数据库；只看到静态首页返回 200 不能证明后端健康。部署脚本隔离回归需要 Bash 环境，Windows 原生启停应另在 Windows 上验证。
+/api/health 会实际查询数据库；只看到静态首页返回 200 不能证明后端健康。
 
 ---
 
@@ -244,11 +256,13 @@ school_wall/
 完成后即可登录使用。请为超级管理员设置强密码 —— 它拥有全部管理权限；
 注册面向所有人开放（受登录限流保护），如需限制成员，请使用「进墙审批」。
 
+如果数据目录中没有 `data.db`，也可以在本机打开初始化页，点击 **进入一次性测试**。系统会创建临时普通用户和测试墙，无需设置密码。测试不支持图片上传，数据库仅保存在内存中。停止或重启后端会清除测试数据；只关闭网页不会清除。重启后可重新测试或正式初始化。已有数据库或经反向代理访问时，不提供此入口。
+
 ---
 
 ## 📡 API 接口
 
-本轮已将实际注册的 **144 个版本化 API 操作与 10 个看板内部操作** 全量对齐规范，并加入真实 Express 路由覆盖回归。性能证据与长药丸导航预览见 [优化与验收说明](docs/BACKEND-OPTIMIZATION.md)。
+API 规范覆盖 **145 个版本化 API 操作与 10 个看板内部操作**，公共 SDK 提供 144 个可调用操作。实现说明见 [后端优化说明](docs/BACKEND-OPTIMIZATION.md)。
 
 未来移动客户端使用 `/api/v1`，现有网页使用的 `/api` 保持兼容。v1 JSON 响应统一包含 `data`、`error` 和 `meta`，继续使用 Bearer JWT、`X-Wall-Id` 及原有权限/限流。开放协议不代表匿名开放用户数据，浏览器跨域来源仍需配置 `ALLOWED_ORIGINS`。
 

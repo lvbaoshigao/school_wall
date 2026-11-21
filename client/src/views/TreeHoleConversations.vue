@@ -198,7 +198,7 @@ onBeforeUnmount(() => { disposed = true; scope.dispose(); stopPolling(); documen
             v-for="conv in visibleMine"
             :key="conv.conversation_id"
             class="conv-item glass"
-            :class="{ selected: selectedIds.has(conv.conversation_id) }"
+            :class="{ selected: selectedIds.has(conv.conversation_id), 'has-unread': Number(conv.unread_count) > 0 }"
             :role="selectMode ? undefined : 'link'"
             :tabindex="selectMode ? -1 : 0"
             @keydown.space.self.prevent="openChat(conv.conversation_id)"
@@ -218,7 +218,7 @@ onBeforeUnmount(() => { disposed = true; scope.dispose(); stopPolling(); documen
               </div>
               <div class="conv-preview">
                 <span class="preview-text">{{ conv.is_mine ? '我：' : '' }}{{ conv.last_message || '暂无消息' }}</span>
-                <span v-if="conv.unread_count > 0" class="unread-badge">{{ conv.unread_count }}</span>
+                <span v-if="conv.unread_count > 0" class="unread-badge">{{ conv.unread_count > 99 ? '99+' : conv.unread_count }}</span>
               </div>
             </div>
           </div>
@@ -346,4 +346,9 @@ onBeforeUnmount(() => { disposed = true; scope.dispose(); stopPolling(); documen
 .conv-avatar { color: #fff; }
 .compact .conv-item { padding: var(--space-3); }
 @media (max-width: 480px) { .header-actions { width: 100%; gap: var(--space-2); } .conv-item { gap: var(--space-3); padding: var(--space-3); } .conv-avatar { width: 2.5rem; height: 2.5rem; } .conv-item > .btn { margin-left: auto; } .pending-item { flex-wrap: wrap; } .conv-name { overflow-wrap: anywhere; } }
+.conv-item.has-unread { border-color: var(--accent-line); box-shadow: inset 3px 0 0 var(--accent-1), var(--shadow-md); background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-card)); }
+.conv-item.has-unread .preview-text { color: var(--text-primary); }
+.conv-item .unread-badge { flex-shrink: 0; }
+.conv-item.has-unread.selected { background: color-mix(in srgb, var(--accent-1) 18%, var(--surface-card)); }
+.preview-text { min-width: 0; }
 </style>

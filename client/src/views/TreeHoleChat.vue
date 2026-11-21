@@ -248,7 +248,7 @@ onBeforeUnmount(() => { disposed = true; scope.dispose(); loadVersion++; context
 
     <div v-if="loadError" class="state-error" role="alert">{{ loadError }} <button class="btn btn-secondary btn-sm" @click="retryMessages">重试</button></div>
     <template v-if="!loading && (!loadError || chatMessages.length)">
-      <div ref="messagesArea" class="messages-area" role="log" aria-label="树洞消息" :aria-live="loadingHistory ? 'off' : 'polite'" aria-relevant="additions text" @scroll.passive="onMessagesScroll">
+      <div ref="messagesArea" class="messages-area glass" :class="{ 'is-empty': chatMessages.length === 0 }" role="log" aria-label="树洞消息" :aria-live="loadingHistory ? 'off' : 'polite'" aria-relevant="additions text" @scroll.passive="onMessagesScroll">
         <div v-if="hasMoreHistory" class="history-control"><button class="btn btn-secondary btn-sm" :disabled="loadingHistory" @click="loadOlderMessages">{{ loadingHistory ? '正在加载…' : '加载更早的消息' }}</button></div>
         <p v-if="historyError" class="state-error" role="alert">{{ historyError }} <button class="btn btn-secondary btn-sm" @click="loadOlderMessages">重试</button></p>
         <div v-if="chatMessages.length === 0" class="empty-state">
@@ -362,6 +362,8 @@ onBeforeUnmount(() => { disposed = true; scope.dispose(); loadVersion++; context
 .state-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin: 12px 0; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--text-primary); line-height: 1.6; }
 .tree-hole-chat { height: calc(100dvh - 112px); min-height: 22rem; }
 .messages-area { min-height: 0; overscroll-behavior: contain; }
+.messages-area.is-empty { display: flex; flex-direction: column; }
+.messages-area.is-empty > .empty-state { width: 100%; box-sizing: border-box; margin-block: auto; padding-block: clamp(2rem, 8vh, 5rem); }
 .message-content { white-space: pre-wrap; line-height: 1.65; }
 .input-area input { min-width: 0; }
 @media (max-width: 480px) { .chat-header { flex-wrap: wrap; padding: 10px; } .header-right { margin-left: auto; } .input-area { padding: 10px 8px; gap: 6px; } .message-bubble { max-width: 90%; } }
@@ -372,7 +374,9 @@ onBeforeUnmount(() => { disposed = true; scope.dispose(); loadVersion++; context
 .chat-title p { font-size: var(--font-xs); margin-top: var(--space-1); }
 .messages-area { overflow-anchor: none; gap: var(--space-4); }
 .history-control { display: flex; justify-content: center; margin-bottom: var(--space-3); }
-.message-bubble { background: var(--bg-input); }
+.message-bubble { background: var(--surface-raised); border: 1px solid var(--border-strong); }
+.message-mine .message-bubble { background: color-mix(in srgb, var(--accent-1) 22%, var(--surface-raised)); border-color: var(--accent-line); }
+.message-bubble.revoked { background: var(--surface-raised); opacity: .88; }
 .message-content { font-size: var(--font-base); line-height: 1.7; overflow-wrap: anywhere; }
 .message-time { font-size: var(--font-xs); }
 .message-label { font-size: var(--font-xs); }
@@ -387,5 +391,5 @@ onBeforeUnmount(() => { disposed = true; scope.dispose(); loadVersion++; context
 .compact .messages-area { gap: var(--space-2); }
 .compact .message-bubble { padding: .4rem .7rem; }
 .state-error { flex-shrink: 0; }
-@media (max-width: 480px) { .messages-area { padding: var(--space-3) var(--space-1); } .message-bubble { max-width: 92%; } .header-right { width: 100%; justify-content: flex-end; } }
+@media (max-width: 480px) { .messages-area { padding: var(--space-3); } .message-bubble { max-width: 92%; } .header-right { width: 100%; justify-content: flex-end; } }
 </style>

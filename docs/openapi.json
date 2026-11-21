@@ -802,7 +802,7 @@
         "tags": [
           "auth"
         ],
-        "description": "Authenticated, static schema with all 39 preference keys, defaults and scopes; no user values.",
+        "description": "Authenticated, static schema with all 40 preference keys, defaults and scopes; no user values.",
         "responses": {
           "200": {
             "description": "Success; original legacy payload is inside data.",
@@ -11369,7 +11369,7 @@
     "/setup/status": {
       "get": {
         "operationId": "getSetupStatus",
-        "summary": "Read first-run state and account count",
+        "summary": "Read first-run state, account count, and test availability",
         "tags": [
           "setup"
         ],
@@ -11404,16 +11404,27 @@
                       "type": "object",
                       "properties": {
                         "initialized": {
-                          "type": "boolean"
+                          "type": "boolean",
+                          "description": "Whether permanent first-run setup is complete. A temporary test does not set this flag."
                         },
                         "userCount": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "testAvailable": {
+                          "type": "boolean",
+                          "description": "Whether this request can start a test on an uninitialized instance with no database file."
+                        },
+                        "temporary": {
+                          "type": "boolean",
+                          "description": "Whether a one-time test is active in this server process."
                         }
                       },
                       "required": [
                         "initialized",
-                        "userCount"
+                        "userCount",
+                        "testAvailable",
+                        "temporary"
                       ]
                     },
                     "error": {
@@ -11448,18 +11459,28 @@
     "/setup": {
       "post": {
         "operationId": "initializeSite",
-        "summary": "Initialize a fresh site with a caller-chosen account and first wall",
+        "summary": "Initialize a site or start a one-time local test",
         "tags": [
           "setup"
         ],
-        "description": "Only succeeds while uninitialized and with no existing account. Creates the first super-admin and active wall atomically. The request is subject to a dedicated IP rate limit and deployment whitelist.",
+        "description": "Permanent setup creates the first super-admin and active wall atomically. Send only {\"temporary\":true} to create an ordinary test user and wall in memory instead. Temporary setup requires direct loopback access and no existing database, disallows image uploads, and ends when the server stops. Both modes are subject to a dedicated IP rate limit and deployment whitelist.",
         "security": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SetupInput"
+                "oneOf": [
+                  { "$ref": "#/components/schemas/SetupInput" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "temporary": { "type": "boolean", "enum": [true] }
+                    },
+                    "required": ["temporary"],
+                    "additionalProperties": false
+                  }
+                ]
               }
             }
           }
@@ -11517,6 +11538,9 @@
           },
           "403": {
             "$ref": "#/components/responses/Error403"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
           },
           "413": {
             "$ref": "#/components/responses/Error413"
@@ -11596,11 +11620,11 @@
     "/wallpaper": {
       "get": {
         "operationId": "getWallpaper",
-        "summary": "Select an available wallpaper asset",
+        "summary": "Select a Bing daily wallpaper or local fallback",
         "tags": [
           "wallpaper"
         ],
-        "description": "When there are no supported image files, file and url are null and total is zero. The URL points to a static asset outside the API.",
+        "description": "Defaults to Bing: today when idx is omitted, or an archive index from 0 to 7. Bing indices wrap to the available archive length. source=local selects from the local collection: omitted idx is random; 0 to 1000000 wraps to the collection size. Failed Bing retrieval uses the existing cache when possible, then falls back to local assets. The response source is the actual source and fallback indicates Bing-to-local fallback. Empty local collections return file/url=null, total=0 and idx=0. Bing URLs are stable same-origin /api/wallpaper/image/{file} paths; local URLs use /rele/. Resolve returned URLs against the deployment origin, not the versioned base path.",
         "security": [],
         "responses": {
           "200": {
@@ -11620,6 +11644,15 @@
                   "type": "string"
                 },
                 "description": "Server-generated correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Re-evaluate the selection; cache the returned stable image URL instead."
               }
             },
             "content": {
@@ -11650,8 +11683,296 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
           "403": {
             "$ref": "#/components/responses/Error403"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "parameters": [
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "bing",
+                "local"
+              ],
+              "default": "bing"
+            },
+            "description": "Requested wallpaper source. A Bing failure may return a local fallback."
+          },
+          {
+            "name": "idx",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "description": "Zero-based selector. Bing only accepts 0–7; local accepts 0–1000000. The selected index wraps at the available source total. Omit for today on Bing or a random local image. Invalid values, fractions, arrays and objects return 400."
+          }
+        ]
+      }
+    },
+    "/wallpaper/image/{file}": {
+      "get": {
+        "operationId": "getWallpaperImage",
+        "summary": "Read a cached Bing wallpaper JPEG",
+        "tags": [
+          "wallpaper"
+        ],
+        "description": "Returns only an existing cached Bing JPEG identified by a 64-character lowercase hexadecimal hash followed by .jpg. Obtain file from getWallpaper. The body is raw image bytes with no v1 JSON envelope. Unknown or malformed names return 404; this endpoint never fetches arbitrary remote images. Standard file range and conditional requests are supported. Successful images are public and immutable; v1 JSON errors keep the error envelope. The legacy /api/wallpaper/image/{file} URL returned by getWallpaper and the /api/v1 alias serve the same bytes.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}\\.jpg$",
+              "minLength": 68,
+              "maxLength": 68
+            },
+            "description": "Cached Bing JPEG filename returned by the wallpaper selection endpoint."
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional byte range; valid ranges may return 206."
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional ETag validator; a fresh cached file may return 304."
+          },
+          {
+            "name": "If-Modified-Since",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional HTTP date validator; a fresh cached file may return 304."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw cached JPEG bytes. No JSON envelope.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "public, max-age=31536000, immutable"
+                  ]
+                },
+                "description": "The cached JPEG URL is stable and may be cached for one year."
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "nosniff"
+                  ]
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator generated from the cached file."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "HTTP date for the cached file."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "bytes"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Requested byte range of the cached JPEG. No JSON envelope.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "public, max-age=31536000, immutable"
+                  ]
+                },
+                "description": "The cached JPEG URL is stable and may be cached for one year."
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "nosniff"
+                  ]
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator generated from the cached file."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "HTTP date for the cached file."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "bytes"
+                  ]
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The cached image has not changed. No response body.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "public, max-age=31536000, immutable"
+                  ]
+                },
+                "description": "The cached JPEG URL is stable and may be cached for one year."
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "nosniff"
+                  ]
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Validator generated from the cached file."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "HTTP date for the cached file."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "bytes"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
           },
           "429": {
             "$ref": "#/components/responses/Error429"
@@ -17609,6 +17930,14 @@
             ],
             "default": "system"
           },
+          "wallpaper_source": {
+            "type": "string",
+            "enum": [
+              "bing",
+              "local"
+            ],
+            "default": "bing"
+          },
           "chat_send_shortcut": {
             "type": "string",
             "enum": [
@@ -17673,6 +18002,7 @@
           "unread_interval",
           "accent",
           "theme_mode",
+          "wallpaper_source",
           "chat_send_shortcut",
           "chat_density",
           "chat_poll_interval"
@@ -17873,6 +18203,14 @@
                 ],
                 "default": "system"
               },
+              "wallpaper_source": {
+                "type": "string",
+                "enum": [
+                  "bing",
+                  "local"
+                ],
+                "default": "bing"
+              },
               "chat_send_shortcut": {
                 "type": "string",
                 "enum": [
@@ -17954,6 +18292,7 @@
                 "unread_interval",
                 "accent",
                 "theme_mode",
+                "wallpaper_source",
                 "chat_send_shortcut",
                 "chat_density",
                 "chat_poll_interval"
@@ -18352,7 +18691,11 @@
           },
           "token": {
             "type": "string",
-            "description": "Bearer for the administrator created by first setup."
+            "description": "Bearer for the new administrator, or for the ordinary user in a one-time test."
+          },
+          "temporary": {
+            "type": "boolean",
+            "description": "Present and true for a one-time test. The token is valid only for this server process."
           },
           "user": {
             "$ref": "#/components/schemas/AccountIdentity"
@@ -18408,22 +18751,50 @@
         "properties": {
           "file": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Cached Bing JPEG filename or local image filename; null when no image is available."
           },
           "url": {
             "type": "string",
-            "description": "Same-origin /rele/ path or null.",
+            "description": "Same-origin /api/wallpaper/image/{file} for Bing, /rele/{file} for local, or null. Resolve against the deployment origin; the Bing image also has an /api/v1 alias.",
             "nullable": true
           },
           "total": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Number of available images from the actual returned source."
+          },
+          "idx": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000,
+            "description": "Selected zero-based index after wrapping at total; zero when empty."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "bing",
+              "local"
+            ],
+            "description": "Actual returned source, including local fallback."
+          },
+          "fallback": {
+            "type": "boolean",
+            "description": "True when Bing was requested but the result fell back to local, including an empty local result."
+          },
+          "copyright": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Bing image attribution, present only for Bing results."
           }
         },
         "required": [
           "file",
           "url",
-          "total"
+          "total",
+          "idx",
+          "source",
+          "fallback"
         ]
       },
       "VisitsResult": {

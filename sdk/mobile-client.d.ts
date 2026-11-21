@@ -71,7 +71,7 @@ export interface Preferences {
   unread_interval: '0' | '15' | '30' | '60' | '300'; notify_on_comment: boolean; notify_on_like: boolean;
   reduce_motion: boolean; high_contrast: boolean; always_focus_ring: boolean; disable_blur: boolean;
   accent: 'indigo' | 'teal' | 'forest' | 'amber' | 'rose' | 'slate';
-  theme_mode: 'system' | 'light' | 'dark'; wallpaper_enabled: boolean;
+  theme_mode: 'system' | 'light' | 'dark'; wallpaper_enabled: boolean; wallpaper_source: 'bing' | 'local';
   chat_send_shortcut: 'enter' | 'modifier'; chat_density: 'comfortable' | 'compact';
   chat_show_timestamps: boolean; chat_poll_interval: '10' | '20' | '30' | '60';
 }

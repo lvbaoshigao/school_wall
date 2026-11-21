@@ -46,7 +46,16 @@ const themeMode = computed(() => {
 })
 const currentTheme = computed(() => themeMode.value === 'system' ? (systemDark.value ? 'dark' : 'light') : themeMode.value)
 const wallpaperEnabled = computed(() => settingsStore.prefs.wallpaper_enabled !== false)
+const wallpaperSource = computed(() => settingsStore.prefs.wallpaper_source === 'local' ? 'local' : 'bing')
 let wallpaperRequest = 0
+let wallpaperAbort = null
+let wallpaperPreloadCancel = null
+let wallpaperInitializing = false
+let wallpaperIndex = 0
+let wallpaperTotal = 0
+let wallpaperActualSource = 'bing'
+let previousWallpaperUrl = ''
+let wallpaperImageFallbackUsed = false
 
 async function setThemeMode(mode) {
   if (!['system', 'light', 'dark'].includes(mode) || themeSaving.value) return false
@@ -104,53 +113,117 @@ function scheduleViewport() {
 watch(isConversationLayout, conversation => {
   document.documentElement.dataset.appLayout = conversation ? 'conversation' : 'page'
 }, { immediate: true })
-watch(wallpaperEnabled, enabled => {
-  if (enabled && mounted.value) getRandomWallpaper()
+watch([wallpaperEnabled, wallpaperSource], ([enabled]) => {
+  if (enabled && mounted.value && !wallpaperInitializing) getRandomWallpaper()
   else if (!enabled) {
     wallpaperRequest++
+    cancelWallpaperWork()
     wallpaperUrl.value = ''
+    previousWallpaperUrl = ''
     wallpaperLoaded.value = false
+    wallpaperTotal = 0
   }
 })
 
-async function getRandomWallpaper() {
+function cancelWallpaperWork() {
+  wallpaperAbort?.abort()
+  wallpaperAbort = null
+  wallpaperPreloadCancel?.()
+  wallpaperPreloadCancel = null
+}
+
+function safeWallpaperUrl(value) {
+  if (typeof value !== 'string') throw new Error('Missing wallpaper URL')
+  const url = new URL(value, window.location.origin)
+  if (url.origin !== window.location.origin || url.username || url.password || url.search || url.hash) throw new Error('Invalid wallpaper origin')
+  const bing = /^\/api\/wallpaper\/image\/[a-f0-9]{64}\.jpg$/.test(url.pathname)
+  const local = /^\/rele\/[^/]+\.(jpe?g|png|gif|webp|bmp)$/i.test(url.pathname)
+  const name = decodeURIComponent(url.pathname.split('/').pop())
+  if ((!bing && !local) || /[/\\\u0000-\u001f]/.test(name) || name.startsWith('.')) throw new Error('Invalid wallpaper path')
+  return url.href
+}
+
+function preloadWallpaper(url) {
+  return new Promise((resolve, reject) => {
+    const image = new window.Image()
+    let finished = false
+    const finish = error => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      image.onload = image.onerror = null
+      if (wallpaperPreloadCancel === cancel) wallpaperPreloadCancel = null
+      if (error) { image.removeAttribute?.('src'); reject(error) }
+      else resolve()
+    }
+    const cancel = () => finish(new Error('Wallpaper request superseded'))
+    const timer = setTimeout(() => finish(new Error('Wallpaper image timed out')), 6000)
+    wallpaperPreloadCancel = cancel
+    image.onload = async () => {
+      try { if (image.decode) await image.decode(); finish() }
+      catch { finish(new Error('Wallpaper image cannot be decoded')) }
+    }
+    image.onerror = () => finish(new Error('Wallpaper image failed to load'))
+    image.src = url
+    if (image.complete && image.naturalWidth > 0) image.onload()
+  })
+}
+
+async function getRandomWallpaper(rotate = false, forceLocal = false) {
   if (!wallpaperEnabled.value) return
   const requestId = ++wallpaperRequest
-  wallpaperLoaded.value = false
-  // 先请求本地壁纸服务：本地图片可控、无第三方依赖、断网也能出图。
-  // 原实现把外部 Bing 接口写在一个 try{...return} 里 —— 该 try 永远不可能抛错，
-  // 于是 return 一定执行，下面的 api.get('/wallpaper') 属于永远跑不到的死代码，
-  // onWallpaperError 的兜底也被这条死路径架空。
-  try {
-    const res = await api.get('/wallpaper')
-    if (requestId !== wallpaperRequest) return
-    if (res.data?.url) {
-      const url = new URL(res.data.url, window.location.origin)
-      // 壁纸只使用本站服务返回的本地资源，避免加载未授权第三方。
-      if (url.origin !== window.location.origin) throw new Error('Invalid wallpaper origin')
-      url.searchParams.set('t', String(Date.now()))
-      wallpaperUrl.value = url.href
+  cancelWallpaperWork()
+  const controller = new AbortController()
+  wallpaperAbort = controller
+  // 自动回退后，换图沿实际本地图库轮换；刷新或切换来源时重试首选来源。
+  const useLocal = forceLocal || wallpaperSource.value === 'local' || (rotate && wallpaperActualSource === 'local')
+  const sources = useLocal ? ['local'] : ['bing', 'local']
+  const nextIndex = rotate && wallpaperTotal ? (wallpaperIndex + 1) % wallpaperTotal : undefined
+  // 图片已解码才替换当前壁纸；保留原有 URL 也让浏览器可以复用缓存。
+  for (const source of sources) {
+    try {
+      const params = { source }
+      if (nextIndex !== undefined) params.idx = nextIndex
+      const res = await api.get('/wallpaper', { params, signal: controller.signal, timeout: 8000 })
+      if (requestId !== wallpaperRequest) return
+      const url = safeWallpaperUrl(res.data?.url)
+      if (url !== wallpaperUrl.value) await preloadWallpaper(url)
+      if (requestId !== wallpaperRequest || !wallpaperEnabled.value) return
+      if (url !== wallpaperUrl.value) previousWallpaperUrl = wallpaperUrl.value
+      wallpaperUrl.value = url
+      wallpaperLoaded.value = true
+      wallpaperIndex = Number.isInteger(res.data?.idx) ? res.data.idx : 0
+      wallpaperTotal = Number.isInteger(res.data?.total) && res.data.total > 0 ? res.data.total : 0
+      wallpaperActualSource = new URL(url).pathname.startsWith('/rele/') ? 'local' : 'bing'
+      wallpaperImageFallbackUsed = wallpaperActualSource === 'local'
       return
+    } catch {
+      if (requestId !== wallpaperRequest || controller.signal.aborted) return
     }
-  } catch (e) {}
-  // 本地取不到再退回主题色渐变底（bg-gradient 常驻，视觉上不会空白）
-  if (requestId !== wallpaperRequest) return
-  wallpaperUrl.value = ''
-  wallpaperLoaded.value = true
+  }
+  // 断网时继续显示已有壁纸；首次加载失败则使用常驻主题渐变底。
+  if (requestId === wallpaperRequest) wallpaperLoaded.value = true
 }
 
-function onWallpaperLoad() {
-  wallpaperLoaded.value = true
+function onWallpaperLoad(event) {
+  if (!event?.target || event.target.currentSrc === wallpaperUrl.value || event.target.src === wallpaperUrl.value) wallpaperLoaded.value = true
 }
 
-function onWallpaperError() {
-  // 本地壁纸文件缺失时不无限重试，直接回落到渐变底
-  wallpaperUrl.value = ''
+function onWallpaperError(event) {
+  const failedUrl = event?.target?.currentSrc || event?.target?.src
+  if (failedUrl && failedUrl !== wallpaperUrl.value) return
+  wallpaperUrl.value = previousWallpaperUrl
+  previousWallpaperUrl = ''
   wallpaperLoaded.value = true
+  if (!wallpaperImageFallbackUsed && wallpaperEnabled.value) {
+    wallpaperImageFallbackUsed = true
+    getRandomWallpaper(false, true)
+  }
 }
 
 onMounted(async () => {
   mounted.value = true
+  wallpaperInitializing = true
   applyTheme()
   updateViewport()
   systemTheme?.addEventListener?.('change', onSystemThemeChange)
@@ -166,11 +239,13 @@ onMounted(async () => {
       await Promise.all([wallStore.fetchMyWalls(), settingsStore.loadSettings()])
     }
   }
+  wallpaperInitializing = false
   if (mounted.value) getRandomWallpaper()
 })
 onBeforeUnmount(() => {
   mounted.value = false
   wallpaperRequest++
+  cancelWallpaperWork()
   systemTheme?.removeEventListener?.('change', onSystemThemeChange)
   window.removeEventListener('resize', scheduleViewport)
   window.removeEventListener('orientationchange', scheduleViewport)
@@ -204,7 +279,7 @@ onBeforeUnmount(() => {
     <div class="bg-gradient"></div>
 
     <Navbar
-      @change-wallpaper="getRandomWallpaper"
+      @change-wallpaper="getRandomWallpaper(true)"
       @toggle-theme="toggleTheme"
       :theme="currentTheme"
       :theme-mode="themeMode"

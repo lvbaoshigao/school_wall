@@ -93,7 +93,7 @@ function createRateLimiter(windowMs, maxRequests, name = '', keyOf = rateKey) {
 }
 
 async function main() {
-  const db = await initDB();
+  const db = await initDB({ deferInitialSave: true });
   const app = express();
   // 默认会在每个响应上发 `X-Powered-By: Express`，白送框架指纹给扫描器。
   app.disable('x-powered-by');
@@ -220,6 +220,16 @@ async function main() {
   const { whitelistGuard } = require('./lib/ipguard');
   app.use(whitelistGuard);
 
+  // 这些文件走持久目录，不能混入一次性测试的数据。
+  app.use(['/api/upload/image', '/api/avatar/upload', '/api/auth/avatar', '/api/upload/bug-image'], (req, res, next) => {
+    if (db.temporarySecret) return res.status(403).json({ error: '一次性测试不支持上传图片' });
+    next();
+  });
+  app.use('/uploads', (req, res, next) => {
+    if (db.temporarySecret) return res.sendStatus(404);
+    next();
+  });
+
   // 根路由 - 显示服务状态（仅在没有前端构建产物时；有 dist 时这条路径归 SPA）
   if (!hasDist) app.get('/', (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -328,26 +338,8 @@ a:hover{text-decoration:underline}
     });
   });
 
-  // 壁纸
-  const relePath = path.join(__dirname, '../rele');
-  if (fs.existsSync(relePath)) {
-    app.use('/rele', express.static(relePath, {
-      maxAge: '30d',
-      etag: true,
-      lastModified: true,
-      immutable: true,
-    }));
-  }
-
-  app.get('/api/wallpaper', (req, res) => {
-    try {
-      if (!fs.existsSync(relePath)) return res.json({ file: null, url: null, total: 0 });
-      const files = fs.readdirSync(relePath).filter(f => /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f));
-      if (!files.length) return res.json({ file: null, url: null, total: 0 });
-      const f = files[Math.floor(Math.random() * files.length)];
-      res.json({ file: f, url: `/rele/${f}`, total: files.length });
-    } catch { res.json({ file: null, url: null, total: 0 }); }
-  });
+  // 必应每日壁纸经本站代理缓存；保留 rele 本地来源及离线回退。
+  app.use(require('./lib/wallpaper').createWallpaperRouter());
 
   // 近一小时访问量（内存统计，重启清零）
   app.get('/api/stats/visits', authRequired, (req, res) => {
@@ -424,7 +416,10 @@ a:hover{text-decoration:underline}
   function gracefulShutdown(signal) {
     console.log(`\n[${signal}] 正在关闭服务...`);
     server.close(() => {
-      try { getWrapper()?.saveNow(); console.log('[DB] 数据库已保存'); } catch (e) { console.error('[DB] 退出落盘失败:', e.message); }
+      try {
+        if (db.saveNow()) console.log('[DB] 数据库已保存');
+        else if (db.temporarySecret) console.log('[DB] 一次性测试数据已丢弃');
+      } catch (e) { console.error('[DB] 退出落盘失败:', e.message); }
       console.log('[Server] 已关闭');
       process.exit(0);
     });

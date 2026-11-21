@@ -1,8 +1,8 @@
 const express = require('express');
 const crypto = require('crypto');
-const { authRequired, wallContext } = require('../middleware/auth');
+const { authRequired, wallContext, settleBan } = require('../middleware/auth');
 const { activeWallMember, treeConversation, canAccessTree, countAccessibleTreeUnread, primeTreeAccess, primeWallMembers, treeVolunteer } = require('../lib/treeAccess');
-const { userCan } = require('../lib/permissions');
+const { effectivePerms, userCan } = require('../lib/permissions');
 const { presentMessages, canQuoteMessage } = require('../lib/messagePresentation');
 
 const router = express.Router();
@@ -22,8 +22,14 @@ function optionalWallId(req) {
   return ids.every(id => id > 0 && id === ids[0]) ? ids[0] : -1;
 }
 
+// Arguments are internal SQL expressions (placeholders or column names), never user input.
+function blockedPairQuery(a, b) {
+  return `SELECT 1 FROM friends f WHERE f.status='blocked' AND
+    ((f.user_id=${a} AND f.friend_id=${b}) OR (f.user_id=${b} AND f.friend_id=${a}))`;
+}
+
 function isBlocked(req, a, b) {
-  return !!req.db.prepare("SELECT 1 FROM friends WHERE status='blocked' AND ((user_id=? AND friend_id=?) OR (user_id=? AND friend_id=?)) LIMIT 1").get(a, b, b, a);
+  return !!req.db.prepare(blockedPairQuery('?', '?') + ' LIMIT 1').get(a, b, b, a);
 }
 
 function validateTreeAccess(req, res, next) {
@@ -111,32 +117,53 @@ router.get('/conversation/:userId', authRequired, (req, res) => {
     if (typeof req.query.q !== 'string' || !req.query.q.trim() || req.query.q.length > 100 || cursors.after || cursors.around_id) return res.status(400).json({ error: '搜索参数组合无效' });
     keyword = req.query.q.trim();
   }
-  let where = "m.type='private' AND m.is_anonymous=0 AND ((m.sender_id=? AND m.receiver_id=? AND m.sender_deleted=0) OR (m.sender_id=? AND m.receiver_id=? AND m.receiver_deleted=0))";
-  const params = [req.user.id, otherId, otherId, req.user.id];
+  const userId = req.user.id;
+  const outgoing = 'm.sender_id=? AND m.receiver_id=? AND m.sender_deleted=0';
+  const incoming = 'm.sender_id=? AND m.receiver_id=? AND m.receiver_deleted=0';
+  let filter = "m.type='private' AND m.is_anonymous=0";
+  const filterParams = [];
   if (keyword !== null) {
-    where += " AND m.content LIKE ? ESCAPE '\\'";
-    params.push('%' + keyword.replace(/[\\%_]/g, '\\$&') + '%');
+    filter += " AND m.content LIKE ? ESCAPE '\\'";
+    filterParams.push('%' + keyword.replace(/[\\%_]/g, '\\$&') + '%');
   }
+  const where = `(${outgoing} OR ${incoming}) AND ${filter}`;
+  const params = [userId, otherId, otherId, userId, ...filterParams];
   const select = 'SELECT ' + messageColumns + ' FROM messages m WHERE ' + where;
+  const fetchPage = (cursor, after, count) => {
+    if (!count) return [];
+    const order = after ? 'ASC' : 'DESC';
+    const boundary = cursor ? (after ? ' AND m.id>?' : ' AND m.id<?') : '';
+    const tail = [...filterParams, ...(cursor ? [cursor] : []), count];
+    // Legacy self-messages can match both directions. Keep their single-row semantics.
+    if (userId === otherId) {
+      return req.db.prepare(`${select}${boundary} ORDER BY m.id ${order} LIMIT ?`)
+        .all(userId, otherId, otherId, userId, ...tail);
+    }
+    // The pair indexes can stream each direction. Merge at most two pages of IDs
+    // instead of sorting the entire matching OR history or materializing its bodies.
+    const branch = visibility => `SELECT m.id FROM messages m WHERE ${visibility}
+      AND ${filter}${boundary} ORDER BY m.id ${order} LIMIT ?`;
+    return req.db.prepare(`SELECT ${messageColumns} FROM messages m JOIN (
+      SELECT id FROM (${branch(outgoing)})
+      UNION ALL
+      SELECT id FROM (${branch(incoming)})
+      ORDER BY id ${order} LIMIT ?
+    ) page ON page.id=m.id ORDER BY m.id ${order}`)
+      .all(userId, otherId, ...tail, otherId, userId, ...tail, count);
+  };
   let messages;
   let moreInDirection = false;
   if (cursors.around_id) {
     const anchor = req.db.prepare(select + ' AND m.id=?').get(...params, cursors.around_id);
     if (!anchor) return res.status(404).json({ error: '消息不存在或不可见' });
-    let lower = req.db.prepare(select + ' AND m.id<? ORDER BY m.id DESC LIMIT ?').all(...params, anchor.id, Math.floor((limit - 1) / 2));
-    const higher = req.db.prepare(select + ' AND m.id>? ORDER BY m.id ASC LIMIT ?').all(...params, anchor.id, limit - 1 - lower.length);
+    let lower = fetchPage(anchor.id, false, Math.floor((limit - 1) / 2));
+    const higher = fetchPage(anchor.id, true, limit - 1 - lower.length);
     const remaining = limit - 1 - lower.length - higher.length;
-    if (remaining) {
-      const extra = req.db.prepare(select + ' AND m.id<? ORDER BY m.id DESC LIMIT ?').all(...params, lower.at(-1)?.id || anchor.id, remaining);
-      lower = lower.concat(extra);
-    }
+    if (remaining) lower = lower.concat(fetchPage(lower.at(-1)?.id || anchor.id, false, remaining));
     messages = lower.reverse().concat(anchor, higher);
   } else {
     const after = !!cursors.after;
-    const cursor = cursors.after || cursors.before;
-    const cursorSql = cursor ? (' AND m.id' + (after ? '>' : '<') + '?') : '';
-    const rowParams = cursor ? [...params, cursor, limit + 1] : [...params, limit + 1];
-    const rows = req.db.prepare(select + cursorSql + ' ORDER BY m.id ' + (after ? 'ASC' : 'DESC') + ' LIMIT ?').all(...rowParams);
+    const rows = fetchPage(cursors.after || cursors.before, after, limit + 1);
     moreInDirection = rows.length > limit;
     messages = rows.slice(0, limit);
     if (!after) messages.reverse();
@@ -499,6 +526,56 @@ router.put('/:id/revoke', authRequired, (req, res) => {
 
 // ===== 树洞匿名倾诉 =====
 
+const treeTakeoverNotice = '有树洞志愿者来陪你聊聊了';
+const treeVolunteerReplied = 'm.assignee_id!=0 AND m.sender_id=m.assignee_id';
+// 使用既有系统通知识别显式接手，单方隐藏通知不会清除状态。
+const treeTakeoverRecorded = 'm.assignee_id!=0 AND m.sender_id IS NULL AND m.content=?';
+const treeAssignee = root => root.assignee_id || root.receiver_id;
+const treeAssigneeKey = root => root.wall_id + ':' + treeAssignee(root);
+
+function eligibleTreeAssignees(req, roots) {
+  const pairs = new Map();
+  for (const root of roots) {
+    const id = treeAssignee(root);
+    if (id) pairs.set(treeAssigneeKey(root), [root.wall_id, id]);
+  }
+  const wanted = [...pairs.values()];
+  // 复用成员资格及墙内封禁到期结算。只给有接手记录的会话查资格。
+  primeWallMembers(req, wanted);
+  const active = wanted.filter(([wallId, userId]) => activeWallMember(req, wallId, userId));
+  const eligible = new Set();
+  const userActive = new Map();
+  const perm = 'wall.tree_hole';
+  for (let offset = 0; offset < active.length; offset += 200) {
+    const batch = active.slice(offset, offset + 200);
+    const values = batch.map(() => '(?,?)').join(',');
+    const status = req.db.prepare(`
+      WITH wanted(wall_id,user_id) AS (VALUES ${values})
+      SELECT w.wall_id,u.id,u.role,u.status,u.ban_until,m.wall_role,
+             g.effect AS global_effect,p.effect AS wall_effect
+      FROM wanted w JOIN users u ON u.id=w.user_id
+      JOIN wall_members m ON m.wall_id=w.wall_id AND m.user_id=w.user_id
+      LEFT JOIN user_permissions g ON g.user_id=u.id AND g.wall_id=0 AND g.perm='wall.tree_hole'
+      LEFT JOIN user_permissions p ON p.user_id=u.id AND p.wall_id=w.wall_id AND p.perm='wall.tree_hole'
+    `).all(...batch.flat());
+    for (const row of status) {
+      if (!userActive.has(row.id)) {
+        settleBan(req.db, row);
+        userActive.set(row.id, row.status === 'active');
+      }
+      if (!userActive.get(row.id)) continue;
+      const overrides = [
+        { wall_id: 0, perm, effect: row.global_effect },
+        { wall_id: row.wall_id, perm, effect: row.wall_effect },
+      ];
+      if (effectivePerms({ globalRole: row.role, wallRole: row.wall_role, overrides, wallId: row.wall_id }).has(perm)) {
+        eligible.add(row.wall_id + ':' + row.id);
+      }
+    }
+  }
+  return eligible;
+}
+
 // 发起倾诉（当前墙内，路由到本墙树洞志愿者/墙管理者）
 router.post('/tree-hole', authRequired, wallContext, (req, res) => {
   const { content } = req.body;
@@ -529,8 +606,8 @@ router.post('/tree-hole', authRequired, wallContext, (req, res) => {
 });
 
 // 树洞对话列表
-// 返回：我的对话（我是参与者）+ 待响应的倾诉（在我做志愿者的墙里、我不是参与者、
-// 且分配到的志愿者还没回应过的对话）
+// 待响应只展示在我能做志愿者的墙内、我不是参与者且没有志愿者回复的对话；
+// 已有接手通知时，只有现任志愿者失去资格或双方拉黑才重新排队。
 router.get('/tree-hole/conversations', authRequired, (req, res) => {
   const userId = req.user.id;
   const mine = req.db.prepare("WITH mine AS (SELECT conversation_id,MAX(created_at) AS last_time,MAX(id) AS last_id,COUNT(*) AS msg_count,SUM(CASE WHEN receiver_id=? AND is_read=0 THEN 1 ELSE 0 END) AS unread_count FROM messages WHERE type='tree_hole' AND conversation_id!='' AND ((sender_id=? AND sender_deleted=0) OR (receiver_id=? AND receiver_deleted=0)) GROUP BY conversation_id), states AS (SELECT m.conversation_id,MAX(CASE WHEN m.content='[对话已关闭]' AND m.is_revoked=1 THEN 1 ELSE 0 END) AS is_closed FROM messages m JOIN mine ON mine.conversation_id=m.conversation_id WHERE m.type='tree_hole' GROUP BY m.conversation_id) SELECT mine.conversation_id,mine.last_time,mine.msg_count,mine.unread_count,last.content AS last_message,last.sender_id AS last_sender_id,states.is_closed FROM mine JOIN messages last ON last.id=mine.last_id JOIN states ON states.conversation_id=mine.conversation_id ORDER BY mine.last_time DESC").all(userId, userId, userId);
@@ -553,12 +630,41 @@ router.get('/tree-hole/conversations', authRequired, (req, res) => {
   for (let offset = 0; offset < myWallIds.length; offset += 400) {
     const batch = myWallIds.slice(offset, offset + 400);
     const holes = batch.map(() => '?').join(',');
-    const rows = req.db.prepare("WITH candidates AS (SELECT conversation_id,MIN(created_at) AS first_time,COUNT(*) AS msg_count FROM messages WHERE type='tree_hole' AND conversation_id!='' AND wall_id IN (" + holes + ") GROUP BY conversation_id), states AS (SELECT m.conversation_id,MIN(m.id) AS first_id,MAX(CASE WHEN m.sender_id=? OR m.receiver_id=? THEN 1 ELSE 0 END) AS participated,MAX(CASE WHEN m.assignee_id!=0 AND m.sender_id=m.assignee_id THEN 1 ELSE 0 END) AS answered,MAX(CASE WHEN m.content='[对话已关闭]' AND m.is_revoked=1 THEN 1 ELSE 0 END) AS closed FROM messages m JOIN candidates c ON c.conversation_id=m.conversation_id WHERE m.type='tree_hole' GROUP BY m.conversation_id) SELECT c.conversation_id,c.first_time,c.msg_count,first.id,first.sender_id,first.receiver_id,first.wall_id,first.assignee_id,first.content,first.created_at FROM candidates c JOIN states s ON s.conversation_id=c.conversation_id JOIN messages first ON first.id=s.first_id JOIN users u ON u.id=first.sender_id AND u.status='active' WHERE s.participated=0 AND s.answered=0 AND s.closed=0 AND NOT EXISTS (SELECT 1 FROM friends f WHERE f.status='blocked' AND ((f.user_id=? AND f.friend_id=first.sender_id) OR (f.friend_id=? AND f.user_id=first.sender_id))) ORDER BY c.first_time DESC").all(...batch, userId, userId, userId, userId);
+    const rows = req.db.prepare(`
+      WITH candidates AS (
+        SELECT conversation_id,MIN(created_at) AS first_time,COUNT(*) AS msg_count
+        FROM messages
+        WHERE type='tree_hole' AND conversation_id!='' AND wall_id IN (${holes})
+        GROUP BY conversation_id
+      ), states AS (
+        SELECT m.conversation_id,MIN(m.id) AS first_id,
+          MAX(CASE WHEN m.sender_id=? OR m.receiver_id=? THEN 1 ELSE 0 END) AS participated,
+          MAX(CASE WHEN ${treeVolunteerReplied} THEN 1 ELSE 0 END) AS replied,
+          MAX(CASE WHEN ${treeTakeoverRecorded} THEN 1 ELSE 0 END) AS taken_over,
+          MAX(CASE WHEN m.content='[对话已关闭]' AND m.is_revoked=1 THEN 1 ELSE 0 END) AS closed
+        FROM messages m JOIN candidates c ON c.conversation_id=m.conversation_id
+        WHERE m.type='tree_hole' GROUP BY m.conversation_id
+      )
+      SELECT c.conversation_id,c.first_time,c.msg_count,first.id,first.sender_id,
+        first.receiver_id,first.wall_id,first.assignee_id,first.content,first.created_at,
+        CASE WHEN s.taken_over=1 THEN NOT EXISTS (
+          ${blockedPairQuery('first.sender_id', 'COALESCE(NULLIF(first.assignee_id,0),first.receiver_id)')}
+        ) ELSE 0 END AS unblocked_takeover
+      FROM candidates c JOIN states s ON s.conversation_id=c.conversation_id
+      JOIN messages first ON first.id=s.first_id JOIN users u ON u.id=first.sender_id AND u.status='active'
+      WHERE s.participated=0 AND s.replied=0 AND s.closed=0 AND NOT EXISTS (
+        ${blockedPairQuery('?', 'first.sender_id')}
+      )
+      ORDER BY c.first_time DESC
+    `).all(...batch, userId, userId, treeTakeoverNotice, userId, userId);
     pending.push(...rows);
   }
   primeTreeAccess(req, pending.map(row => row.conversation_id), pending);
   primeWallMembers(req, pending.map(row => [row.wall_id, row.sender_id]));
-  const pendingConversations = pending.filter(row => treeVolunteer(req, row.wall_id) && activeWallMember(req, row.wall_id, row.sender_id)).sort((a, b) => String(b.first_time || '').localeCompare(String(a.first_time || '')) ).map(row => ({
+  const allowed = pending.filter(row => treeVolunteer(req, row.wall_id) && activeWallMember(req, row.wall_id, row.sender_id));
+  const held = eligibleTreeAssignees(req, allowed.filter(row => row.unblocked_takeover));
+  const pendingConversations = allowed.filter(row => !row.unblocked_takeover || !held.has(treeAssigneeKey(row)))
+    .sort((a, b) => String(b.first_time || '').localeCompare(String(a.first_time || ''))).map(row => ({
     conversation_id: row.conversation_id,
     first_time: row.first_time,
     msg_count: row.msg_count,
@@ -724,28 +830,40 @@ router.post('/tree-hole/:conversationId/assign', authRequired, (req, res) => {
   ).get(convId);
   if (closed) return res.status(400).json({ error: '该对话已关闭' });
 
-  // 「有没有人在跟进」看的是被分配的志愿者是否真的开口过，而不是 assignee_id 是否为 0。
-  // 发起倾诉时就会随机分配一名志愿者，assignee_id 从一开始就非 0 ——
-  // 按旧写法这里永远命中「已被响应」，响应功能从来没生效过。
-  const answered = req.db.prepare(
-    "SELECT id FROM messages WHERE type='tree_hole' AND conversation_id=? AND assignee_id != 0 AND sender_id = assignee_id LIMIT 1"
-  ).get(convId);
-  if (answered) return res.status(400).json({ error: '该对话已有志愿者在跟进' });
+  // A real reply keeps its history binding. An unanswered explicit takeover
+  // only holds while the current assignee can still reply to this initiator.
+  const { state } = req.db.prepare(`
+    SELECT CASE
+      WHEN EXISTS(SELECT 1 FROM messages m WHERE m.type='tree_hole'
+        AND m.conversation_id=? AND ${treeVolunteerReplied}) THEN 'replied'
+      WHEN EXISTS(SELECT 1 FROM messages m WHERE m.type='tree_hole'
+        AND m.conversation_id=? AND ${treeTakeoverRecorded}) THEN 'taken_over'
+      ELSE 'unclaimed' END AS state
+  `).get(convId, convId, treeTakeoverNotice);
+  const held = state === 'taken_over' && !isBlocked(req, firstMsg.sender_id, treeAssignee(firstMsg)) &&
+    eligibleTreeAssignees(req, [firstMsg]).has(treeAssigneeKey(firstMsg));
+  if (state === 'replied' || held) {
+    return res.status(400).json({ error: '该对话已有志愿者在跟进' });
+  }
 
   const initiatorId = firstMsg.sender_id;
+  // Reassign the visible copies and record the takeover notice as one operation.
+  req.db.exec('SAVEPOINT tree_takeover');
+  try {
+    req.db.prepare("UPDATE messages SET assignee_id=? WHERE type='tree_hole' AND conversation_id=?").run(userId, convId);
+    req.db.prepare("UPDATE messages SET receiver_id=?, receiver_deleted=0, is_read=0 WHERE type='tree_hole' AND conversation_id=? AND sender_id=?")
+      .run(userId, convId, initiatorId);
 
-  // 接手：既要改 assignee_id，也要接替原志愿者成为对话的另一方。
-  // 只改 assignee_id 不够 —— 读取和回复都按 sender_id/receiver_id 判定参与者，
-  // 不改 receiver_id 的话，接手的人转头就会被自己接的对话 403 挡在门外。
-  req.db.prepare("UPDATE messages SET assignee_id=? WHERE type='tree_hole' AND conversation_id=?").run(userId, convId);
-  req.db.prepare("UPDATE messages SET receiver_id=?, receiver_deleted=0, is_read=0 WHERE type='tree_hole' AND conversation_id=? AND sender_id=?")
-    .run(userId, convId, initiatorId);
-
-  // 发送一条系统消息通知倾诉者
-  req.db.prepare(`
-    INSERT INTO messages (sender_id, receiver_id, wall_id, type, content, is_anonymous, conversation_id, assignee_id, link)
-    VALUES (NULL, ?, ?, 'tree_hole', '有树洞志愿者来陪你聊聊了', 0, ?, ?, ?)
-  `).run(initiatorId, wallId, convId, userId, `/tree-hole/chat/${convId}`);
+    req.db.prepare(`
+      INSERT INTO messages (sender_id, receiver_id, wall_id, type, content, is_anonymous, conversation_id, assignee_id, link)
+      VALUES (NULL, ?, ?, 'tree_hole', ?, 0, ?, ?, ?)
+    `).run(initiatorId, wallId, treeTakeoverNotice, convId, userId, `/tree-hole/chat/${convId}`);
+    req.db.exec('RELEASE SAVEPOINT tree_takeover');
+  } catch (error) {
+    req.db.exec('ROLLBACK TO SAVEPOINT tree_takeover');
+    req.db.exec('RELEASE SAVEPOINT tree_takeover');
+    throw error;
+  }
 
   res.json({ message: '已接入对话' });
 });

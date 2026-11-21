@@ -19,7 +19,7 @@ export function pollMilliseconds(value) {
 }
 
 export function shouldSendMessage(event, shortcut = 'enter', mobile = false) {
-  if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || event.shiftKey || event.altKey) return false
+  if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || event.repeat || event.shiftKey || event.altKey) return false
   const modifier = event.ctrlKey || event.metaKey
   return mobile || shortcut === 'modifier' ? !!modifier : true
 }

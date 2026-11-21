@@ -619,7 +619,7 @@ onBeforeUnmount(() => {
     <div v-if="loading && messages.length === 0" class="chat-loading" aria-busy="true" aria-label="正在加载聊天记录"><SkeletonCard :lines="2" /><SkeletonCard :lines="2" /><SkeletonCard :lines="3" /></div>
     <template v-else>
       <div v-if="viewingContext" class="context-banner"><span>正在查看较早的消息</span><button type="button" class="text-action" @click="returnToLatest">返回最新</button></div>
-      <div ref="messagesArea" class="messages-area" tabindex="0" aria-label="聊天记录，可滚动查看历史" @scroll.passive="onMessagesScroll">
+      <div ref="messagesArea" class="messages-area glass" :class="{ 'is-empty': messages.length === 0 }" tabindex="0" aria-label="聊天记录，可滚动查看历史" @scroll.passive="onMessagesScroll">
         <div class="history-actions">
           <button v-if="hasMore" type="button" class="history-button" :disabled="historyLoading || contextLoading" @click="loadHistory('before')">{{ historyLoading ? '加载中…' : '加载更早的消息' }}</button>
           <span v-else-if="messages.length" class="history-start">已经到最早的消息</span>
@@ -724,8 +724,10 @@ onBeforeUnmount(() => {
 .header-tool { display: inline-flex; justify-content: center; align-items: center; gap: 5px; min-width: 44px; min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: 0.8125rem; border-radius: var(--radius-sm); cursor: pointer; }
 .header-tool:hover, .header-tool[aria-expanded="true"] { background: var(--accent-soft); color: var(--text-link); }
 .chat-loading { flex: 1; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
-.messages-area { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; padding: 4px 14px 12px; scrollbar-gutter: stable; }
+.messages-area { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; padding: 12px 14px; scrollbar-gutter: stable; }
 .history-actions { display: flex; justify-content: center; padding: 4px 0 14px; }
+.messages-area.is-empty { display: flex; flex-direction: column; }
+.messages-area.is-empty > .empty-state { width: 100%; box-sizing: border-box; margin-block: auto; padding-block: clamp(2rem, 8vh, 5rem); }
 .history-button { min-height: 40px; background: var(--bg-card); border: 1px solid var(--border); color: var(--text-secondary); border-radius: var(--radius-pill); padding: 8px 16px; font: inherit; font-size: 0.8125rem; cursor: pointer; }
 .history-button:hover { background: var(--accent-soft); }
 .history-start { color: var(--text-muted); font-size: 0.75rem; }
@@ -734,9 +736,9 @@ onBeforeUnmount(() => {
 .message-column { max-width: min(82%, 38rem); min-width: 0; }
 .message-author { display: block; color: var(--text-muted); font-size: 0.75rem; margin: 0 3px 5px; }
 .message-mine .message-author { text-align: right; }
-.message-bubble { padding: 11px 15px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 15px 15px 15px 4px; }
-.message-mine .message-bubble { background: var(--accent-soft); border-color: var(--accent-line); border-radius: 15px 15px 4px 15px; }
-.message-bubble.revoked { background: transparent; border-style: dashed; color: var(--text-muted); }
+.message-bubble { padding: 11px 15px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 15px 15px 15px 4px; }
+.message-mine .message-bubble { background: color-mix(in srgb, var(--accent-1) 22%, var(--surface-raised)); border-color: var(--accent-line); border-radius: 15px 15px 4px 15px; }
+.message-bubble.revoked { background: var(--surface-raised); border-style: dashed; color: var(--text-secondary); }
 .message-content { margin: 0; font-size: 0.9375rem; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-meta { display: flex; gap: 8px; padding: 5px 3px 0; color: var(--text-muted); font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
 .message-mine .message-meta { justify-content: flex-end; }
@@ -803,7 +805,7 @@ onBeforeUnmount(() => {
 .density-compact .message-item { margin-bottom: 6px; }
 .density-compact .message-bubble { padding: 8px 12px; }
 .density-compact .message-author { margin-bottom: 2px; }
-@media (max-width: 640px) { .chat-header { padding: 8px; gap: 8px; } .header-tool span { display: none; } .header-tool { padding: 7px; } .back-button { padding: 8px; } .chat-heading p { display: none; } .messages-area { padding: 3px 0 8px; } .message-column { max-width: 90%; } .message-action { min-height: 38px; } .report-modal { padding: 18px; } .chat-room { gap: 8px; } }
+@media (max-width: 640px) { .chat-header { padding: 8px; gap: 8px; } .header-tool span { display: none; } .header-tool { padding: 7px; } .back-button { padding: 8px; } .chat-heading p { display: none; } .messages-area { padding: var(--space-3) var(--space-2); } .message-column { max-width: 90%; } .message-action { min-height: 38px; } .report-modal { padding: 18px; } .chat-room { gap: 8px; } }
 @media (max-height: 560px) { .chat-heading p, .message-author { display: none; } .chat-header { padding-block: 4px; } .outbox { max-height: 20%; } .search-panel { max-height: 42%; } }
 @media (hover: none) and (pointer: coarse), (max-width: 640px) {
   .history-button, .message-action, .text-action, .reply-bar-close, .latest-button, .emoji-btn { min-height: 44px; min-width: 44px; }

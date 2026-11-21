@@ -10,6 +10,7 @@ import Icon from './Icon.vue'
 import { useMarkdown } from '../composables/useMarkdown'
 import { useToast } from '../composables/useToast'
 import { useFocusTrap } from '../composables/useFocusTrap'
+import { observeScrollProgress } from '../composables/useScrollProgress'
 
 const emit = defineEmits(['change-wallpaper', 'toggle-theme'])
 const props = defineProps({
@@ -39,6 +40,7 @@ const unreadTreeHole = ref(0)
 const unreadSystem = ref(0)
 const unreadAnnouncement = ref(0)
 let unreadTimer = null
+let stopScrollProgress = null
 
 const isLoggedIn = computed(() => userStore.isLoggedIn)
 const user = computed(() => userStore.user)
@@ -148,6 +150,7 @@ function onResize() {
 }
 
 onMounted(() => {
+  stopScrollProgress = observeScrollProgress(navRef.value)
   document.addEventListener('click', onDocClick, true)
   window.addEventListener('resize', onResize)
   if (userStore.isLoggedIn) {
@@ -170,6 +173,7 @@ watch(unreadScope, () => {
 watch(() => router.currentRoute.value.fullPath, closeMenus)
 
 onUnmounted(() => {
+  stopScrollProgress?.()
   document.removeEventListener('click', onDocClick, true)
   window.removeEventListener('resize', onResize)
   clearInterval(unreadTimer)
@@ -228,7 +232,6 @@ async function openDashboard() {
   }
 }
 
-const isHomePage = computed(() => router.currentRoute.value.path === '/')
 const mobileBack = computed(() => ({
   ChatRoom: { path: '/chat', label: '返回聊天列表' },
   TreeHoleChat: { path: '/tree-hole/list', label: '返回匿名会话列表' },
@@ -300,7 +303,7 @@ function renderAnnouncement(content) {
 
 <template>
   <nav ref="navRef" class="navbar" :class="{ 'menu-open': showMobileMenu }" aria-label="主导航" @keydown="onNavKeydown" @focusout="onNavFocusout">
-    <div class="nav-inner" :class="{ 'nav-inner-wide': isHomePage }">
+    <div class="nav-inner">
       <!-- 左：已登录显示墙切换器（取代原 logo），未登录显示 logo -->
       <div class="nav-left">
         <button v-if="mobileBack" class="nav-btn nav-icon-btn nav-back mobile-only" :aria-label="mobileBack.label" :title="mobileBack.label" @click="go(mobileBack.path)"><Icon name="chevron-left" :size="20" /></button>
@@ -549,7 +552,13 @@ function renderAnnouncement(content) {
 
 <style scoped>
 .navbar {
-  /* Safe-area spacing belongs to the outer rail; the centered capsule is its own surface. */
+  /* The app keeps a constant expanded clearance; morph only this fixed surface. */
+  --nav-scroll-progress: 0;
+  --nav-morph: var(--nav-scroll-progress);
+  --nav-current-top: calc(var(--nav-morph) * var(--navbar-shell-top-gap));
+  --nav-current-height: calc(var(--navbar-expanded-height) - var(--nav-morph) * (var(--navbar-expanded-height) - var(--app-nav-height)));
+  --nav-current-bottom: calc(var(--safe-area-top) + var(--nav-current-top) + var(--nav-current-height));
+  --nav-side-inset: calc(var(--nav-morph) * max(var(--navbar-shell-side-gap), var(--safe-area-left), var(--safe-area-right), (100% - var(--navbar-shell-width)) / 2));
   position: fixed;
   top: var(--visual-viewport-offset-top);
   left: 0;
@@ -558,7 +567,7 @@ function renderAnnouncement(content) {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  padding: var(--safe-area-top) max(var(--navbar-shell-side-gap), var(--safe-area-right)) 0 max(var(--navbar-shell-side-gap), var(--safe-area-left));
+  padding: var(--safe-area-top) 0 0;
   background: transparent;
   border: 0;
   pointer-events: none;
@@ -577,17 +586,16 @@ function renderAnnouncement(content) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 216px minmax(0, 1fr);
   align-items: center;
-  width: 100%;
-  max-width: var(--navbar-shell-width);
+  width: calc(100% - var(--nav-side-inset) * 2);
   min-width: 0;
-  height: var(--app-nav-height);
-  margin: var(--navbar-shell-top-gap) auto;
-  padding: 0 clamp(10px, 1.35vw, 18px);
+  height: var(--nav-current-height);
+  margin: var(--nav-current-top) auto 0;
+  padding: 0 max(clamp(12px, 1.35vw, 24px), var(--safe-area-left), var(--safe-area-right));
   gap: 16px;
   overflow: visible;
   pointer-events: auto;
   border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
-  border-radius: var(--radius-pill);
+  border-radius: calc(var(--nav-morph) * var(--nav-current-height));
   background: var(--surface-nav);
   -webkit-backdrop-filter: var(--nav-glass-filter);
   backdrop-filter: var(--nav-glass-filter);
@@ -603,10 +611,6 @@ function renderAnnouncement(content) {
   pointer-events: none;
 }
 .nav-inner > * { position: relative; z-index: 1; min-width: 0; }
-
-/* 主页正文容器放宽到了 1280px（App.vue 的 .main-wide），
-   顶栏内容不跟着放宽的话，左侧墙切换器会缩在左分类栏右边，对不齐。 */
-.nav-inner-wide { max-width: var(--navbar-shell-width); }
 
 .nav-left { display: flex; align-items: center; gap: 16px; min-width: 0; grid-column: 1; }
 .nav-center { display: flex; align-items: center; justify-content: center; min-width: 0; grid-column: 2; }
@@ -852,15 +856,16 @@ function renderAnnouncement(content) {
 
 .mobile-menu {
   position: absolute;
-  top: calc(var(--app-header-height) + var(--navbar-shell-top-gap));
-  left: 0;
-  right: 0;
+  top: calc(var(--nav-current-bottom) + 8px);
+  left: max(8px, var(--safe-area-left));
+  right: max(8px, var(--safe-area-right));
   background: var(--surface-panel);
   -webkit-backdrop-filter: var(--glass-strong-filter);
   backdrop-filter: var(--glass-strong-filter);
   padding: 12px;
   z-index: 2;
-  max-height: max(0px, calc(var(--visual-viewport-height) - var(--visual-viewport-offset-top) - var(--app-header-height) - 16px));
+  /* The rail already follows offsetTop; viewport height is relative to that shifted origin. */
+  max-height: max(0px, calc(var(--visual-viewport-height) - var(--app-header-height) - 16px));
   overscroll-behavior: contain;
   padding-bottom: max(12px, var(--safe-area-bottom));
   overflow-y: auto;
@@ -948,7 +953,7 @@ function renderAnnouncement(content) {
 
 @media (max-width: 1120px) {
   /* Secondary links fold into the existing mobile panel; no destination is removed. */
-  .nav-inner { display: flex; justify-content: space-between; padding-inline: 8px; }
+  .nav-inner { display: flex; justify-content: space-between; padding-inline: max(8px, var(--safe-area-left), var(--safe-area-right)); }
   .nav-left { flex: 1; max-width: calc(100% - 52px); }
   .wall-switcher, .wall-btn { max-width: 100%; }
   .mobile-menu-btn, .nav-back { flex-shrink: 0; }
@@ -959,19 +964,22 @@ function renderAnnouncement(content) {
 .mobile-menu { transform-origin: top center; }
 html[data-blur='off'] .navbar .nav-inner,
 html[data-blur='off'] .navbar .mobile-menu,
-html[data-blur='off'] .navbar .dropdown { background: var(--surface-raised); }
+html[data-blur='off'] .navbar .dropdown { background: var(--surface-raised); -webkit-backdrop-filter: none; backdrop-filter: none; }
 html[data-high-contrast='on'] .navbar .nav-inner,
 html[data-high-contrast='on'] .navbar .mobile-menu {
   background: var(--surface-raised);
   border: 2px solid var(--text-primary);
   box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 @media (prefers-reduced-transparency: reduce) {
   .navbar .nav-inner, .navbar .mobile-menu, .navbar .dropdown { background: var(--surface-raised); -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
-@media (max-width: 1120px) {
-  .navbar .nav-inner { border-radius: 24px; }
-  .nav-back { display: inline-flex; }
+/* A stationary full-width header avoids scroll-linked resizing for motion-sensitive users. */
+html[data-reduce-motion='on'] .navbar { --nav-morph: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .navbar { --nav-morph: 0; }
 }
 
 

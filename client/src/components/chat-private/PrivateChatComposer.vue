@@ -73,7 +73,7 @@ defineExpose({ focus, insertText })
 </template>
 
 <style scoped>
-.private-composer { flex-shrink: 0; padding: 10px 12px 8px; border-radius: var(--radius-lg); }
+.private-composer { flex-shrink: 0; padding: 10px 12px 8px; border-radius: var(--radius-lg); border-color: var(--border-strong); box-shadow: var(--shadow-md); }
 .composer-row { display: flex; gap: 8px; align-items: flex-end; }
 .composer-emoji { display: inline-flex; align-items: center; justify-content: center; width: 44px; min-height: 46px; flex-shrink: 0; background: transparent; border: 0; color: var(--text-secondary); border-radius: var(--radius-sm); cursor: pointer; }
 .composer-emoji:hover, .composer-emoji[aria-expanded="true"] { background: var(--accent-soft); color: var(--text-link); }

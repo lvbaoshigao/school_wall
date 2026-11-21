@@ -178,7 +178,7 @@ function authRequired(req, res, next) {
   try {
     // Reuse only the immutable HS256 claims and one synchronous rate-limiter row.
     // Every later authRequired call reloads the current account state from the database.
-    const authenticated = requestAuth.getRequestAuth(req, req.db, SECRET);
+    const authenticated = requestAuth.getRequestAuth(req, req.db, req.db?.temporarySecret ?? SECRET);
     if (!authenticated.claims) return res.status(401).json({ error: '登录已过期，请重新登录' });
     const { user } = authenticated;
     if (!user) return res.status(401).json({ error: '用户不存在' });
@@ -206,7 +206,7 @@ function authRequired(req, res, next) {
 // Shared with the front controller's rate limiter; invalid/revoked credentials fall
 // back to the IP bucket. The helper never grants a user bucket after a DB error.
 function getRateUserId(req, db) {
-  return requestAuth.getRateUserId(req, db, SECRET);
+  return requestAuth.getRateUserId(req, db, db?.temporarySecret ?? SECRET);
 }
 
 // ===== 校园墙上下文 =====

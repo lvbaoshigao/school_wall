@@ -93,7 +93,7 @@
      避免两处各写一个数字、改一处忘一处 */
   --container: 1000px;
   --container-wide: 1280px;
-  /* Shared capsule geometry keeps content, sticky rails, menus, and chat in sync. */
+  /* Keep expanded clearance stable while the fixed navigation surface contracts. */
   --navbar-shell-width: 1180px;
   --navbar-shell-side-gap: 12px;
   --navbar-shell-top-gap: 8px;
@@ -105,12 +105,13 @@
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
   --app-nav-height: 64px;
+  --navbar-expanded-height: 80px;
   --page-top-gap: 36px;
   --wallpaper-image-opacity: 1;
   --wallpaper-image-filter: brightness(0.76) saturate(0.9);
   --wallpaper-overlay-top: 18%;
   --wallpaper-overlay-bottom: 40%;
-  --app-header-height: calc(var(--safe-area-top) + var(--app-nav-height) + var(--navbar-shell-top-gap));
+  --app-header-height: calc(var(--safe-area-top) + var(--navbar-expanded-height));
   --visual-viewport-height: 100dvh;
   --visual-viewport-width: 100vw;
   --visual-viewport-offset-top: 0px;
@@ -183,6 +184,7 @@ html[data-reduce-motion='on'] * {
 html[data-blur='off'] .glass,
 html[data-blur='off'] .glass-strong,
 html[data-blur='off'] .navbar,
+html[data-blur='off'] .navbar .nav-inner,
 html[data-blur='off'] .dropdown,
 html[data-blur='off'] .mobile-menu {
   -webkit-backdrop-filter: none !important;
@@ -351,7 +353,7 @@ html[data-keyboard-open='on'] .fab-root,
 html[data-keyboard-open='on'] .back-to-top,
 html[data-app-layout='conversation'] .back-to-top { display: none; }
 @media (max-width: 1120px) {
-  :root { --app-nav-height: 60px; --navbar-shell-top-gap: 7px; --navbar-shell-side-gap: 8px; --page-top-gap: 24px; }
+  :root { --app-nav-height: 60px; --navbar-expanded-height: 72px; --navbar-shell-top-gap: 7px; --navbar-shell-side-gap: 8px; --page-top-gap: 24px; }
 }
 @media (pointer: coarse) {
   :root { --navbar-shell-side-gap: 8px; }

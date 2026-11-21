@@ -5,7 +5,9 @@ param(
     [ValidateSet('Deploy', 'Dev', 'Stop')]
     [string]$Mode,
     [ValidateRange(1, 65535)]
-    [int]$Port = 3000
+    [int]$Port = 3000,
+    [ValidateRange(1, 65535)]
+    [int]$ClientPort = 5173
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -24,10 +26,33 @@ function Assert-FreePort([int]$ListenPort) {
         throw "Port $ListenPort is already in use. Stop its owner explicitly or choose another port."
     }
 }
-function Get-OwnedBackend([int]$ProcessId) {
+function Assert-DependenciesAreIdle {
+    # The requested ports may be free while another instance is using this checkout's DLLs.
+    $roots = @(
+        (Join-Path $ServerDir 'node_modules') + '\'
+        (Join-Path $ClientDir 'node_modules') + '\'
+    )
+    foreach ($nodeProcess in @(Get-Process -Name node -ErrorAction SilentlyContinue)) {
+        try { $modules = $nodeProcess.Modules } catch { continue }
+        foreach ($module in $modules) {
+            foreach ($root in $roots) {
+                if ($module.FileName -and $module.FileName.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+                    $ports = @(Get-NetTCPConnection -OwningProcess $nodeProcess.Id -State Listen -ErrorAction SilentlyContinue |
+                        Select-Object -ExpandProperty LocalPort -Unique)
+                    $binding = if ($ports.Count -gt 0) { ' (listening on port ' + ($ports -join ', ') + ')' } else { '' }
+                    throw "Cannot run npm ci: Node PID $($nodeProcess.Id)$binding is using this checkout's native dependencies. Close it in its original terminal (Ctrl+C), then retry."
+                }
+            }
+        }
+    }
+}
+function Get-OwnedNodeProcess([int]$ProcessId, [string]$Entry) {
     $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
     if ($null -eq $candidate -or $candidate.Name -ine 'node.exe') { return $null }
-    $entryPattern = '(?:^|\s)"?' + [regex]::Escape($BackendEntry) + '"?(?:\s|$)'
+    # Match the main script immediately after the Node executable, not an arbitrary argument.
+    $entryToken = '"' + [regex]::Escape($Entry) + '"'
+    if ($Entry -notmatch '\s') { $entryToken += '|' + [regex]::Escape($Entry) }
+    $entryPattern = '^\s*(?:"[^"]+"|[^\s"]+)\s+(?:' + $entryToken + ')(?=\s|$)'
     if ($candidate.CommandLine -notmatch $entryPattern) { return $null }
     return $candidate
 }
@@ -56,30 +81,69 @@ function Wait-ForBackend([System.Diagnostics.Process]$BackendProcess, [int]$List
         }
         Start-Sleep -Milliseconds 500
     }
-    throw 'Backend did not become healthy. Check the server window; no successful startup is reported.'
+    throw "Backend did not become healthy at $healthUrl. Check the server window; no successful startup is reported."
+}
+function Wait-ForFrontend([System.Diagnostics.Process]$FrontendProcess, [int]$ListenPort) {
+    $frontendUrl = 'http://127.0.0.1:' + $ListenPort + '/'
+    $healthUrl = $frontendUrl + 'api/health'
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        $FrontendProcess.Refresh()
+        if ($FrontendProcess.HasExited) { throw 'Frontend exited. Check its window for errors.' }
+        $ownedListener = @(Get-Listeners $ListenPort | Where-Object { $_.OwningProcess -eq $FrontendProcess.Id })
+        if ($ownedListener.Count -gt 0) {
+            try {
+                $page = Invoke-WebRequest -Uri $frontendUrl -UseBasicParsing -TimeoutSec 2
+                $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 2
+                if ($page.StatusCode -eq 200 -and $health.ok -eq $true) { return }
+            } catch { }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Frontend or its API proxy did not become healthy at $frontendUrl. Check the frontend window and backend port $Port."
+}
+function Stop-StartedProcess([System.Diagnostics.Process]$StartedProcess) {
+    if ($null -eq $StartedProcess) { return }
+    try {
+        $StartedProcess.Refresh()
+        if (-not $StartedProcess.HasExited) {
+            # The process handle comes only from this invocation's Start-Process.
+            Stop-Process -InputObject $StartedProcess -ErrorAction Stop
+        }
+    } catch { Write-Warning "Could not clean up started process $($StartedProcess.Id): $($_.Exception.Message)" }
 }
 
+$backend = $null
+$frontend = $null
 try {
+    if (($Mode -eq 'Dev' -or ($Mode -eq 'Stop' -and $PSBoundParameters.ContainsKey('ClientPort'))) -and $Port -eq $ClientPort) {
+        throw 'Backend and frontend must use different ports. Choose --port and --client-port explicitly.'
+    }
     if ($Mode -eq 'Stop') {
-        $owners = @(Get-Listeners $Port | Select-Object -ExpandProperty OwningProcess -Unique)
-        if ($owners.Count -eq 0) { Write-Host "No listener on port $Port."; exit 0 }
-        # Validate every owner before stopping any process. No global node.exe kill.
-        $owned = @($owners | ForEach-Object {
-            $process = Get-OwnedBackend $_
-            if ($null -eq $process) { throw "Port $Port belongs to another project or cannot be verified (PID $_). Refusing to stop it." }
-            $process
+        $targets = @(@{ Port = $Port; Entry = $BackendEntry; Name = 'backend' })
+        if ($PSBoundParameters.ContainsKey('ClientPort')) {
+            $targets += @{ Port = $ClientPort; Entry = $FrontendEntry; Name = 'frontend' }
+        }
+        # Validate all requested listeners before stopping any process.
+        $owned = @(foreach ($target in $targets) {
+            $owners = @(Get-Listeners $target.Port | Select-Object -ExpandProperty OwningProcess -Unique)
+            if ($owners.Count -eq 0) { Write-Host "No listener on port $($target.Port)." }
+            foreach ($ownerId in $owners) {
+                $process = Get-OwnedNodeProcess $ownerId $target.Entry
+                if ($null -eq $process) { throw "Port $($target.Port) belongs to another project or cannot be verified (PID $ownerId). Refusing to stop it." }
+                @{ Process = $process; Name = $target.Name }
+            }
         })
-        foreach ($process in $owned) {
-            # Closing the console can force termination on Windows. Stop only the verified PID.
+        foreach ($item in $owned) {
+            # Stop only a PID whose Node entry belongs to this checkout.
             Write-Warning 'Windows process stop may interrupt pending writes. Back up data before maintenance.'
-            Stop-Process -Id $process.ProcessId -ErrorAction Stop
-            Write-Host "Stopped this project's backend (PID $($process.ProcessId))."
+            Stop-Process -Id $item.Process.ProcessId -ErrorAction Stop
+            Write-Host "Stopped this project's $($item.Name) (PID $($item.Process.ProcessId))."
         }
         exit 0
     }
 
-    $script:NodePath = (Get-Command node.exe -CommandType Application -ErrorAction Stop).Source
-    $script:NpmPath = (Get-Command npm.cmd -CommandType Application -ErrorAction Stop).Source
+    $script:NodePath = (Get-Command node.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $script:NpmPath = (Get-Command npm.cmd -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     & $script:NodePath (Join-Path $PSScriptRoot 'check-runtime.cjs')
     if ($LASTEXITCODE -ne 0) { throw 'Node.js >=22.12.0 is required.' }
     foreach ($directory in @($ServerDir, $ClientDir)) {
@@ -87,9 +151,9 @@ try {
             throw "Missing package-lock.json in $directory"
         }
     }
-    if ($Mode -eq 'Dev' -and $Port -ne 3000) { throw 'The development proxy requires backend port 3000.' }
+    Assert-DependenciesAreIdle
     Assert-FreePort $Port
-    if ($Mode -eq 'Dev') { Assert-FreePort 5173 }
+    if ($Mode -eq 'Dev') { Assert-FreePort $ClientPort }
     # Reinstall from both locks on every invocation, including existing node_modules.
     Invoke-Npm $ServerDir @('ci', '--omit=dev', '--include=optional')
     Assert-NativeRuntime
@@ -101,28 +165,39 @@ try {
         }
     }
 
+    # Installation/build can take time; check again before spawning any child.
+    Assert-FreePort $Port
+    if ($Mode -eq 'Dev') { Assert-FreePort $ClientPort }
+
     # Child processes inherit these settings. Never trigger KEEP_DB=0's rebuild.
     $env:PORT = [string]$Port
     $env:KEEP_DB = '1'
     if (-not $env:HOST) { $env:HOST = '127.0.0.1' }
-    if ($Mode -eq 'Dev') { $env:HOST = '127.0.0.1'; $env:NODE_ENV = 'development' }
+    if ($Mode -eq 'Dev') {
+        $env:HOST = '127.0.0.1'
+        $env:NODE_ENV = 'development'
+        $env:VITE_BACKEND_PORT = [string]$Port
+        $env:VITE_PORT = [string]$ClientPort
+    }
     else { $env:NODE_ENV = 'production' }
     $backend = Start-Process -FilePath $script:NodePath -ArgumentList ('"' + $BackendEntry + '"') -WorkingDirectory $ServerDir -PassThru
     Wait-ForBackend $backend $Port
     if ($Mode -eq 'Dev') {
-        $frontend = Start-Process -FilePath $script:NodePath -ArgumentList @(('"' + $FrontendEntry + '"'), '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $ClientDir -PassThru
-        Start-Sleep -Milliseconds 500
-        $frontend.Refresh()
-        if ($frontend.HasExited) { throw 'Frontend exited. Check its window for errors.' }
-        Write-Host 'Development frontend: http://localhost:5173'
-        Write-Host 'Stop the frontend with Ctrl+C in its window; stop.bat manages the backend only.'
-    } else { Write-Host "Frontend: http://localhost:$Port" }
-    Write-Host "Dashboard: http://localhost:$Port/dashboard"
+        $frontend = Start-Process -FilePath $script:NodePath -ArgumentList @(('"' + $FrontendEntry + '"'), '--host', '127.0.0.1', '--port', [string]$ClientPort, '--strictPort') -WorkingDirectory $ClientDir -PassThru
+        Wait-ForFrontend $frontend $ClientPort
+        Write-Host "Development frontend: http://127.0.0.1:$ClientPort"
+        Write-Host "Use stop.bat --port $Port --client-port $ClientPort to stop both processes."
+    } else {
+        Write-Host "Frontend: http://127.0.0.1:$Port"
+        Write-Host "Use stop.bat --port $Port to stop this backend."
+    }
+    Write-Host "Dashboard: http://127.0.0.1:$Port/dashboard"
     Write-Host 'No default account. Complete first-time setup locally before exposing the site.'
     Write-Host "Backend listen address: $($env:HOST):$Port"
-    Write-Host "Use stop.bat --port $Port to stop this backend."
     exit 0
 } catch {
+    Stop-StartedProcess $frontend
+    Stop-StartedProcess $backend
     Write-Error $_ -ErrorAction Continue
     exit 1
 }

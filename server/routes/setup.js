@@ -1,10 +1,50 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const { randomBytes } = require('crypto');
 const { hashPassword, isPasswordInput } = require('../lib/password');
 const { getSetting } = require('../db');
 // SECRET 必须从认证模块取同一份：原来这里既没 require jwt 也没 require SECRET，
 // 初始化成功路径走到 jwt.sign 必然抛 ReferenceError，首次部署永远 500。
 const { SECRET } = require('../middleware/auth');
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+function isLocalTestRequest(req) {
+  // 本机体验不应通过外部反向代理暴露，也不接受来自外部网页的跨站请求。
+  if (req.app.enabled('trust proxy') || !LOOPBACK_ADDRESSES.has(req.socket.remoteAddress) ||
+      !LOCAL_HOSTS.has(req.hostname?.toLowerCase()) || req.get('Forwarded') ||
+      req.get('X-Forwarded-For') || req.get('X-Forwarded-Host')) return false;
+  const origin = req.get('Origin');
+  if (!origin) return true;
+  try {
+    const { hostname, protocol } = new URL(origin);
+    return LOCAL_HOSTS.has(hostname) && (protocol === 'http:' || protocol === 'https:');
+  } catch { return false; }
+}
+
+function createTestSession(db, secret) {
+  const username = 'test-' + randomBytes(6).toString('hex');
+  const nickname = '临时测试用户';
+  const wallName = '临时测试墙';
+  db.exec('BEGIN');
+  try {
+    // 空哈希使这个账号只能用本次签发的令牌，不能用密码再次登录。
+    const { lastInsertRowid: userId } = db.prepare(
+      "INSERT INTO users (username, password_hash, nickname, role, status) VALUES (?, '', ?, 'user', 'active')"
+    ).run(username, nickname);
+    const { lastInsertRowid: wallId } = db.prepare("INSERT INTO walls (name, status) VALUES (?, 'active')").run(wallName);
+    db.prepare("INSERT INTO wall_members (wall_id, user_id, wall_role, status) VALUES (?, ?, 'member', 'active')")
+      .run(wallId, userId);
+    const token = jwt.sign({ id: userId, username, role: 'user', tv: 0 }, secret, { expiresIn: '7d' });
+    db.exec('COMMIT');
+    return { message: '已进入一次性测试', temporary: true, token,
+      user: { id: userId, username, nickname, role: 'user' }, wall: { id: wallId, name: wallName } };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
 
 // 首次设置。挂载在 /api 全局限流之前 —— 它有自己更严的 setupLimiter，
 // 且系统未初始化时这是唯一可用的入口，不该和普通 API 共用额度。
@@ -15,10 +55,24 @@ module.exports = (setupLimiter) => {
   router.get('/status', (req, res) => {
     const initialized = req.db ? getSetting(req.db, 'initialized', '0') === '1' : false;
     const userCount = req.db ? req.db.prepare('SELECT COUNT(*) as c FROM users').get().c : 0;
-    res.json({ initialized, userCount });
+    const temporary = !!req.db?.temporarySecret;
+    const testAvailable = !initialized && userCount === 0 && isLocalTestRequest(req) && !!req.db?.canStartTemporary;
+    res.json({ initialized, userCount, testAvailable, temporary });
   });
 
   router.post('/', setupLimiter, (req, res) => { Promise.resolve().then(async () => {
+    if (req.body?.temporary === true) {
+      if (Object.keys(req.body).length !== 1) return res.status(400).json({ error: '测试模式无需填写初始化信息' });
+      if (!isLocalTestRequest(req)) return res.status(403).json({ error: '一次性测试仅支持本机访问' });
+      const db = req.db;
+      if (getSetting(db, 'initialized', '0') !== '1' && db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0) {
+        const session = db.startTemporary?.(secret => createTestSession(db, secret));
+        if (session) return res.json(session);
+      }
+      return res.status(409).json({ error: '一次性测试仅在没有数据库且未初始化时可用' });
+    }
+
+    if (req.db.temporarySecret) return res.status(409).json({ error: '一次性测试进行中，请重启服务后再正式初始化' });
     // 已初始化则拒绝
     if (getSetting(req.db, 'initialized', '0') === '1') {
       return res.status(400).json({ error: '系统已初始化，不能重复设置' });
@@ -68,6 +122,10 @@ module.exports = (setupLimiter) => {
       req.db.db.run('BEGIN');
       try {
         // 事务内再检查一次（理论不需要，但防御性编程）
+        if (req.db.temporarySecret) {
+          req.db.db.run('ROLLBACK');
+          return res.status(409).json({ error: '一次性测试进行中，请重启服务后再正式初始化' });
+        }
         if (getSetting(req.db, 'initialized', '0') === '1' ||
             req.db.prepare("SELECT COUNT(*) as c FROM users").get().c > 0) {
           req.db.db.run('ROLLBACK');

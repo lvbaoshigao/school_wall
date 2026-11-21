@@ -220,7 +220,7 @@ onBeforeUnmount(() => { disposed = true; scope.dispose(); stopPolling(); documen
       <div v-if="!summariesLoading && visibleConversations.length === 0 && !summariesError" class="empty-state"><Icon name="message" :size="32" /><p>{{ query.trim() ? '已加载的会话中没有匹配结果' : '还没有最近会话' }}</p><button v-if="!query.trim()" class="btn btn-secondary" @click="activeTab = 'friends'">从好友开始聊天</button></div>
       <ul v-if="!summariesLoading && visibleConversations.length" class="conversation-list">
         <li v-for="item in visibleConversations" :key="item.user_id">
-          <button class="conversation-row glass" :aria-label="'打开与' + (item.other_user?.nickname || '用户') + '的会话' + (item.unread_count ? '，' + item.unread_count + '条未读' : '')" @click="openChat(item.user_id)">
+          <button class="conversation-row glass" :class="{ 'has-unread': Number(item.unread_count) > 0 }" :aria-label="'打开与' + (item.other_user?.nickname || '用户') + '的会话' + (item.unread_count ? '，' + item.unread_count + '条未读' : '')" @click="openChat(item.user_id)">
             <AvatarIcon :src="item.other_user?.available === false ? '' : item.other_user?.avatar || ''" :name="item.other_user?.nickname || '用户'" size="lg" />
             <span class="conversation-body"><span class="conversation-top"><strong>{{ item.other_user?.nickname || '用户已不可用' }}</strong><time v-if="showTimestamps" class="text-muted">{{ timeAgo(item.last_time) }}</time></span><span class="conversation-bottom"><span class="conversation-preview"><span v-if="deliveryStatus(item)" class="delivery-state">{{ deliveryStatus(item) }} · </span>{{ lastMessageText(item) }}</span><span v-if="item.unread_count > 0" class="unread-badge">{{ item.unread_count > 99 ? '99+' : item.unread_count }}</span></span><span v-if="item.can_send === false" class="unavailable text-muted">当前无法发送消息，可查看历史</span></span>
           </button>
@@ -576,4 +576,10 @@ h2 { font-size: 1.5rem; margin-bottom: 20px; }
 .sort-tab.active { background: var(--accent-soft); color: var(--text-link); }
 .action-btn:hover { background: var(--bg-card-hover); }
 @media (max-width: 480px) { .conversation-row { padding: var(--space-4); gap: var(--space-3); } .conversation-sort { flex: 1; } .conversation-tools > .btn { flex: 1; } .conversation-top { flex-wrap: wrap; gap: var(--space-1); } .chat-hint { font-size: var(--font-xs); } }
+.conversation-row { min-width: 0; transition: background-color .2s var(--ease), border-color .2s var(--ease), box-shadow .2s var(--ease); }
+.conversation-row.has-unread { background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface-card)); border-color: var(--accent-line); box-shadow: inset 3px 0 0 var(--accent-1), var(--shadow-md); }
+.conversation-top, .conversation-bottom { min-width: 0; }
+.conversation-top strong { flex: 1; min-width: 0; }
+.conversation-preview { display: block; flex: 1; min-width: 0; }
+.conversation-row.has-unread .conversation-preview { color: var(--text-primary); }
 </style>
