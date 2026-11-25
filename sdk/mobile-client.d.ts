@@ -38,6 +38,8 @@ export interface RequestOptions {
   /** null explicitly omits the selected wall for this request. */
   wallId?: Id | null;
   token?: string | null;
+  /** Request headers; Authorization and X-Wall-Id are managed by the SDK. */
+  headers?: Record<string, string>;
 }
 export type Query = Record<string, string | number | boolean | null | undefined>;
 export interface RawRequestOptions extends RequestOptions {
@@ -160,9 +162,11 @@ export function createClientMessageId(cryptoSource?: CryptoSource): string;
 export class SchoolWallClient {
   constructor(options?: ClientOptions);
   readonly baseURL: string
-  readonly operations: Readonly<Record<OperationId, (params?: OperationParams, options?: RequestOptions) => Promise<ApiResponse<unknown> | ApiResponse<ArrayBuffer>>>>
-  callOperation<T = unknown>(operationId: OperationId, params?: OperationParams, options?: RequestOptions): Promise<ApiResponse<T> | ApiResponse<ArrayBuffer>>
-  request<T = unknown>(path: string, options?: RawRequestOptions): Promise<ApiResponse<T>>;
+  readonly operations: Readonly<Record<OperationId, (params?: OperationParams, options?: RequestOptions) => Promise<ApiResponse<unknown> | ApiResponse<ArrayBuffer | null>>>>
+  callOperation<T = unknown>(operationId: OperationId, params?: OperationParams, options?: RequestOptions): Promise<ApiResponse<T> | ApiResponse<ArrayBuffer | null>>
+  request<T = unknown>(path: string, options?: RawRequestOptions & { responseType?: 'json' | 'raw-json' }): Promise<ApiResponse<T>>;
+  request(path: string, options: RawRequestOptions & { responseType: 'binary' }): Promise<ApiResponse<ArrayBuffer | null>>;
+  request<T = unknown>(path: string, options?: RawRequestOptions): Promise<ApiResponse<T> | ApiResponse<ArrayBuffer | null>>;
   getApiInfo(options?: RequestOptions): Promise<ApiResponse<Record<string, unknown>>>;
   getCapabilities(options?: RequestOptions): Promise<ApiResponse<Capabilities>>;
   getOpenApi(options?: RequestOptions): Promise<ApiResponse<OpenApiDocument>>;

@@ -17,6 +17,37 @@ export class ApiError extends Error {
 
 function invalid(message) { return new ApiError(message, { code: 'CLIENT_VALIDATION' }); }
 function plainObject(value) { return !!value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value)); }
+const HEADER_TOKEN = /^[!#$%&'*+.^_\x60|~0-9A-Za-z-]+$/;
+const COMMON_HEADER_NAMES = new Map([
+  ['accept', 'Accept'], ['content-type', 'Content-Type'], ['range', 'Range'],
+  ['if-none-match', 'If-None-Match'], ['if-modified-since', 'If-Modified-Since'],
+]);
+function normalizeHeaders(value, allowedNames) {
+  if (value === undefined) return {};
+  if (!plainObject(value)) throw invalid('headers must be a plain object');
+  const allowed = allowedNames === undefined ? null : new Map(allowedNames.map(name => [name.toLowerCase(), name]));
+  const normalized = Object.create(null);
+  const seen = new Set();
+  for (const [name, headerValue] of Object.entries(value)) {
+    const lowerName = name.toLowerCase();
+    if (lowerName === 'authorization' || lowerName === 'x-wall-id') {
+      throw invalid('Authorization and X-Wall-Id are managed by the SDK');
+    }
+    if (!HEADER_TOKEN.test(name)) throw invalid('Invalid request header name: ' + name);
+    if (seen.has(lowerName)) throw invalid('Duplicate request header: ' + name);
+    const canonicalName = allowed ? allowed.get(lowerName) : (COMMON_HEADER_NAMES.get(lowerName) ?? name);
+    if (!canonicalName) throw invalid('Undeclared operation header: ' + name);
+    if (typeof headerValue !== 'string' || /[\u0000-\u001f\u007f]/.test(headerValue)) {
+      throw invalid('Request header values must be strings without control characters');
+    }
+    if ((lowerName === 'if-none-match' || lowerName === 'if-modified-since') && !headerValue.trim()) {
+      throw invalid('Conditional request headers must not be empty');
+    }
+    seen.add(lowerName);
+    normalized[canonicalName] = headerValue;
+  }
+  return Object.fromEntries(Object.entries(normalized));
+}
 function id(value) {
   if ((typeof value !== 'number' && typeof value !== 'string') || !/^[1-9]\d*$/.test(String(value))
     || !Number.isSafeInteger(Number(value))) throw invalid('An ID must be a positive safe integer');
@@ -104,7 +135,10 @@ export class SchoolWallClient {
       const auth = options.auth !== false;
       const token = auth ? await abortable(options.token === undefined ? this.getToken() : options.token, controller.signal) : null;
       const wallId = await abortable(options.wallId === undefined ? this.getWallId() : options.wallId, controller.signal);
-      const headers = { Accept: 'application/json' };
+      const headers = { Accept: 'application/json', ...normalizeHeaders(options.headers) };
+      const responseType = options.responseType ?? 'json';
+      const conditionalPublicBinary = !auth && responseType === 'binary'
+        && (Object.hasOwn(headers, 'If-None-Match') || Object.hasOwn(headers, 'If-Modified-Since'));
       if (token !== undefined && token !== null && token !== '') {
         if (typeof token !== 'string' || /\s/.test(token) || token.length > 8192) throw invalid('The token must be a nonempty bearer token without whitespace');
         headers.Authorization = 'Bearer ' + token;
@@ -119,13 +153,14 @@ export class SchoolWallClient {
       const fetchImpl = this.fetchImpl;
       response = await abortable(fetchImpl(url, {
         method: options.method ?? 'GET', headers, body: payload, signal: controller.signal,
-        credentials: 'omit', redirect: 'error', cache: 'no-store',
+        credentials: 'omit', redirect: 'error', cache: conditionalPublicBinary ? 'no-cache' : 'no-store',
       }), controller.signal);
       const requestId = response.headers?.get('X-Request-ID') ?? null;
        const apiVersion = response.headers?.get('X-API-Version') ?? null;
        const retryAfter = response.headers?.get('Retry-After') ?? null;
-       const responseType = options.responseType ?? 'json';
-       if (!response.ok && responseType !== 'json') {
+       const conditionalBinaryNotModified = responseType === 'binary' && response.status === 304
+         && (Object.hasOwn(headers, 'If-None-Match') || Object.hasOwn(headers, 'If-Modified-Since'));
+       if (!response.ok && responseType !== 'json' && !conditionalBinaryNotModified) {
          let errorEnvelope;
          try { errorEnvelope = JSON.parse(await abortable(response.clone().text(), controller.signal)); } catch (cause) {
            if (controller.signal.aborted) throw cause;
@@ -142,8 +177,8 @@ export class SchoolWallClient {
          throw new ApiError('The API request failed', { code: 'HTTP_ERROR', status: response.status, requestId, apiVersion, retryAfter });
        }
        if (responseType === 'binary') {
-         if (!response.ok) throw new ApiError('The API request failed', { code: 'HTTP_ERROR', status: response.status, requestId, apiVersion, retryAfter });
-         return { data: await abortable(response.arrayBuffer(), controller.signal), error: null, meta: { apiVersion: apiVersion ?? '1', requestId: requestId ?? '' }, status: response.status, headers: response.headers };
+         if (!response.ok && !conditionalBinaryNotModified) throw new ApiError('The API request failed', { code: 'HTTP_ERROR', status: response.status, requestId, apiVersion, retryAfter });
+         return { data: conditionalBinaryNotModified ? null : await abortable(response.arrayBuffer(), controller.signal), error: null, meta: { apiVersion: apiVersion ?? '1', requestId: requestId ?? '' }, status: response.status, headers: response.headers };
        }
        let parsed;
        try { parsed = JSON.parse(await abortable(response.text(), controller.signal)); }
@@ -245,6 +280,8 @@ export class SchoolWallClient {
   callOperation(operationId, params = {}, options = {}) {
     if (typeof operationId !== 'string' || !Object.hasOwn(V1_OPERATIONS, operationId)) throw invalid('Unknown or disallowed v1 operationId: ' + operationId);
     const spec = V1_OPERATIONS[operationId];
+    const declaredHeaders = spec.params.filter(parameter => parameter.in === 'header' && parameter.name.toLowerCase() !== 'x-wall-id').map(parameter => parameter.name);
+    const headers = normalizeHeaders(options.headers, declaredHeaders);
     if (!plainObject(params) || Object.keys(params).some(key => !['path', 'query', 'body', 'wallId'].includes(key))) throw invalid('Operation parameters must be { path, query, body, wallId }');
     const pathValues = params.path ?? {};
     const queryValues = params.query ?? {};
@@ -271,7 +308,7 @@ export class SchoolWallClient {
     });
     // Wall context may be supplied by the documented header or query/body alternative; authorization stays on the server.
     const wallId = wallParameter ? (params.wallId !== undefined ? params.wallId : options.wallId !== undefined ? options.wallId : (queryValues.wall_id != null || params.body?.wall_id != null ? null : undefined)) : null;
-    const requestOptions = { ...options, method: spec.method, auth: spec.auth, query: queryValues, wallId, responseType: spec.response };
+    const requestOptions = { ...options, method: spec.method, auth: spec.auth, query: queryValues, wallId, responseType: spec.response, headers };
     if (hasBody) requestOptions.body = params.body;
     else delete requestOptions.body;
     // This resource uses its path id as context, not an unrelated selected wall.

@@ -120,7 +120,23 @@ GET /wallpaper 默认 source=bing。省略 idx 选择必应当天图片；显式
 
 选择结果包含 file、url、total、idx、source、fallback；source 表示实际来源，必应获取失败且无可用缓存时会回退本地并令 fallback=true。没有本地图片时 file/url 为 null、total/idx 为 0。必应结果另有 copyright 署名。选择响应为 no-store；返回的 url 是部署源根路径，必应使用 /api/wallpaper/image/{file}，本地使用 /rele/{file}，不能直接拼到 /api/v1 后面。
 
-缓存必应图片接口只接受返回的 64 位小写十六进制哈希加 .jpg 文件名，返回原始 image/jpeg 字节；缺失或无效文件返回 404，不会按任意 URL 代理下载。成功响应为 public, max-age=31536000, immutable，支持 ETag/Last-Modified 条件请求和字节范围请求（304 无正文，206 为部分字节）；本地静态图片缓存一天。原生图片组件可用部署源解析返回 URL 并复用 HTTP 缓存。SDK 的 getWallpaperImage 操作通过 /api/v1 别名读取 ArrayBuffer，保留缓存头；SDK fetch 仍设置 cache:no-store，调用方负责缓存下载的字节。两项壁纸操作均不读取或发送 Bearer 和所选墙上下文。
+缓存必应图片接口只接受返回的 64 位小写十六进制哈希加 .jpg 文件名，返回原始 image/jpeg 字节；缺失或无效文件返回 404，不会按任意 URL 代理下载。成功响应为 public, max-age=31536000, immutable，支持 ETag/Last-Modified 条件请求和字节范围请求（304 无正文，206 为部分字节）；本地静态图片缓存一天。原生图片组件可用部署源解析返回 URL 并复用 HTTP 缓存。SDK 的 getWallpaperImage 操作通过 /api/v1 别名读取 ArrayBuffer，保留缓存头；SDK 普通请求设置 cache:no-store；公开图片携带 If-None-Match 或 If-Modified-Since 时改用 cache:no-cache 重新验证，避免 Fetch 自动添加的 no-cache 请求头令服务端跳过条件匹配。调用方仍应保存与 ETag 对应的图片字节。两项壁纸操作均不读取或发送 Bearer 和所选墙上下文。
+
+SDK 的操作调用可在第二个参数中传入 `headers`，仅接受该操作在 OpenAPI 中声明的请求头，名称不区分大小写。例如：
+
+~~~js
+const image = await api.operations.getWallpaperImage(
+  { path: { file: wallpaper.data.file } },
+  { headers: { 'If-None-Match': cachedEtag } },
+);
+if (image.status === 304) {
+  // image.data 为 null；继续使用与 cachedEtag 对应的本地缓存字节。
+} else {
+  // 200/206 的 image.data 为 ArrayBuffer；可读取 image.headers 中的缓存/范围信息。
+}
+~~~
+
+`Range`、`If-Modified-Since` 也通过同一方式传入。304 仅在二进制条件请求中作为正常缓存命中返回，不会改变普通 JSON 接口的错误处理。`Authorization`、`X-Wall-Id` 仍由 SDK 的凭证与 `wallId` 上下文管理，不能用自定义请求头覆盖。
 
 ## 分页、私聊历史、搜索与引用
 

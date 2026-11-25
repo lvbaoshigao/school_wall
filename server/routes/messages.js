@@ -65,6 +65,31 @@ function markVisibleMessagesRead(req, messages) {
   return changes;
 }
 
+// Internal SQL fragments only. Bulk actions obey the same current tree access
+// as individual actions, without loading bodies or every ordinary message row.
+function updateReceivedMessages(req, where, params, assignment) {
+  const conversations = req.db.prepare("SELECT DISTINCT conversation_id FROM messages " + where + " AND type='tree_hole'").all(...params);
+  primeTreeAccess(req, conversations.map(row => row.conversation_id));
+  const allowed = conversations.filter(row => canAccessTree(req, treeConversation(req, row.conversation_id)))
+    .map(row => row.conversation_id);
+  const update = (filter, values = []) => req.db.prepare('UPDATE messages SET ' + assignment + ' ' + where + ' AND ' + filter)
+    .run(...params, ...values).changes;
+  req.db.exec('SAVEPOINT content_messages_received');
+  try {
+    let changes = update("type!='tree_hole'");
+    for (let offset = 0; offset < allowed.length; offset += 400) {
+      const batch = allowed.slice(offset, offset + 400);
+      changes += update("type='tree_hole' AND conversation_id IN (" + batch.map(() => '?').join(',') + ')', batch);
+    }
+    req.db.exec('RELEASE SAVEPOINT content_messages_received');
+    return changes;
+  } catch (error) {
+    req.db.exec('ROLLBACK TO SAVEPOINT content_messages_received');
+    req.db.exec('RELEASE SAVEPOINT content_messages_received');
+    throw error;
+  }
+}
+
 // 最近会话按本人仍可见的最后一条私信排序，不读取树洞或表白信的身份。
 router.get('/conversations', authRequired, (req, res) => {
   const limit = req.query.limit === undefined ? 30 : positiveId(req.query.limit);
@@ -193,11 +218,11 @@ router.put('/read-batch', authRequired, (req, res) => {
   if (safe.some(id => !id)) return res.status(400).json({ error: '消息 ID 无效' });
 
   const holes = safe.map(() => '?').join(',');
-  const result = req.db.prepare(
-    `UPDATE messages SET is_read = 1 WHERE id IN (${holes}) AND receiver_id = ? AND receiver_deleted=0`
-  ).run(...safe, req.user.id);
+  const changes = updateReceivedMessages(req,
+    `WHERE id IN (${holes}) AND receiver_id=? AND receiver_deleted=0 AND is_read=0`,
+    [...safe, req.user.id], 'is_read=1');
 
-  res.json({ message: `已标记${result.changes}条消息为已读` });
+  res.json({ message: `已标记${changes}条消息为已读` });
 });
 
 // 获取收件箱（支持按类型筛选）
@@ -406,8 +431,8 @@ router.put('/read-all', authRequired, (req, res) => {
     where += ' AND type = ?';
     params.push(type);
   }
-  const result = req.db.prepare(`UPDATE messages SET is_read = 1 ${where}`).run(...params);
-  res.json({ message: `已标记${result.changes}条消息为已读` });
+  const changes = updateReceivedMessages(req, where, params, 'is_read=1');
+  res.json({ message: `已标记${changes}条消息为已读` });
 });
 
 // 批量删除收件箱消息
@@ -421,8 +446,8 @@ router.delete('/inbox/all', authRequired, (req, res) => {
     where += ' AND type = ?';
     params.push(type);
   }
-  const result = req.db.prepare(`UPDATE messages SET receiver_deleted=1 ${where}`).run(...params);
-  res.json({ message: `已删除${result.changes}条消息` });
+  const changes = updateReceivedMessages(req, where, params, 'receiver_deleted=1');
+  res.json({ message: `已删除${changes}条消息` });
 });
 
 // 单方清空聊天记录：只隐藏当前用户一侧，保留对方的副本和会话元数据。
@@ -437,13 +462,11 @@ router.delete('/chat/:userId', authRequired, (req, res) => {
 // 标记单条已读
 router.put('/:id/read', authRequired, (req, res) => {
   if (!positiveId(req.params.id)) return res.status(400).json({ error: '消息 ID 无效' });
-  const result = req.db.prepare(`
-    UPDATE messages SET is_read = 1 WHERE id = ? AND receiver_id = ? AND receiver_deleted=0
-  `).run(parseInt(req.params.id), req.user.id);
-
-  if (result.changes === 0) {
-    return res.status(404).json({ error: '消息不存在' });
-  }
+  const id = positiveId(req.params.id);
+  const msg = req.db.prepare('SELECT type,conversation_id FROM messages WHERE id=? AND receiver_id=? AND receiver_deleted=0').get(id, req.user.id);
+  if (!msg) return res.status(404).json({ error: '消息不存在' });
+  if (msg.type === 'tree_hole' && !canAccessTree(req, treeConversation(req, msg.conversation_id))) return res.status(403).json({ error: '无权操作此对话' });
+  req.db.prepare('UPDATE messages SET is_read=1 WHERE id=? AND receiver_id=? AND receiver_deleted=0').run(id, req.user.id);
   res.json({ message: '已标记为已读' });
 });
 
@@ -519,7 +542,7 @@ router.put('/:id/revoke', authRequired, (req, res) => {
     return res.status(400).json({ error: '只能撤回5分钟内的消息' });
   }
 
-  req.db.prepare("UPDATE messages SET is_revoked = 1, content = '[消息已撤回]' WHERE id = ?").run(msg.id);
+  req.db.prepare("UPDATE messages SET is_revoked = 1, title = '', content = '[消息已撤回]' WHERE id = ?").run(msg.id);
   req.db.prepare("UPDATE messages SET reply_to_content='[消息已撤回]' WHERE reply_to_id=?").run(msg.id);
   res.json({ message: '已撤回' });
 });

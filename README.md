@@ -27,6 +27,9 @@
 | 搜索 | 按帖子内容搜索 |
 | 分类筛选 | 左侧分类栏，支持按话题筛选 |
 | 删除 | 作者、管理员、超级管理员可删除 |
+| 发帖草稿 | 当前标签页自动保存，按账号和校园墙隔离；刷新或返回可恢复，发布成功或退出登录后清除 |
+
+草稿包含文字、分类、匿名/Markdown 选项和已上传的图片链接，可手动确认清除；不会保存原始图片文件。草稿使用 sessionStorage，不在不同浏览器或标签页之间同步。存储被禁用或已满时会提示，并继续允许编辑和发布。
 
 ### 💌 表白信
 | 功能 | 说明 |
@@ -189,10 +192,20 @@ Windows 入口使用随系统提供的 PowerShell、NetTCPIP 与 CIM。启动前
 
 ### 检查
 
+回归测试使用 Node.js 内置测试运行器，无需额外安装测试框架。在项目根目录执行以下命令；后端测试使用临时数据目录和本机随机端口，不读取或修改现有站点数据库。
+
 ~~~bash
+# 运行前端逻辑、后端接口与持久化、移动 SDK 的全部回归测试
+node --test
+# 也可分别运行前后端测试
+npm --prefix server test
+npm --prefix client test
+# 编译前端并检查公共 API 操作清单与 OpenAPI 保持一致
+npm --prefix client run build
+node sdk/generate-v1-operations.cjs --check
+# 依赖审计需要连接 npm registry
 (cd server && npm run audit:security)
 (cd client && npm run audit:security)
-node sdk/generate-v1-operations.cjs --check
 # 服务启动后检查数据库健康；默认后端端口为 3000
 curl --fail --max-time 5 http://127.0.0.1:3000/api/health
 ~~~

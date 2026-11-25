@@ -81,7 +81,7 @@ class DatabaseWrapper {
       // 而 rename 之后这个权限就成了 data.db 的权限 —— 于是每次落盘都会把
       // 事先 chmod 过的权限冲掉，库里的口令哈希对同机其它用户
       //（比如跑 nginx 的 www-data）重新变成可读。
-      fs.writeFileSync(tmp, Buffer.from(this.db.export()), { mode: 0o600 });
+      fs.writeFileSync(tmp, this.exportBytes(), { mode: 0o600 });
       // writeFileSync 的 mode 只在新建文件时生效，上次崩溃残留的 .tmp 会沿用旧权限，补一次
       fs.chmodSync(tmp, 0o600);
       fs.renameSync(tmp, DB_PATH);
@@ -97,9 +97,12 @@ class DatabaseWrapper {
   // 兼容旧调用点：语义已从「立刻落盘」改为「稍后落盘」
   save() { this.markDirty(); }
 
-  // 导出当前数据库的完整字节快照（备份用）。调用前应先 saveNow()，
-  // 否则导出的可能是尚未落盘的旧状态。
-  exportBytes() { return Buffer.from(this.db.export()); }
+  // 导出当前内存状态。sql.js 的 export() 会重新打开连接并重置 PRAGMA；
+  // 每次保存或备份后都恢复外键，确保后续写入和级联删除仍受约束。
+  exportBytes() {
+    try { return Buffer.from(this.db.export()); }
+    finally { this.pragma('foreign_keys = ON'); }
+  }
 }
 
 let wrapper = null;

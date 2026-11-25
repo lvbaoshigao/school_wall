@@ -106,7 +106,9 @@ function wipeNow(db) {
     started = true;
     for (const t of before.tables) db.prepare(`DELETE FROM ${quoteIdentifier(t)}`).run();
     if (db.prepare("SELECT name FROM sqlite_master WHERE name='sqlite_sequence' AND type='table'").get()) {
-      db.prepare('DELETE FROM sqlite_sequence').run();
+      // 用户 ID 是登录 JWT、Dashboard 票据和私密上传授权的身份边界。
+      // 密钥和 token_version 不随清库重置，复用旧 ID 会让旧凭据登录成新账号。
+      db.prepare("DELETE FROM sqlite_sequence WHERE name <> 'users'").run();
     }
     db.exec('COMMIT');
   } catch (error) {

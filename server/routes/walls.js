@@ -333,18 +333,26 @@ router.put('/:id/transfer-owner', authRequired, wallPathContext, requirePerm('wa
   const wallOwner = req.db.prepare('SELECT owner_id FROM walls WHERE id=?').get(req.wallId);
   if (wallOwner?.owner_id === newOwnerId) return res.status(400).json({ error: '该用户已经是墙主' });
 
-  const currentOwner = req.db.prepare("SELECT user_id FROM wall_members WHERE wall_id=? AND wall_role='owner'").get(req.wallId);
-  // 旧墙主降为墙管理员（若名额已满则降为成员）
-  if (currentOwner) {
-    const adminCount = req.db.prepare("SELECT COUNT(*) as c FROM wall_members WHERE wall_id=? AND wall_role='admin' AND status='active'").get(req.wallId).c;
-    const demoteRole = adminCount < MAX_WALL_ADMINS ? 'admin' : 'member';
-    req.db.prepare("UPDATE wall_members SET wall_role=? WHERE wall_id=? AND user_id=?").run(demoteRole, req.wallId, currentOwner.user_id);
-  }
-  req.db.prepare("UPDATE wall_members SET wall_role='owner' WHERE wall_id=? AND user_id=?").run(req.wallId, newOwnerId);
-  req.db.prepare("UPDATE walls SET owner_id=? WHERE id=?").run(newOwnerId, req.wallId);
+  // 墙内权限、墙主记录与成功通知必须一并提交，失败时不能留下已转移的管理权。
+  req.db.exec('BEGIN');
+  try {
+    const currentOwner = req.db.prepare("SELECT user_id FROM wall_members WHERE wall_id=? AND wall_role='owner'").get(req.wallId);
+    // 旧墙主降为墙管理员（若名额已满则降为成员）
+    if (currentOwner) {
+      const adminCount = req.db.prepare("SELECT COUNT(*) as c FROM wall_members WHERE wall_id=? AND wall_role='admin' AND status='active'").get(req.wallId).c;
+      const demoteRole = adminCount < MAX_WALL_ADMINS ? 'admin' : 'member';
+      req.db.prepare("UPDATE wall_members SET wall_role=? WHERE wall_id=? AND user_id=?").run(demoteRole, req.wallId, currentOwner.user_id);
+    }
+    req.db.prepare("UPDATE wall_members SET wall_role='owner' WHERE wall_id=? AND user_id=?").run(req.wallId, newOwnerId);
+    req.db.prepare("UPDATE walls SET owner_id=? WHERE id=?").run(newOwnerId, req.wallId);
 
-  const wall = req.db.prepare("SELECT name FROM walls WHERE id=?").get(req.wallId);
-  notify(req.db, [newOwnerId], '你已成为墙主', `你已成为「${wall?.name || '校园墙'}」的墙主`, '/admin', req.wallId);
+    const wall = req.db.prepare("SELECT name FROM walls WHERE id=?").get(req.wallId);
+    notify(req.db, [newOwnerId], '你已成为墙主', `你已成为「${wall?.name || '校园墙'}」的墙主`, '/admin', req.wallId);
+    req.db.exec('COMMIT');
+  } catch (error) {
+    req.db.exec('ROLLBACK');
+    throw error;
+  }
   res.json({ message: '墙主已转让' });
 });
 

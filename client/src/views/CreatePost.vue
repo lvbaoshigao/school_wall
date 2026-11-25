@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
@@ -9,6 +9,7 @@ import api from '../api'
 import Icon from '../components/Icon.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import { useSettingsStore } from '../stores/settings'
+import { usePostDraft } from '../composables/usePostDraft.js'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -33,8 +34,26 @@ const confirmPostText = ref('')
 const categories = ['吐槽', '分享', '求助', '讨论', '其他']
 const postContent = computed(() => [content.value.trim(), ...images.value.map(url => '[img]' + url + '[/img]')].filter(Boolean).join('\n'))
 const renderedPreview = computed(() => renderMarkdown(content.value || '*暂无内容*'))
+const showDiscardDraft = ref(false)
+const { draftStatus, hasDraft, captureDraft, completeDraft, discardDraft, isCurrentScope } = usePostDraft({
+  userStore, wallStore,
+  fields: { content, category, customCategory, useCustomCategory, isAnonymous, isMarkdown, images },
+  defaults: () => ({ content: '', category: '分享', customCategory: '', useCustomCategory: false,
+    isAnonymous: settingsStore.prefs.default_anonymous_post, isMarkdown: settingsStore.prefs.default_markdown, images: [] }),
+})
+const draftMessage = computed(() => ({
+  restored: '已恢复本标签页为当前校园墙保存的草稿。',
+  saved: '草稿已自动保存，刷新或返回此页可继续编辑。',
+  unavailable: '浏览器暂时无法保存草稿，请保留此页继续编辑或发布。',
+  empty: '草稿保存在本标签页，按账号与校园墙分别保存；退出登录后清除。',
+}[draftStatus.value]))
 let disposed = false
 let uploadController
+watch(() => [userStore.sessionRevision, userStore.user?.id, wallStore.currentWallId], () => {
+  uploadController?.abort()
+  showConfirmPost.value = false
+  showDiscardDraft.value = false
+}, { flush: 'sync' })
 onBeforeUnmount(() => { disposed = true; uploadController?.abort() })
 function selectCategory(cat) { useCustomCategory.value = false; category.value = cat }
 function enableCustomCategory() { useCustomCategory.value = true; category.value = '' }
@@ -56,25 +75,29 @@ async function handleImageUpload(e) {
   if (!files.length || uploading.value || loading.value) return
   error.value = ''
   if (images.value.length + files.length > 9) { error.value = '最多上传 9 张图片'; return }
+  const captured = captureDraft()
+  if (!captured) { error.value = '账户或校园墙信息未就绪，请稍后重试'; return }
+  const token = userStore.token
   uploading.value = true
   uploadController = new AbortController()
   try {
     for (const file of files) {
-      if (disposed) return
+      if (disposed || !isCurrentScope(captured.scope)) return
       if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'].includes(file.type) || !file.size || file.size > 5 * 1024 * 1024) {
         error.value = '请选择有效的 JPG、PNG、WebP、GIF 或 AVIF 图片，每张不超过 5MB'
         continue
       }
       try {
         const image = await compressImage(file, 1200, 0.8)
-        if (disposed) return
-        const res = await api.post('/upload/image', { image }, { signal: uploadController.signal })
-        if (disposed) return
+        if (disposed || !isCurrentScope(captured.scope)) return
+        const res = await api.post('/upload/image', { image }, { signal: uploadController.signal,
+          headers: { Authorization: 'Bearer ' + token, 'X-Wall-Id': captured.scope.wallId } })
+        if (disposed || !isCurrentScope(captured.scope)) return
         const url = safeImageUrl(res.data.url)
         if (!url) throw new Error('Invalid upload URL')
         images.value.push(url)
       } catch (err) {
-        if (disposed) return
+        if (disposed || !isCurrentScope(captured.scope)) return
         error.value = '图片“' + file.name + '”上传失败，请重新选择后重试'
       }
     }
@@ -141,15 +164,17 @@ async function doSubmit() {
   if (!userStore.isLoggedIn) { router.push('/login'); return }
   const payload = validatePost()
   if (!payload) return
+  const captured = captureDraft()
+  if (!captured) { error.value = '账户或校园墙信息未就绪，请稍后重试'; return }
   loading.value = true
-  const wallId = wallStore.currentWallId
   try {
-    await api.post('/posts', payload, { headers: { 'X-Wall-Id': wallId } })
-    if (disposed) return
+    await api.post('/posts', payload, { headers: { Authorization: 'Bearer ' + userStore.token, 'X-Wall-Id': captured.scope.wallId } })
+    completeDraft(captured)
+    if (disposed || !isCurrentScope(captured.scope)) return
     toast.success('帖子已发布')
     router.push('/')
   } catch (e) {
-    if (disposed) return
+    if (disposed || !isCurrentScope(captured.scope)) return
     error.value = typeof e.response?.data?.error === 'string' ? e.response.data.error : '发布失败，内容已保留，请稍后重试'
   } finally { loading.value = false }
 }
@@ -163,6 +188,10 @@ async function doSubmit() {
       <h1>发布帖子</h1>
       <p class="text-muted mb-3">记录一件小事，发起一场校园里的对话</p>
 
+      <div class="draft-notice">
+        <p role="status" aria-live="polite">{{ draftMessage }}</p>
+        <button v-if="hasDraft" type="button" class="btn btn-secondary btn-sm" :disabled="loading || uploading" @click="showDiscardDraft = true">清空草稿</button>
+      </div>
       <p v-if="error" id="post-error" class="error-msg" role="alert">{{ error }}</p>
       <fieldset :disabled="loading" class="post-fields">
       <div class="form-group">
@@ -228,6 +257,16 @@ async function doSubmit() {
       </div>
     </div>
 
+    <ConfirmModal
+      :show="showDiscardDraft"
+      title="清空草稿"
+      message="清空当前校园墙的发帖草稿？内容与已添加的图片将从编辑器中移除。"
+      confirm-text="清空"
+      danger
+      @confirm="discardDraft"
+      @update:show="showDiscardDraft = $event"
+    />
+
     <!-- 发布确认弹窗 -->
     <ConfirmModal
       :show="showConfirmPost"
@@ -245,6 +284,9 @@ async function doSubmit() {
 <style scoped>
 .create-page { max-width: 52rem; margin-inline: auto; }
 .post-fields { border: 0; padding: 0; min-width: 0; }
+.draft-notice { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); margin-bottom: var(--space-4); background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.draft-notice p { flex: 1 1 15rem; font-size: var(--font-xs); line-height: 1.7; color: var(--text-muted); }
+.draft-notice .btn { min-height: 44px; flex-shrink: 0; }
 .field-label { display: block; margin-bottom: var(--space-2); font-size: var(--font-sm); font-weight: 600; }
 .create-card { padding: 28px; }
 .create-card h1 { font-size: 22px; margin-bottom: 4px; }

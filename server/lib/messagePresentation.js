@@ -56,6 +56,8 @@ function presentMessages(req, rows) {
     delete output.receiver_deleted;
     delete output.assignee_id;
     const original = originals.get(row.id) || row;
+    // Older revocations left titles in storage; never expose those previews again.
+    if (original.is_revoked) output.title = '';
     output.is_mine = original.sender_id === req.user.id;
     output.client_message_id = output.is_mine ? (row.client_message_id || null) : null;
     if (row.is_anonymous && !output.is_mine) {

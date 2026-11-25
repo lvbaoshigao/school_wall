@@ -322,7 +322,6 @@ async function doRemoveMember() {
 
 // 墙内封禁：只影响当前校园墙，对方在其它墙不受影响
 async function banMember(m) {
-  const name = m.nickname || m.username
   confirmTarget.value = m
   banDuration.value = '1440'
   banReason.value = ''
@@ -332,12 +331,13 @@ async function banMember(m) {
 async function doBanMember() {
   const m = confirmTarget.value
   if (!m) return
-  const duration = parseInt(banDuration.value)
-  if (Number.isNaN(duration) || duration < 0) { toast.error('时长必须是 0 或正整数分钟'); return }
-  if (!banReason.value.trim()) { toast.error('请填写封禁原因'); return }
+  const duration = Number(banDuration.value)
+  if (!String(banDuration.value).trim() || !Number.isSafeInteger(duration) || duration < 0 || duration > 525600) { toast.error('时长必须是 0–525600 的整数分钟，0 表示永久'); return }
+  const reason = banReason.value.trim()
+  if (!reason || reason.length > 1000) { toast.error('请填写 1–1000 字的封禁原因'); return }
   try {
     const res = await api.post(`/walls/${wallStore.currentWallId}/members/${m.user_id}/ban`, {
-      duration, reason: banReason.value.trim(),
+      duration, reason,
     })
     toast.success(res.data.message || '已封禁')
     loadMembers()
@@ -563,34 +563,34 @@ async function loadUserReports() {
   } catch { errorMsg.value = '加载用户举报失败' }
 }
 async function reviewUserReport(id, action) {
+  confirmTarget.value = { id, action }
+  reportFeedback.value = ''
   if (action === 'warn') {
-    confirmTarget.value = id
     warnText.value = ''
     showWarnConfirm.value = true
     return
   }
   if (action === 'ban') {
-    confirmTarget.value = id
     banReportDuration.value = '1440'
     showBanReportConfirm.value = true
     return
   }
-  let body = { action }
-  body.feedback = ''
-  reportFeedback.value = ''
   showReportFeedback.value = true
-  confirmTarget.value = { id, action }
 }
 
 async function doReviewUserReport() {
-  const { id, action } = confirmTarget.value
-  let body = { action }
+  const target = confirmTarget.value
+  if (!target || !Number.isSafeInteger(Number(target.id)) || Number(target.id) <= 0 || !['warn', 'ban', 'permanent_ban', 'reject'].includes(target.action)) return
+  const { id, action } = target
+  const body = { action }
   if (action === 'warn') {
     if (!warnText.value.trim()) { toast.error('请输入警告内容'); return }
     body.warning_text = warnText.value.trim()
   }
   if (action === 'ban') {
-    body.duration = parseInt(banReportDuration.value) || 1440
+    const duration = Number(banReportDuration.value)
+    if (!String(banReportDuration.value).trim() || !Number.isSafeInteger(duration) || duration <= 0 || duration > 525600) { toast.error('时长必须是 1–525600 的整数分钟，永久封号请使用“永久封号”'); return }
+    body.duration = duration
   }
   body.feedback = reportFeedback.value
   try { const r = await api.put(`/admin/user-reports/${id}/review`, body); toast.success(r.data.message); loadUserReports() }
@@ -1616,6 +1616,14 @@ onBeforeUnmount(() => {
       @confirm="doBanMember"
       @update:show="showBanWallConfirm = $event"
     >
+      <div class="form-group">
+        <label for="wall-ban-duration">封禁时长（分钟，0 表示永久）</label>
+        <input id="wall-ban-duration" type="number" v-model="banDuration" min="0" max="525600" step="1" />
+      </div>
+      <div class="form-group">
+        <label for="wall-ban-reason">封禁原因</label>
+        <textarea id="wall-ban-reason" v-model="banReason" rows="3" maxlength="1000" placeholder="会通过站内信告知对方" required></textarea>
+      </div>
     </ConfirmModal>
 
     <!-- 解除封禁 -->

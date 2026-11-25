@@ -153,9 +153,18 @@ function clearAccountDrafts(id) {
   } catch {}
 }
 
+function cancelHistoryLoads() {
+  historyVersion++
+  historyController?.abort()
+  historyController = null
+  historyLoading.value = false
+  contextLoading.value = false
+}
+
 // Legacy callers retain loadMessages(silent); request versions also guard servers that ignore abort.
 async function loadMessages(silent = false) {
   if (disposed) return
+  if (!silent) cancelHistoryLoads()
   const userId = String(route.params.id)
   const version = ++loadVersion
   const epoch = conversationEpoch
@@ -213,10 +222,15 @@ async function loadMessages(silent = false) {
     if (silent && nearBottom.value && !viewingContext.value) { await nextTick(); if (!disposed && epoch === conversationEpoch) scrollToBottom() }
   } catch (e) {
     if (!disposed && version === loadVersion && epoch === conversationEpoch && !controller.signal.aborted) loadError.value = e.response?.data?.error || '消息加载失败，请重试'
-  } finally { if (!disposed && version === loadVersion) loading.value = false }
+  } finally {
+    if (!disposed && version === loadVersion && epoch === conversationEpoch) {
+      loading.value = false
+      if (!silent) startPolling()
+    }
+  }
 }
 async function loadHistory(direction = 'before') {
-  if (historyLoading.value || disposed) return
+  if (historyLoading.value || contextLoading.value || disposed) return
   const cursor = direction === 'before' ? oldestCursor ?? messages.value[0]?.id : messages.value.at(-1)?.id
   if (!cursor) return
   const epoch = conversationEpoch
@@ -240,12 +254,11 @@ async function loadHistory(direction = 'before') {
     if (direction === 'before') { oldestCursor = info.before; hasMore.value = info.more }
     else hasMoreAfter.value = !!(res.data.hasMoreAfter ?? res.data.hasMore)
     await nextTick()
-    if (!disposed && epoch === conversationEpoch && area) area.scrollTop = direction === 'before' ? oldTop + area.scrollHeight - oldHeight : oldTop
+    if (!disposed && epoch === conversationEpoch && version === historyVersion && area) area.scrollTop = direction === 'before' ? oldTop + area.scrollHeight - oldHeight : oldTop
   } catch (e) {
     if (!controller.signal.aborted && epoch === conversationEpoch) historyError.value = e.response?.data?.error || '历史消息加载失败，可重试'
   } finally {
-    if (version === historyVersion) historyLoading.value = false
-    startPolling()
+    if (!disposed && epoch === conversationEpoch && version === historyVersion) { historyLoading.value = false; startPolling() }
   }
 }
 function scrollToBottom() {
@@ -285,9 +298,10 @@ async function jumpToMessage(id) {
   if (contextLoading.value || !(Number(id) > 0)) return
   const epoch = conversationEpoch
   if (!messages.value.some(msg => Number(msg.id) === Number(id))) {
+    cancelHistoryLoads()
+    historyError.value = ''
     contextLoading.value = true
-    const version = ++historyVersion
-    historyController?.abort()
+    const version = historyVersion
     const controller = new AbortController()
     historyController = controller
     stopPolling()
@@ -305,7 +319,7 @@ async function jumpToMessage(id) {
     } catch (e) {
       if (!controller.signal.aborted && epoch === conversationEpoch) toast.error(e.response?.status === 404 ? '原消息已删除或不可见' : '定位失败，请重试')
       return
-    } finally { if (version === historyVersion) contextLoading.value = false; startPolling() }
+    } finally { if (!disposed && epoch === conversationEpoch && version === historyVersion) { contextLoading.value = false; startPolling() } }
   }
   await nextTick()
   if (disposed || epoch !== conversationEpoch) return
@@ -522,9 +536,10 @@ function updateViewport() {
   if (nearBottom.value && !viewingContext.value) nextTick(scrollToBottom)
 }
 function cancelLoads() {
-  loadVersion++; historyVersion++; searchVersion++
-  loadController?.abort(); historyController?.abort(); searchController?.abort()
-  historyLoading.value = false; contextLoading.value = false; searchLoading.value = false
+  loadVersion++; searchVersion++
+  cancelHistoryLoads()
+  loadController?.abort(); searchController?.abort()
+  searchLoading.value = false
 }
 async function openConversation() {
   saveDraft()
