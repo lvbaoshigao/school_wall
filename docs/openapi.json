@@ -450,6 +450,97 @@
         }
       }
     },
+    "/auth/statistics": {
+      "get": {
+        "operationId": "getAccountStatistics",
+        "summary": "Read the authenticated account global statistics",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Account statistics must not be stored in shared or persistent HTTP caches."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AccountStatistics"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "description": "Self-only account aggregates across walls. Bearer authentication is required; no wall membership is required. X-Wall-Id does not filter or authorize this resource. Any user_id query, including the current user ID, is rejected with 400. No content, other account statistics or anonymous ownership is returned. registered_at is the stored users.created_at without timezone conversion; joined_days is computed by the client.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/auth/profile": {
       "put": {
         "operationId": "updateProfile",
@@ -3180,7 +3271,7 @@
         "tags": [
           "messages"
         ],
-        "description": "Private: accepted friend OR shared active wall, no block, active recipient, no anonymous flag. Confession: both active members of selected wall. Reply source must be visible, same participants/type/wall, nonanonymous and not revoked. A supplied client_message_id is unique per sender: replaying the same normalized payload returns the existing id with deduplicated=true. Different payload returns 409 CLIENT_MESSAGE_CONFLICT. Hidden/revoked original returns 409 CLIENT_MESSAGE_UNAVAILABLE. Never generate a new cid merely because a response was lost. When matching a committed cid, the server acknowledges the existing record without rewriting it or restoring a hidden peer copy.",
+        "description": "Private: accepted friend OR shared active wall, no block, active recipient, no anonymous flag. Confession: both active members of selected wall. Reply source must be visible, same participants/type/wall, nonanonymous and not revoked. A supplied client_message_id is unique per sender: replaying the same normalized payload returns the existing id with deduplicated=true. Different payload returns 409 CLIENT_MESSAGE_CONFLICT. Hidden/revoked original returns 409 CLIENT_MESSAGE_UNAVAILABLE. Never generate a new cid merely because a response was lost. When matching a committed cid, the server acknowledges the existing record without rewriting it or restoring a hidden peer copy. Confession letters accept allow_replies (default false); use the confession thread reply endpoint, especially for anonymous letters. The existing send endpoint cannot bypass the original letter reply permission. Confession presentation adds kind/root/reply/identity fields; anonymous sender identity remains hidden after approval, with approved identity available only in revealed_sender.",
         "parameters": [
           {
             "name": "X-Wall-Id",
@@ -16215,6 +16306,974 @@
         ],
         "x-internal": true
       }
+    },
+    "/messages/confessions/stats": {
+      "get": {
+        "operationId": "getConfessionStats",
+        "summary": "Count own received original confessions",
+        "tags": [
+          "messages"
+        ],
+        "description": "Counts only received original letter/direct messages, excluding replies, revoked messages and the recipient-hidden copy; limited to currently active walls. Optional wall selection requires active membership. No other user ID is accepted.",
+        "parameters": [
+          {
+            "name": "X-Wall-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional selected wall. All header/query/body wall IDs must agree. Without a wall source, list/statistics operations use all currently active walls of the caller; resource writes still validate the original confession wall and both participants."
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional wall context; must match every other supplied wall source and current active membership."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConfessionStats"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/messages/confessions/received": {
+      "get": {
+        "operationId": "getReceivedConfessions",
+        "summary": "Page own received original confessions",
+        "tags": [
+          "messages"
+        ],
+        "description": "Same privacy and wall scope as getConfessionStats. Anonymous filter is all, 1 or 0. Messages are presented with current reply and identity metadata.",
+        "parameters": [
+          {
+            "name": "X-Wall-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional selected wall. All header/query/body wall IDs must agree. Without a wall source, list/statistics operations use all currently active walls of the caller; resource writes still validate the original confession wall and both participants."
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional wall context; must match every other supplied wall source and current active membership."
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "anonymous",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "1",
+                "0"
+              ],
+              "default": "all"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConfessionsPage"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/messages/confessions/direct": {
+      "post": {
+        "operationId": "sendDirectConfession",
+        "summary": "Send a server-generated named direct confession",
+        "tags": [
+          "messages"
+        ],
+        "description": "Requires explicit wall context and an available recipient in that wall. Named text is generated on the server from the authenticated nickname: xxx在此网站的表白信界面对你进行表白. Caller cannot supply content/title/anonymity/sender fields. Optional stable client_message_id retains the existing send acknowledgment and deduplication rules.",
+        "parameters": [
+          {
+            "name": "X-Wall-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional selected wall. All header/query/body wall IDs must agree. Without a wall source, list/statistics operations use all currently active walls of the caller; resource writes still validate the original confession wall and both participants."
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional wall context; must match every other supplied wall source and current active membership."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectConfessionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SendMessageResult"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/messages/confessions/{id}/thread": {
+      "get": {
+        "operationId": "getConfessionThread",
+        "summary": "Read an authorized confession thread",
+        "tags": [
+          "messages"
+        ],
+        "description": "Only an original participant with a visible own copy and current active wall membership may read. Retained history may remain readable after revocation, a block or the other participant losing access; this grants no reply or disclosure permission. Replies are omitted once either original copy has been deleted. Messages are ordered by ascending ID within the current window; before loads older replies. GET does not mark read. Anonymous identity fields remain hidden; approved identity is disclosed only in revealed_sender while current interactive authorization remains valid.",
+        "parameters": [
+          {
+            "name": "X-Wall-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional selected wall. All header/query/body wall IDs must agree. Without a wall source, list/statistics operations use all currently active walls of the caller; resource writes still validate the original confession wall and both participants."
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional wall context; must match every other supplied wall source and current active membership."
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConfessionThread"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/messages/confessions/{id}/replies": {
+      "post": {
+        "operationId": "replyToConfession",
+        "summary": "Reply through a confession thread",
+        "tags": [
+          "messages"
+        ],
+        "description": "Only currently authorized original participants. Original confession must remain visible, unrevoked, and both participants active in the same active wall without a block. Anonymous author replies remain anonymous; recipient-authored replies hide receiver_id. Identity approval only adds revealed_sender for the designated original recipient and never unmasks sender_id. Replies require an original letter with allow_replies=true; direct confessions cannot be replied to. content must contain non-whitespace, be at most 2000 characters, and retains leading Markdown indentation while trailing whitespace is removed. receiver_id/sender_id/is_anonymous must never be supplied; the server derives participants and anonymity. Optional client_message_id provides stable retries.",
+        "parameters": [
+          {
+            "name": "X-Wall-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional selected wall. All header/query/body wall IDs must agree. Without a wall source, list/statistics operations use all currently active walls of the caller; resource writes still validate the original confession wall and both participants."
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional wall context; must match every other supplied wall source and current active membership."
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfessionReplyInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SendMessageResult"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/messages/confessions/{id}/identity-requests": {
+      "post": {
+        "operationId": "requestConfessionIdentity",
+        "summary": "Ask an anonymous confession author to disclose identity",
+        "tags": [
+          "messages"
+        ],
+        "description": "Only currently authorized original participants. Original confession must remain visible, unrevoked, and both participants active in the same active wall without a block. Anonymous author replies remain anonymous; recipient-authored replies hide receiver_id. Identity approval only adds revealed_sender for the designated original recipient and never unmasks sender_id. Only the designated recipient of an anonymous original letter may request, with confirmed=true. Optional message is Markdown (0–2000 characters). One request per original confession; repeated requests return 409. Requesting never discloses identity.",
+        "parameters": [
+          {
+            "name": "X-Wall-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional selected wall. All header/query/body wall IDs must agree. Without a wall source, list/statistics operations use all currently active walls of the caller; resource writes still validate the original confession wall and both participants."
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional wall context; must match every other supplied wall source and current active membership."
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfessionIdentityRequestInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConfessionIdentityRequestResult"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/messages/confessions/identity-requests": {
+      "get": {
+        "operationId": "getConfessionIdentityRequests",
+        "summary": "List own confession identity requests",
+        "tags": [
+          "messages"
+        ],
+        "description": "Only requests involving the caller under current wall/access rules. Requester data identifies the original recipient; anonymous author identity is never included in this list. Optional status filters pending/approved/rejected. At most the newest 500 candidate requests are considered before access filtering; this is not a complete paginated history.",
+        "parameters": [
+          {
+            "name": "X-Wall-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional selected wall. All header/query/body wall IDs must agree. Without a wall source, list/statistics operations use all currently active walls of the caller; resource writes still validate the original confession wall and both participants."
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional wall context; must match every other supplied wall source and current active membership."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConfessionIdentityRequests"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/messages/confessions/identity-requests/{requestId}": {
+      "put": {
+        "operationId": "decideConfessionIdentity",
+        "summary": "Approve or reject an identity request",
+        "tags": [
+          "messages"
+        ],
+        "description": "Only currently authorized original participants. Original confession must remain visible, unrevoked, and both participants active in the same active wall without a block. Anonymous author replies remain anonymous; recipient-authored replies hide receiver_id. Identity approval only adds revealed_sender for the designated original recipient and never unmasks sender_id. Only the original anonymous author may decide approve/reject. Decision is final; repeated decisions return 409. Request response carries requester identity only.",
+        "parameters": [
+          {
+            "name": "X-Wall-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional selected wall. All header/query/body wall IDs must agree. Without a wall source, list/statistics operations use all currently active walls of the caller; resource writes still validate the original confession wall and both participants."
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Optional wall context; must match every other supplied wall source and current active membership."
+          },
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfessionIdentityDecisionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; original legacy payload is inside data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                },
+                "description": "Protocol version."
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Server-generated correlation ID."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConfessionIdentityRequestResult"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -16827,7 +17886,7 @@
         "properties": {
           "content": {
             "type": "string",
-            "description": "Trimmed; must contain non-whitespace.",
+            "description": "Must contain non-whitespace. Plain text is trimmed; is_markdown=true preserves leading Markdown indentation and removes only trailing whitespace.",
             "minLength": 1,
             "maxLength": 2000
           },
@@ -17064,7 +18123,9 @@
           "receiver_id": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "nullable": true,
+            "description": "Null on a recipient-authored reply to an anonymous confession, to avoid revealing the original anonymous author."
           },
           "wall_id": {
             "type": "integer",
@@ -17210,6 +18271,90 @@
           "reply_to_sender_name": {
             "type": "string",
             "nullable": true
+          },
+          "confession_kind": {
+            "type": "string",
+            "enum": [
+              "letter",
+              "direct",
+              "reply"
+            ],
+            "description": "Present on confession messages only."
+          },
+          "confession_root_id": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "0 for original letter/direct messages; original confession ID for replies."
+          },
+          "allow_replies": {
+            "type": "boolean",
+            "description": "Reply permission selected for the original confession; omitted by older callers means false."
+          },
+          "can_reply": {
+            "type": "boolean",
+            "description": "Current server-authorized reply ability; do not infer permission from allow_replies alone."
+          },
+          "identity_request": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "approved",
+                  "rejected"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "created_at": {
+                "type": "string",
+                "description": "Legacy SQLite local wall-clock YYYY-MM-DD HH:mm:ss, without an offset. Do not append Z."
+              },
+              "decided_at": {
+                "type": "string",
+                "description": "Legacy SQLite local wall-clock YYYY-MM-DD HH:mm:ss, without an offset. Do not append Z.",
+                "nullable": true
+              }
+            },
+            "required": [
+              "id",
+              "status",
+              "message",
+              "created_at",
+              "decided_at"
+            ],
+            "nullable": true
+          },
+          "revealed_sender": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "nickname": {
+                "type": "string"
+              },
+              "avatar": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "nickname",
+              "avatar"
+            ],
+            "nullable": true,
+            "description": "Only the designated recipient receives this while current access remains valid and author approval exists; sender_id remains hidden."
           }
         },
         "required": [
@@ -17399,7 +18544,7 @@
           },
           "content": {
             "type": "string",
-            "description": "Trimmed; non-whitespace required.",
+            "description": "Non-whitespace required. Private messages are trimmed; confession letters preserve leading Markdown indentation and remove trailing whitespace.",
             "minLength": 1,
             "maxLength": 2000
           },
@@ -17456,6 +18601,11 @@
               }
             ],
             "description": "Positive safe ID. Decimal strings are also accepted."
+          },
+          "allow_replies": {
+            "type": "boolean",
+            "default": false,
+            "description": "Confession letters only. Explicit opt-in enables replies through the confession thread; omission keeps replies disabled."
           }
         },
         "required": [
@@ -17963,6 +19113,11 @@
               "60"
             ],
             "default": "20"
+          },
+          "liquid_glass": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable liquid glass appearance; appearance scope. Reduced motion/high contrast/disable blur remain independent overrides."
           }
         },
         "required": [
@@ -18005,7 +19160,8 @@
           "wallpaper_source",
           "chat_send_shortcut",
           "chat_density",
-          "chat_poll_interval"
+          "chat_poll_interval",
+          "liquid_glass"
         ]
       },
       "PreferencesUpdate": {
@@ -18236,6 +19392,10 @@
                   "60"
                 ],
                 "default": "20"
+              },
+              "liquid_glass": {
+                "type": "boolean",
+                "default": true
               }
             }
           }
@@ -18295,7 +19455,8 @@
                 "wallpaper_source",
                 "chat_send_shortcut",
                 "chat_density",
-                "chat_poll_interval"
+                "chat_poll_interval",
+                "liquid_glass"
               ]
             },
             "description": "GET only: valid persisted keys; missing theme_mode differs from an explicit system setting."
@@ -19319,7 +20480,8 @@
             "type": "object",
             "properties": {
               "receiver_nickname": {
-                "type": "string"
+                "type": "string",
+                "nullable": true
               }
             },
             "required": [
@@ -21331,6 +22493,528 @@
         "required": [
           "error"
         ]
+      },
+      "ConfessionPerson": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "nickname": {
+            "type": "string"
+          },
+          "avatar": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "nickname",
+          "avatar"
+        ]
+      },
+      "ConfessionIdentityPreview": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "created_at": {
+            "type": "string",
+            "description": "Legacy SQLite local wall-clock YYYY-MM-DD HH:mm:ss, without an offset. Do not append Z."
+          },
+          "decided_at": {
+            "type": "string",
+            "description": "Legacy SQLite local wall-clock YYYY-MM-DD HH:mm:ss, without an offset. Do not append Z.",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "message",
+          "created_at",
+          "decided_at"
+        ]
+      },
+      "ConfessionIdentityRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ConfessionIdentityPreview"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "message_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "wall_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "is_author": {
+                "type": "boolean"
+              },
+              "requester": {
+                "$ref": "#/components/schemas/ConfessionPerson"
+              }
+            },
+            "required": [
+              "message_id",
+              "wall_id",
+              "is_author",
+              "requester"
+            ]
+          }
+        ],
+        "description": "The requester is the original recipient. No original anonymous author identity is included."
+      },
+      "ConfessionIdentityRequestResult": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "$ref": "#/components/schemas/ConfessionIdentityRequest"
+          }
+        },
+        "required": [
+          "request"
+        ]
+      },
+      "ConfessionIdentityRequests": {
+        "type": "object",
+        "properties": {
+          "requests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfessionIdentityRequest"
+            }
+          }
+        },
+        "required": [
+          "requests"
+        ]
+      },
+      "AccountStatistics": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "registered_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "users.created_at returned as stored, normally YYYY-MM-DD HH:mm:ss in server local time without an offset; null for missing historical values. Do not assume UTC or append Z.",
+            "example": "2024-03-02 13:14:15"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "walls_joined": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Distinct joined walls where both wall and own membership are active; pending, banned and inactive memberships or walls do not count."
+              },
+              "friends": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Distinct existing opposite account IDs in accepted friend relations in either direction, regardless of the opposite account status; reciprocal duplicates, self-relations and orphan peers do not count. Pending and blocked relation rows do not count."
+              },
+              "named_posts": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Own posts with author_id equal to the authenticated user and is_anonymous = 0. Anonymous posts, including legacy rows retaining author_id, are excluded; ownership is never inferred from IP or content."
+              },
+              "comments": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Existing comments whose author_id is the authenticated user."
+              },
+              "bookmarks": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Distinct bookmarked post IDs belonging to the authenticated user whose posts still exist."
+              },
+              "votes_participated": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Distinct vote IDs in own vote_records whose votes still exist; duplicate legacy records count once."
+              }
+            },
+            "required": [
+              "walls_joined",
+              "friends",
+              "named_posts",
+              "comments",
+              "bookmarks",
+              "votes_participated"
+            ]
+          }
+        },
+        "required": [
+          "registered_at",
+          "counts"
+        ]
+      },
+      "ConfessionStats": {
+        "type": "object",
+        "properties": {
+          "anonymous": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "named": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "anonymous",
+          "named",
+          "total"
+        ]
+      },
+      "ConfessionsPage": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfessionMessage"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Positive safe page; (page - 1) * limit must also be a safe integer."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "messages",
+          "total",
+          "page",
+          "limit",
+          "hasMore"
+        ]
+      },
+      "ConfessionThread": {
+        "type": "object",
+        "properties": {
+          "confession": {
+            "$ref": "#/components/schemas/ConfessionMessage"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfessionMessage"
+            }
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "next_before_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "nullable": true
+          }
+        },
+        "required": [
+          "confession",
+          "messages",
+          "hasMore",
+          "next_before_id"
+        ]
+      },
+      "DirectConfessionInput": {
+        "type": "object",
+        "properties": {
+          "receiver_id": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$"
+              }
+            ],
+            "description": "Positive safe ID. Decimal strings are also accepted."
+          },
+          "wall_id": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$"
+              }
+            ],
+            "description": "Positive safe ID. Decimal strings are also accepted."
+          },
+          "client_message_id": {
+            "type": "string",
+            "description": "Optional on legacy API; SDK always supplies a cryptographically generated or caller-provided stable key. Scope is authenticated sender.",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "nullable": true
+          }
+        },
+        "required": [
+          "receiver_id"
+        ],
+        "additionalProperties": false,
+        "description": "Wall context is mandatory in body/query/header. Server generates the named confession text; content, title, anonymity and identity fields are forbidden."
+      },
+      "ConfessionReplyInput": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "client_message_id": {
+            "type": "string",
+            "description": "Optional on legacy API; SDK always supplies a cryptographically generated or caller-provided stable key. Scope is authenticated sender.",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "nullable": true
+          },
+          "wall_id": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$"
+              }
+            ],
+            "description": "Positive safe ID. Decimal strings are also accepted."
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "ConfessionIdentityRequestInput": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Optional Markdown explanation; render using the shared sanitized Markdown renderer."
+          },
+          "confirmed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "wall_id": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$"
+              }
+            ],
+            "description": "Positive safe ID. Decimal strings are also accepted."
+          }
+        },
+        "required": [
+          "confirmed"
+        ],
+        "additionalProperties": false
+      },
+      "ConfessionIdentityDecisionInput": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "reject"
+            ]
+          },
+          "wall_id": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$"
+              }
+            ],
+            "description": "Positive safe ID. Decimal strings are also accepted."
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "additionalProperties": false
+      },
+      "ConfessionMessage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Message"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "confession"
+                ]
+              },
+              "confession_kind": {
+                "type": "string",
+                "enum": [
+                  "letter",
+                  "direct",
+                  "reply"
+                ],
+                "description": "Present on confession messages only."
+              },
+              "confession_root_id": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "0 for original letter/direct messages; original confession ID for replies."
+              },
+              "allow_replies": {
+                "type": "boolean"
+              },
+              "can_reply": {
+                "type": "boolean"
+              },
+              "identity_request": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "approved",
+                      "rejected"
+                    ]
+                  },
+                  "message": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "description": "Legacy SQLite local wall-clock YYYY-MM-DD HH:mm:ss, without an offset. Do not append Z."
+                  },
+                  "decided_at": {
+                    "type": "string",
+                    "description": "Legacy SQLite local wall-clock YYYY-MM-DD HH:mm:ss, without an offset. Do not append Z.",
+                    "nullable": true
+                  }
+                },
+                "required": [
+                  "id",
+                  "status",
+                  "message",
+                  "created_at",
+                  "decided_at"
+                ],
+                "nullable": true
+              },
+              "revealed_sender": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "nickname": {
+                    "type": "string"
+                  },
+                  "avatar": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "nickname",
+                  "avatar"
+                ],
+                "nullable": true,
+                "description": "Only the designated recipient receives this while current access remains valid and author approval exists; sender_id remains hidden."
+              }
+            },
+            "required": [
+              "type",
+              "confession_kind",
+              "confession_root_id",
+              "allow_replies",
+              "can_reply",
+              "identity_request",
+              "revealed_sender"
+            ]
+          }
+        ],
+        "description": "Anonymous sender IDs/nickname/avatar/link stay hidden, even after identity approval. Use revealed_sender only; never infer identity from receiver_id or replies."
       }
     },
     "responses": {

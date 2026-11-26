@@ -71,7 +71,7 @@ export interface Preferences {
   default_anonymous_post: boolean; default_markdown: boolean; confirm_before_post: boolean; default_anonymous_confession: boolean;
   badge_interaction: boolean; badge_announcement: boolean; badge_system: boolean; badge_report: boolean;
   unread_interval: '0' | '15' | '30' | '60' | '300'; notify_on_comment: boolean; notify_on_like: boolean;
-  reduce_motion: boolean; high_contrast: boolean; always_focus_ring: boolean; disable_blur: boolean;
+  reduce_motion: boolean; high_contrast: boolean; always_focus_ring: boolean; disable_blur: boolean; liquid_glass: boolean;
   accent: 'indigo' | 'teal' | 'forest' | 'amber' | 'rose' | 'slate';
   theme_mode: 'system' | 'light' | 'dark'; wallpaper_enabled: boolean; wallpaper_source: 'bing' | 'local';
   chat_send_shortcut: 'enter' | 'modifier'; chat_density: 'comfortable' | 'compact';
@@ -86,6 +86,21 @@ export interface PreferencesSchema {
   scopes: Record<PreferenceScope, PreferenceKey[]>;
 }
 export interface PreferencesResult { prefs: Preferences; storedKeys?: PreferenceKey[]; }
+/** Self-only global account aggregates; all counts are nonnegative integers. */
+export interface AccountStatisticsCounts {
+  walls_joined: number;
+  friends: number;
+  /** Own non-anonymous posts only; anonymous ownership is never reconstructed. */
+  named_posts: number;
+  comments: number;
+  bookmarks: number;
+  votes_participated: number;
+}
+export interface AccountStatistics {
+  /** Stored users.created_at, normally server-local YYYY-MM-DD HH:mm:ss without an offset; missing history is null. */
+  registered_at: string | null;
+  counts: AccountStatisticsCounts;
+}
 export interface MessageAcknowledgment { message: string; }
 export interface Wall {
   id: number; name: string; description: string; require_join_approval: Flag;
@@ -116,11 +131,48 @@ export interface ReplyPreview {
   is_revoked: boolean; reason: 'revoked' | 'unavailable' | null;
 }
 export interface Message {
-  id: number; sender_id: number | null; receiver_id: number; wall_id: number; type: MessageType;
+  id: number; sender_id: number | null; receiver_id: number | null; wall_id: number; type: MessageType;
   title: string; content: string; is_anonymous: Flag; is_read: Flag; is_revoked: Flag;
   reply_to_id: number; reply_to_content: string; link: string; created_at: string;
   is_mine: boolean; client_message_id: string | null; reply_to: ReplyPreview | null;
   reply_to_missing: boolean; reply_to_revoked: boolean; reply_to_sender_id: number | null; reply_to_sender_name: string | null;
+  /** Confession-only metadata; anonymous sender_id remains null even after approval. */
+  confession_kind?: 'letter' | 'direct' | 'reply'; confession_root_id?: number;
+  allow_replies?: boolean; can_reply?: boolean;
+  identity_request?: ConfessionIdentityPreview | null; revealed_sender?: ConfessionPerson | null;
+}
+export interface ConfessionPerson { id: number; nickname: string; avatar: string; }
+export type ConfessionIdentityStatus = 'pending' | 'approved' | 'rejected';
+export interface ConfessionIdentityPreview {
+  id: number; status: ConfessionIdentityStatus; message: string; created_at: string; decided_at: string | null;
+}
+export interface ConfessionIdentityRequest extends ConfessionIdentityPreview {
+  message_id: number; wall_id: number; is_author: boolean; requester: ConfessionPerson;
+}
+export interface ConfessionMessage extends Message {
+  type: 'confession'; confession_kind: 'letter' | 'direct' | 'reply'; confession_root_id: number;
+  sender_nickname?: string | null; sender_avatar?: string | null; receiver_nickname?: string | null; receiver_avatar?: string | null;
+  allow_replies: boolean; can_reply: boolean;
+  identity_request: ConfessionIdentityPreview | null; revealed_sender: ConfessionPerson | null;
+}
+export interface ConfessionWallQuery { wall_id?: Id; }
+export interface ConfessionIdentityRequestsQuery extends ConfessionWallQuery { status?: ConfessionIdentityStatus; }
+export interface ConfessionsQuery extends ConfessionWallQuery, PageQuery { anonymous?: 'all' | '1' | '0'; }
+export interface ConfessionStats { anonymous: number; named: number; total: number; }
+export interface ConfessionsPage { messages: ConfessionMessage[]; total: number; page: number; limit: number; hasMore: boolean; }
+export interface ConfessionThreadQuery extends ConfessionWallQuery { before?: Id; limit?: number; }
+export interface ConfessionThread { confession: ConfessionMessage; messages: ConfessionMessage[]; hasMore: boolean; next_before_id: number | null; }
+export interface DirectConfessionInput { receiver_id: Id; wall_id?: Id; client_message_id?: string; }
+export interface ConfessionReplyInput { content: string; wall_id?: Id; client_message_id?: string; }
+export type PreparedDirectConfession = Readonly<DirectConfessionInput & { client_message_id: string }>;
+export type PreparedConfessionReply = Readonly<ConfessionReplyInput & { client_message_id: string }>;
+export interface ConfessionIdentityRequestInput { confirmed: true; message?: string; wall_id?: Id; }
+export interface ConfessionIdentityDecisionInput { decision: 'approve' | 'reject'; wall_id?: Id; }
+export interface TreeMessage { id: number; content: string; is_mine: boolean; is_read: Flag; is_revoked: Flag; created_at: string; }
+export interface TreeMessagesPage {
+  messages: TreeMessage[]; conversation_id: string; hasMore: boolean;
+  next_before_id: number | null; next_before: number | null; unreadMarked: number;
+  is_closed: boolean; is_initiator: boolean; other_user_id: null; can_report: true;
 }
 export interface Conversation {
   user_id: number; other_user: { id: number; nickname: string; avatar: string; available: boolean };
@@ -139,6 +191,8 @@ export interface MessagesPage {
 export interface SendMessageInput {
   receiver_id: Id; content: string; type?: 'private' | 'confession'; title?: string;
   is_anonymous?: boolean | Flag; reply_to_id?: Id | 0; client_message_id?: string;
+  /** Confession letters default to disabled replies; private messages do not use this flag. */
+  allow_replies?: boolean; wall_id?: Id;
 }
 export type PreparedMessage = Readonly<SendMessageInput & { type: 'private' | 'confession'; client_message_id: string }>;
 export interface SendMessageData extends MessageAcknowledgment { id: number; client_message_id: string | null; deduplicated: boolean; message_item: Message; }
@@ -172,6 +226,8 @@ export class SchoolWallClient {
   getOpenApi(options?: RequestOptions): Promise<ApiResponse<OpenApiDocument>>;
   login(credentials: { username: string; password: string }, options?: RequestOptions): Promise<ApiResponse<{ token: string; user: Profile }>>;
   getMe(options?: RequestOptions): Promise<ApiResponse<Profile>>;
+  /** Self-only; selected wall and wallId options do not scope account statistics. */
+  getAccountStatistics(options?: RequestOptions): Promise<ApiResponse<AccountStatistics>>;
   updateProfile(profile: ProfileUpdate, options?: RequestOptions): Promise<ApiResponse<Profile>>;
   changePassword(passwords: { oldPassword: string; newPassword: string }, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment & { token: string }>>;
   getPreferences(options?: RequestOptions): Promise<ApiResponse<PreferencesResult>>;
@@ -192,6 +248,16 @@ export class SchoolWallClient {
   getMessages(userId: Id, query?: MessagesQuery, options?: RequestOptions): Promise<ApiResponse<MessagesPage>>;
   prepareMessage(input: SendMessageInput): PreparedMessage;
   sendMessage(input: SendMessageInput, options?: RequestOptions): Promise<SendMessageResponse>;
+  getConfessionStats(query?: ConfessionWallQuery, options?: RequestOptions): Promise<ApiResponse<ConfessionStats>>;
+  getReceivedConfessions(query?: ConfessionsQuery, options?: RequestOptions): Promise<ApiResponse<ConfessionsPage>>;
+  getConfessionThread(messageId: Id, query?: ConfessionThreadQuery, options?: RequestOptions): Promise<ApiResponse<ConfessionThread>>;
+  prepareDirectConfession(input: DirectConfessionInput): PreparedDirectConfession;
+  prepareConfessionReply(input: ConfessionReplyInput): PreparedConfessionReply;
+  sendDirectConfession(input: DirectConfessionInput, options?: RequestOptions): Promise<SendMessageResponse>;
+  replyToConfession(messageId: Id, input: ConfessionReplyInput, options?: RequestOptions): Promise<SendMessageResponse>;
+  requestConfessionIdentity(messageId: Id, input: ConfessionIdentityRequestInput, options?: RequestOptions): Promise<ApiResponse<{ request: ConfessionIdentityRequest }>>;
+  getConfessionIdentityRequests(query?: ConfessionIdentityRequestsQuery, options?: RequestOptions): Promise<ApiResponse<{ requests: ConfessionIdentityRequest[] }>>;
+  decideConfessionIdentity(requestId: Id, input: ConfessionIdentityDecisionInput, options?: RequestOptions): Promise<ApiResponse<{ request: ConfessionIdentityRequest }>>;
   readMessage(messageId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
   readMessages(ids: Id[], options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
   readAllMessages(type?: MessageType, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
@@ -219,6 +285,6 @@ export class SchoolWallClient {
   blockUser(userId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
   unblockUser(userId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
   deleteVote(voteId: Id, options?: RequestOptions): Promise<ApiResponse<MessageAcknowledgment>>;
-  getTreeMessages(conversationId: string, query?: PageQuery & { before?: Id; mark_read?: '0' | '1' | 0 | 1 }, options?: RequestOptions): Promise<ApiResponse<MessagesPage>>;
+  getTreeMessages(conversationId: string, query?: { limit?: number; before?: Id; mark_read?: '0' | '1' | 0 | 1 }, options?: RequestOptions): Promise<ApiResponse<TreeMessagesPage>>;
 }
 export function createMobileClient(options?: ClientOptions): SchoolWallClient;

@@ -1,98 +1,116 @@
 <script setup>
 import { ref, watch, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import api from '../api'
+import api, { getApiErrorMessage } from '../api'
 import Icon from '../components/Icon.vue'
 import { useSettingsStore } from '../stores/settings'
+import { useMarkdown } from '../composables/useMarkdown'
+import { useConfessionContext } from '../composables/useConfessionContext'
+import { confessionPayload, newConfessionMessageId } from '../utils/confessions'
 
 const router = useRouter()
-
+const settingsStore = useSettingsStore()
+const { renderMarkdown } = useMarkdown()
+const { contextKey, wallId, active, capture } = useConfessionContext()
 const searchQuery = ref('')
 const searchResults = ref([])
 const selectedUser = ref(null)
 const title = ref('')
 const content = ref('')
-const settingsStore = useSettingsStore()
 const isAnonymous = ref(settingsStore.prefs.default_anonymous_confession)
+const allowReplies = ref(false)
+const direct = ref(false)
+const preview = ref(false)
 const loading = ref(false)
 const error = ref('')
 const success = ref(false)
-
+const searching = ref(false)
+const searchError = ref('')
 let searchTimer = null
 let redirectTimer = null
 let searchVersion = 0
-let searchController = null
-let disposed = false
-const searching = ref(false)
-const searchError = ref('')
+let searchRequest = null
+let pendingSubmission = null
 
-watch(searchQuery, (val) => {
+function cancelSearch() {
   clearTimeout(searchTimer)
-  searchController?.abort()
-  const version = ++searchVersion
+  searchRequest?.abort()
+  searchVersion++
+  searching.value = false
+}
+watch(contextKey, () => {
+  cancelSearch()
+  clearTimeout(redirectTimer)
+  searchQuery.value = ''
+  searchResults.value = []
+  selectedUser.value = null
+  title.value = ''
+  content.value = ''
+  isAnonymous.value = settingsStore.prefs.default_anonymous_confession
+  allowReplies.value = false
+  direct.value = false
+  preview.value = false
+  loading.value = false
+  success.value = false
+  error.value = ''
+  searchError.value = ''
+  pendingSubmission = null
+}, { flush: 'sync' })
+
+watch(searchQuery, val => {
+  cancelSearch()
+  const version = searchVersion
   const query = val.trim()
   searchResults.value = []
   searchError.value = ''
-  searching.value = !!query
-  if (!query) return
+  searching.value = !!query && active.value && !!wallId.value
+  if (!searching.value) return
   searchTimer = setTimeout(async () => {
-    const controller = new AbortController()
-    searchController = controller
+    const request = capture()
+    searchRequest = request
     try {
-      const res = await api.get('/users/search', { params: { q: query }, signal: controller.signal })
-      if (!disposed && version === searchVersion) searchResults.value = res.data
+      const res = await api.get('/users/search', { ...request.config, params: { q: query, wall_id: wallId.value } })
+      if (request.current() && version === searchVersion) searchResults.value = Array.isArray(res.data) ? res.data : []
     } catch (e) {
-      if (!disposed && version === searchVersion && !controller.signal.aborted) searchError.value = '搜索失败，请重新输入或稍后重试'
+      if (request.current() && version === searchVersion) searchError.value = getApiErrorMessage(e, '搜索失败，请重新输入或稍后重试')
     } finally {
-      if (!disposed && version === searchVersion) searching.value = false
+      if (request.current() && version === searchVersion) searching.value = false
+      request.release()
     }
   }, 300)
 })
-onBeforeUnmount(() => {
-  disposed = true
-  searchVersion++
-  clearTimeout(searchTimer)
-  clearTimeout(redirectTimer)
-  searchController?.abort()
-})
+onBeforeUnmount(() => { cancelSearch(); clearTimeout(redirectTimer) })
 
 function selectUser(user) {
+  if (loading.value) return
   selectedUser.value = user
   searchQuery.value = ''
   searchResults.value = []
 }
-
-function clearUser() {
-  selectedUser.value = null
-}
+function clearUser() { if (!loading.value) selectedUser.value = null }
 
 async function submit() {
   if (loading.value || success.value) return
-  if (!selectedUser.value) {
-    error.value = '请选择收件人'
-    return
-  }
-  if (!content.value.trim()) {
-    error.value = '内容不能为空'
-    return
-  }
-
+  if (!active.value || !wallId.value) { error.value = '请先登录并选择校园墙'; return }
+  if (!selectedUser.value) { error.value = '请选择收件人'; return }
+  if (!direct.value && !content.value.trim()) { error.value = '内容不能为空'; return }
+  const draft = confessionPayload({ receiverId: selectedUser.value.id, wallId: wallId.value, direct: direct.value, title: title.value, content: content.value, anonymous: isAnonymous.value, allowReplies: allowReplies.value })
+  const fingerprint = JSON.stringify(draft)
+  if (pendingSubmission?.fingerprint !== fingerprint) pendingSubmission = { fingerprint, id: newConfessionMessageId() }
+  draft.payload.client_message_id = pendingSubmission.id
+  const request = capture()
   loading.value = true
   error.value = ''
   try {
-    await api.post('/messages', {
-      receiver_id: selectedUser.value.id,
-      type: 'confession',
-      title: title.value || '表白信',
-      content: content.value.trim(),
-      is_anonymous: isAnonymous.value
-    })
+    await api.post(draft.endpoint, draft.payload, request.config)
+    if (!request.current()) return
     success.value = true
-    if (!disposed) redirectTimer = setTimeout(() => router.push('/inbox'), 2000)
+    redirectTimer = setTimeout(() => { if (request.current()) router.push('/inbox') }, 2000)
   } catch (e) {
-    error.value = e.response?.data?.error || '发送失败'
+    if (request.current()) error.value = getApiErrorMessage(e, '发送失败，请重试')
   } finally {
-    loading.value = false
+    if (request.current()) loading.value = false
+    request.release()
   }
 }
 </script>
@@ -103,7 +121,7 @@ async function submit() {
 
     <div v-if="success" class="success-card glass-strong">
       <div class="success-icon"><Icon name="check-circle" :size="40" /></div>
-      <h2>表白信已送出！</h2>
+      <h2>{{ direct ? '实名直接表白已送出！' : '表白信已送出！' }}</h2>
       <p class="text-muted">对方会在收件箱中收到你的信</p>
       <p class="text-muted">正在跳转到收件箱...</p>
     </div>
@@ -114,6 +132,11 @@ async function submit() {
 
       <div v-if="error" class="error-msg" role="alert">{{ error }}</div>
 
+      <fieldset class="confession-fields" :disabled="loading">
+      <div class="form-group">
+        <label class="checkbox-label"><input type="checkbox" v-model="direct" />实名直接表白</label>
+        <p class="text-muted mode-hint">{{ direct ? '选择收信人后即可发送。系统将使用你的昵称实名表达心意，不发送标题或正文，也不开放回复。' : '写一封表白信，选择是否匿名和允许回复。' }}</p>
+      </div>
       <!-- 选择收件人 -->
       <div class="form-group">
         <label for="confession-recipient">收件人</label>
@@ -156,6 +179,7 @@ async function submit() {
         </div>
       </div>
 
+      <template v-if="!direct">
       <!-- 标题 -->
       <div class="form-group">
         <label for="confession-title">标题 <span class="text-muted">(可选)</span></label>
@@ -165,7 +189,12 @@ async function submit() {
       <!-- 内容 -->
       <div class="form-group">
         <label for="confession-content">内容</label>
-        <textarea
+        <div class="preview-tabs" aria-label="正文显示方式">
+          <button type="button" class="btn btn-sm btn-secondary" :aria-pressed="!preview" @click="preview = false">编辑</button>
+          <button type="button" class="btn btn-sm btn-secondary" :aria-pressed="preview" @click="preview = true">Markdown 预览</button>
+        </div>
+        <div v-if="preview" class="markdown-body confession-preview" v-html="renderMarkdown(content || '暂无内容')"></div>
+        <textarea v-else
           id="confession-content"
           v-model="content"
           placeholder="写下你想对TA说的话..."
@@ -183,18 +212,32 @@ async function submit() {
         </label>
       </div>
 
-      <div v-if="isAnonymous" class="anonymous-notice">
-        匿名模式下，收件人不会知道是谁发的。系统会保留你的身份信息以防止滥用。
+      <div class="form-group">
+        <label class="checkbox-label"><input type="checkbox" v-model="allowReplies" />允许收信人回复</label>
+        <p class="text-muted mode-hint">关闭后，这封信不会显示回复按钮。</p>
       </div>
-
-      <button class="btn btn-primary" style="width: 100%" :disabled="loading || !selectedUser || !content.trim()" @click="submit">
-        {{ loading ? '发送中…' : '发送表白信' }}
+      <div v-if="isAnonymous" class="anonymous-notice">
+        收信人看不到你的身份，可以申请查看；只有你在收件箱明确同意后，才会向该收信人披露。系统保留身份信息以防止滥用。
+      </div>
+      </template>
+      <div v-else class="anonymous-notice" role="note">本次为实名直接表白，对方会知道是你。确认收信人后点击下方按钮发送。</div>
+      </fieldset>
+      <button class="btn btn-primary submit-button" :disabled="loading || !active || !wallId || !selectedUser || (!direct && !content.trim())" @click="submit">
+        {{ loading ? '发送中…' : direct ? '实名直接表白' : '发送表白信' }}
       </button>
     </div>
   </div>
 </template>
 
 <style scoped>
+.confession-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+.mode-hint { margin-top: 6px; font-size: 0.8125rem; line-height: 1.6; }
+.preview-tabs { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.confession-preview { min-height: 150px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); overflow-wrap: anywhere; overflow-x: auto; }
+.confession-preview :deep(img) { max-width: 100%; height: auto; }
+.submit-button { width: 100%; }
+@media (prefers-reduced-motion: reduce) { .confession-page { animation: none; } }
+
 .confession-page {
   animation: fadeIn 0.5s ease;
 }

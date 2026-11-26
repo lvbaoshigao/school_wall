@@ -23,6 +23,7 @@ export const SETTINGS_ITEMS = [
   choice('accent', 'appearance', '主题色', '按钮、焦点框和选中状态使用同一主题色。', [['teal', '青碧'], ['indigo', '靛蓝'], ['forest', '松绿'], ['amber', '琥珀'], ['rose', '绛红'], ['slate', '石墨']]),
   binary('wallpaper_enabled', 'appearance', '显示背景壁纸', '开启背景壁纸，让磨砂玻璃透出柔和的风景。关闭后保留清爽的主题底色。'),
   choice('wallpaper_source', 'appearance', '壁纸来源', '必应每日更新风景，换壁纸可浏览近期图片；暂时无法获取时自动使用本地壁纸。', [['bing', '必应每日壁纸'], ['local', '本地随机壁纸']]),
+  binary('liquid_glass', 'appearance', '液态玻璃', '默认开启：为面板与按钮加入柔和透光、边缘高光和轻微交互反馈。关闭后保留简洁磨砂外观；关闭毛玻璃或启用高对比度时自动使用实色面板。'),
   binary('reduce_motion', 'appearance', '减少动效', '减少入场动画和过渡，也会尊重系统的减少动态效果偏好。'),
   binary('high_contrast', 'appearance', '高对比度', '提高文字与边框的对比，减少半透明背景。'),
   binary('always_focus_ring', 'appearance', '始终显示焦点框', '即使使用鼠标操作，也显示当前控件的焦点位置。'),

@@ -214,7 +214,7 @@ onUnmounted(() => { clearInterval(visitTimer); retryOperation.value = null })
         <section v-for="group in visibleGroups" :key="group.id" class="settings-group glass" :aria-label="group.title">
           <header v-if="isSearching" class="result-group-header"><Icon :name="group.icon" :size="17" /><h3>{{ group.title }}</h3><span>{{ group.items.length }} 项</span></header>
           <p v-if="group.id === 'account' && unfindable" class="context-note" role="status">所有搜索方式都已关闭。其他同学无法主动搜索到你，你仍可以添加好友。</p>
-          <p v-if="group.id === 'appearance'" class="context-note">当前显示{{ resolvedTheme }}主题。外观更改会立即预览，保存失败时自动恢复。</p>
+          <p v-if="group.id === 'appearance'" class="context-note">当前显示{{ resolvedTheme }}主题。外观更改会立即预览，保存失败时自动恢复。关闭毛玻璃或启用高对比度时，液态玻璃会自动降级为清晰的实色面板。</p>
           <p v-if="group.id === 'notifications'" class="context-note">私信与树洞对话始终计入未读，避免遗漏直接发给你的消息。</p>
           <SettingControl v-for="item in group.items" :key="item.key" :setting="item" :value="valueFor(item)" :disabled="busy || !!disabledReason(item)" :disabled-reason="disabledReason(item)" :busy="actionBusy === item.key" @change="saveSetting(item, $event)" @action="handleAction(item)" />
           <form v-if="group.id === 'data' && showResetScope" class="reset-panel" @submit.prevent="askReset"><label for="reset-scope">选择恢复范围</label><div class="reset-controls"><select id="reset-scope" v-model="resetScope" :disabled="busy"><option v-for="(label, scope) in scopeLabels" :key="scope" :value="scope">{{ label }}</option></select><button type="submit" class="btn btn-secondary" :disabled="busy">继续确认</button></div><p>账号隐私、个人资料和内容不会随偏好恢复而改变。</p></form>
@@ -238,15 +238,17 @@ h1 { margin: 0; font-size: clamp(1.9rem, 4vw, 2.45rem); line-height: 1.25; font-
 .save-indicator { display: inline-flex; align-items: center; gap: .4rem; padding: .5rem .75rem; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: .77rem; color: var(--text-secondary); flex-shrink: 0; min-height: 2.5rem; }
 .save-indicator.saved { color: var(--text-link); background: var(--accent-soft); border-color: var(--accent-line); }
 .save-indicator.error { color: var(--danger-light); }
-.settings-search { display: flex; align-items: center; gap: .75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-card); padding: .35rem .85rem; margin-bottom: 1.65rem; color: var(--text-muted); }
+.settings-search { display: flex; align-items: center; gap: .75rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background-color: var(--surface-card); padding: .35rem .85rem; margin-bottom: 1.65rem; color: var(--text-muted); }
 .settings-search:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .settings-search input { min-width: 0; flex: 1; border: 0; box-shadow: none; outline: none; background: none; color: var(--text-primary); padding: .65rem 0; min-height: 2.75rem; font-size: .9rem; border-radius: 0; }
 .settings-search input:focus-visible { outline: none; }
 .settings-search input::-webkit-search-cancel-button { display: none; }
 .search-clear { width: 2.75rem; height: 2.75rem; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; display: grid; place-items: center; border-radius: var(--radius-sm); flex-shrink: 0; }
 .search-clear:hover { background: var(--bg-card-hover); }
+.search-clear, .back-top, .category-button { transition: background-color var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease); }
+.search-clear:active, .back-top:active { background: var(--bg-input-focus); }
 .search-count { flex-shrink: 0; font-size: .77rem; font-variant-numeric: tabular-nums; border-left: 1px solid var(--border-strong); padding-left: .8rem; }
-.settings-masthead, .settings-search, .category-navigation { background: var(--surface-card); }
+.settings-masthead, .settings-search, .category-navigation { background-color: var(--surface-card); }
 .settings-masthead { padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .category-navigation { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .settings-layout { display: grid; grid-template-columns: 11.7rem minmax(0, 1fr); gap: 1.8rem; align-items: start; }
@@ -264,8 +266,8 @@ h1 { margin: 0; font-size: clamp(1.9rem, 4vw, 2.45rem); line-height: 1.25; font-
 .section-eyebrow { font-size: .72rem; color: var(--text-muted); margin-bottom: .35rem; }
 .section-heading h2 { font-size: 1.4rem; letter-spacing: -.025em; line-height: 1.45; outline: none; scroll-margin-top: 6rem; }
 .section-heading p:last-child { font-size: .83rem; color: var(--text-muted); margin-top: .3rem; line-height: 1.8; }
-.back-top { display: inline-flex; align-items: center; justify-content: center; gap: .25rem; min-height: 44px; background: none; border: 0; cursor: pointer; color: var(--text-link); font: inherit; font-size: .74rem; flex-shrink: 0; padding: .4rem; }
-.settings-group { padding: .25rem 1.5rem; margin-bottom: 1rem; border: 1px solid var(--border); box-shadow: none; }
+.back-top { display: inline-flex; align-items: center; justify-content: center; gap: .25rem; min-height: 44px; background: none; border: 0; cursor: pointer; color: var(--text-link); font: inherit; font-size: .74rem; flex-shrink: 0; padding: .4rem; border-radius: var(--radius-sm); }
+.settings-group { padding: .25rem 1.5rem; margin-bottom: 1rem; border: 1px solid var(--border); box-shadow: var(--glass-highlight); }
 .result-group-header { display: flex; align-items: center; gap: .5rem; padding: 1rem 0 .85rem; color: var(--text-link); border-bottom: 1px solid var(--border); }
 .result-group-header h3 { font-size: .92rem; font-weight: 600; }
 .result-group-header span { margin-left: auto; font-size: .76rem; color: var(--text-muted); }

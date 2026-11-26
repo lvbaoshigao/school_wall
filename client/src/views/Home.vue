@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, watch, onMounted, onActivated, onDeactivated, onBeforeUnmount, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 import PostCard from '../components/PostCard.vue'
@@ -32,6 +32,8 @@ let postsRequest = 0
 let postsController
 let wallRequest = 0
 let disposed = false
+let active = false
+let seenPublication = null
 const page = ref(1)
 const total = ref(0)
 const limit = 20
@@ -152,8 +154,7 @@ async function loadWallInfo() {
 watch(() => wallStore.currentWallId, () => {
   posts.value = []
   total.value = 0
-  loadPosts(1)
-  loadWallInfo()
+  if (active) { loadPosts(1); loadWallInfo() }
 })
 
 onBeforeUnmount(() => {
@@ -171,14 +172,34 @@ watch(() => settingsStore.loaded, (ok) => {
   sortMode.value = p.feed_sort
   activeCategory.value = p.feed_category
   page.value = 1
-  loadPosts(1)
+  if (active) loadPosts(1)
 })
 
 onMounted(() => {
   updateViewport()
   window.addEventListener('resize', updateViewport)
-  loadPosts()
+})
+
+// KeepAlive 返回只触发 activated；发布后回到最新的全部分类，确保新帖可见。
+onActivated(() => {
+  active = true
+  const publication = wallStore.lastPublishedPost
+  if (publication && publication !== seenPublication && publication.wallId === wallStore.currentWallId) {
+    touchedByUser = true
+    activeCategory.value = '全部'
+    sortMode.value = 'latest'
+    page.value = 1
+  }
+  seenPublication = publication
+  loadPosts(page.value)
   loadWallInfo()
+})
+onDeactivated(() => {
+  active = false
+  showTopicDrawer.value = false
+  postsRequest++
+  wallRequest++
+  postsController?.abort()
 })
 </script>
 

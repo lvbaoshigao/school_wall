@@ -35,6 +35,7 @@ const routes = [
   { path: '/post/:id', name: 'PostDetail', component: () => import('../views/PostDetail.vue'), meta: { auth: true, wall: true } },
   { path: '/inbox', name: 'Inbox', component: () => import('../views/Inbox.vue'), meta: { auth: true } },
   { path: '/confession/write', name: 'WriteConfession', component: () => import('../views/WriteConfession.vue'), meta: { auth: true, wall: true } },
+  { path: '/statistics', name: 'ConfessionStats', component: () => import('../views/ConfessionStats.vue'), meta: { auth: true } },
   { path: '/votes', name: 'Votes', component: () => import('../views/Votes.vue'), meta: { auth: true, wall: true } },
   { path: '/vote/create', name: 'CreateVote', component: () => import('../views/CreateVote.vue'), meta: { auth: true, wall: true } },
   { path: '/vote/:id', name: 'VoteDetail', component: () => import('../views/VoteDetail.vue'), meta: { auth: true, wall: true } },

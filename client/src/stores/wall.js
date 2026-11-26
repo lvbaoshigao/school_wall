@@ -13,6 +13,8 @@ export const useWallStore = defineStore('wall', () => {
   const currentWallId = ref(wallId(readStorage('currentWallId')))
   const loaded = ref(false)
   const loadError = ref('')
+  // 仅记录本会话中成功的发布，用于唤醒缓存中的信息流。
+  const lastPublishedPost = ref(null)
   let pendingRequest = null
   const currentWall = computed(() => myWalls.value.find(w => w.id === currentWallId.value && (!w.member_status || w.member_status === 'active')) || null)
   const currentWallRole = computed(() => currentWall.value?.wall_role || null)
@@ -52,8 +54,15 @@ export const useWallStore = defineStore('wall', () => {
     return true
   }
   function switchWall(id) { return setCurrentWall(id) }
+  function markPostPublished(value) {
+    const id = wallId(value)
+    if (!id || id !== currentWallId.value) return false
+    lastPublishedPost.value = { wallId: id }
+    return true
+  }
   function reset() {
     myWalls.value = []
+    lastPublishedPost.value = null
     setCurrentWall(null)
     loaded.value = false
     loadError.value = ''
@@ -63,6 +72,6 @@ export const useWallStore = defineStore('wall', () => {
 
   return {
     myWalls, currentWallId, loaded, loadError, currentWall, currentWallRole, hasWall,
-    canHere, fetchMyWalls, setCurrentWall, switchWall, reset,
+    canHere, fetchMyWalls, setCurrentWall, switchWall, reset, lastPublishedPost, markPostPublished,
   }
 })

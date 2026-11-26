@@ -1,3 +1,5 @@
+const { loadConfessionContext, presentConfession } = require('./confessions');
+
 // Never trust persisted reply previews: visibility and revocation can change later.
 function visibleToUser(message, userId) {
   return !!message && ((message.sender_id === userId && !message.sender_deleted) ||
@@ -22,6 +24,7 @@ function canQuoteMessage(req, source, target, activeWalls) {
 }
 
 function presentMessages(req, rows) {
+  const confessionContext = loadConfessionContext(req, rows);
   const ids = [...new Set(rows.filter(row => row.reply_to_id > 0).flatMap(row => [row.id, row.reply_to_id]))];
   const originals = new Map();
   for (let offset = 0; offset < ids.length; offset += 400) {
@@ -30,6 +33,7 @@ function presentMessages(req, rows) {
     const records = req.db.prepare('SELECT * FROM messages WHERE id IN (' + placeholders + ')').all(...batch);
     records.forEach(record => originals.set(record.id, record));
   }
+  confessionContext.records.forEach(record => originals.set(record.id, record));
   const wallIds = [...new Set([...originals.values()].filter(row => row.type === 'confession').map(row => row.wall_id))];
   const activeWalls = new Set();
   for (let offset = 0; offset < wallIds.length; offset += 400) {
@@ -50,7 +54,7 @@ function presentMessages(req, rows) {
     const batch = authors.slice(offset, offset + 400);
     req.db.prepare('SELECT id,nickname FROM users WHERE id IN (' + batch.map(() => '?').join(',') + ')').all(...batch).forEach(user => names.set(user.id, user.nickname || '用户'));
   }
-  return rows.map(row => {
+  const presented = rows.map(row => {
     const output = { ...row };
     delete output.sender_deleted;
     delete output.receiver_deleted;
@@ -96,6 +100,7 @@ function presentMessages(req, rows) {
     output.reply_to_content = available ? output.reply_to.content : (revoked ? '[消息已撤回]' : '');
     return output;
   });
+  return presented.map(row => row.type === 'confession' ? presentConfession(req, row, confessionContext) : row).filter(Boolean);
 }
 
 module.exports = { presentMessages, canQuoteMessage, visibleToUser };

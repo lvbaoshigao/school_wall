@@ -604,6 +604,8 @@ async function initDB({ deferInitialSave = false } = {}) {
     console.warn('[DB] 迁移过程中出现少量跳过项（可忽略）: ' + e.message);
   }
 
+  require('./lib/confessions').migrateConfessions(wrapper);
+
   // Create cursor/idempotency indexes after old databases received the new column.
   wrapper.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_sender_client_id ON messages(sender_id, client_message_id) WHERE client_message_id IS NOT NULL AND client_message_id <> ''");
   wrapper.exec('CREATE INDEX IF NOT EXISTS idx_messages_private_outgoing ON messages(sender_id, receiver_id, id)');

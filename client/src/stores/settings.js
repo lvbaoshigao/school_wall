@@ -49,6 +49,7 @@ export const PREF_SCHEMA = {
   high_contrast: { type: 'bool', def: false, group: 'appearance' },
   always_focus_ring: { type: 'bool', def: false, group: 'appearance' },
   disable_blur: { type: 'bool', def: false, group: 'appearance' },
+  liquid_glass: { type: 'bool', def: true, group: 'appearance' },
   accent: { type: 'enum', values: ['indigo', 'teal', 'forest', 'amber', 'rose', 'slate'], def: 'teal', group: 'appearance' },
   theme_mode: { type: 'enum', values: ['system', 'light', 'dark'], def: 'system', group: 'appearance' },
   wallpaper_enabled: { type: 'bool', def: true, group: 'appearance' },
@@ -59,13 +60,14 @@ export const PREF_SCHEMA = {
   chat_poll_interval: { type: 'enum', values: ['10', '20', '30', '60'], def: '20', group: 'chat' },
 }
 
+// 保留品牌主题色；主操作单独使用满足白字 AA 对比度的同色系填充。
 export const ACCENTS = [
-  { key: 'indigo', label: '靛蓝', c1: '#7183f0', c2: '#5a68d8', shadow: '72, 92, 210' },
-  { key: 'teal',   label: '青碧', c1: '#397d72', c2: '#2d655c', shadow: '36, 96, 86' },
-  { key: 'forest', label: '松绿', c1: '#5cb073', c2: '#438c59', shadow: '48, 110, 70' },
-  { key: 'amber',  label: '琥珀', c1: '#e0a34a', c2: '#c4832f', shadow: '150, 100, 30' },
-  { key: 'rose',   label: '绛红', c1: '#e0708a', c2: '#c4526e', shadow: '150, 55, 80' },
-  { key: 'slate',  label: '石墨', c1: '#7c8794', c2: '#5f6a77', shadow: '70, 80, 92' },
+  { key: 'indigo', label: '靛蓝', c1: '#7183f0', c2: '#5a68d8', shadow: '72, 92, 210', button: '#5265c4', buttonHover: '#4555ab' },
+  { key: 'teal',   label: '青碧', c1: '#397d72', c2: '#2d655c', shadow: '36, 96, 86', button: '#397d72', buttonHover: '#2d655c' },
+  { key: 'forest', label: '松绿', c1: '#5cb073', c2: '#438c59', shadow: '48, 110, 70', button: '#327845', buttonHover: '#296339' },
+  { key: 'amber',  label: '琥珀', c1: '#e0a34a', c2: '#c4832f', shadow: '150, 100, 30', button: '#8a5b16', buttonHover: '#734b12' },
+  { key: 'rose',   label: '绛红', c1: '#e0708a', c2: '#c4526e', shadow: '150, 55, 80', button: '#ad3e5d', buttonHover: '#91344e' },
+  { key: 'slate',  label: '石墨', c1: '#7c8794', c2: '#5f6a77', shadow: '70, 80, 92', button: '#586574', buttonHover: '#475361' },
 ]
 
 const DEFAULT_NAV = NAV_ITEMS.reduce((acc, item) => { acc[item.key] = !['votes', 'treehole', 'bookmarks', 'help'].includes(item.key); return acc }, {})
@@ -140,10 +142,15 @@ export const useSettingsStore = defineStore('settings', () => {
     el.dataset.highContrast = p.high_contrast ? 'on' : 'off'
     el.dataset.focusRing = p.always_focus_ring ? 'always' : 'auto'
     el.dataset.blur = p.disable_blur ? 'off' : 'on'
+    el.dataset.liquidGlass = p.liquid_glass ? 'on' : 'off'
     el.style.setProperty('--accent-1', accent.value.c1)
     el.style.setProperty('--accent-2', accent.value.c2)
     el.style.setProperty('--accent-shadow-rgb', accent.value.shadow)
+    el.style.setProperty('--btn-fill', accent.value.button)
+    el.style.setProperty('--btn-fill-hover', accent.value.buttonHover)
   }
+  // 首次访问与未登录页面也应用同一套默认外观，不等待账号偏好请求。
+  applyAppearance()
   function snapshot() { return { ...nav.value, ...tools.value, ...prefs.value } }
   function applyPatch(patch, persistTheme = false) {
     for (const [key, value] of Object.entries(patch)) {

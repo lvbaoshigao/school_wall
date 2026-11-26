@@ -1,0 +1,69 @@
+/* Markdown content only. Keep editor/page layout and global controls separate. */
+:is(.md-body, .markdown-body) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.75;
+  color: var(--text-secondary);
+}
+
+:is(.md-body, .markdown-body) :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--text-primary);
+  line-height: 1.4;
+  margin: 0.8em 0 0.4em;
+}
+:is(.md-body, .markdown-body) h1 { font-size: 1.5em; }
+:is(.md-body, .markdown-body) h2 { font-size: 1.3em; }
+:is(.md-body, .markdown-body) h3 { font-size: 1.15em; }
+:is(.md-body, .markdown-body) :is(h4, h5, h6) { font-size: 1em; }
+:is(.md-body, .markdown-body) p { margin: 0.45em 0; }
+:is(.md-body, .markdown-body) > :first-child { margin-top: 0; }
+:is(.md-body, .markdown-body) > :last-child { margin-bottom: 0; }
+:is(.md-body, .markdown-body) :is(ul, ol) { padding-left: 1.6em; margin: 0.45em 0; }
+:is(.md-body, .markdown-body) li > :is(ul, ol) { margin-block: 0.2em; }
+:is(.md-body, .markdown-body) li > input[type="checkbox"] {
+  appearance: auto;
+  width: 1em;
+  height: 1em;
+  margin: 0 0.35em 0 0;
+  vertical-align: -0.1em;
+  accent-color: var(--accent-1);
+}
+:is(.md-body, .markdown-body) a { color: var(--text-link); text-decoration: underline; }
+:is(.md-body, .markdown-body) strong { color: var(--text-primary); }
+:is(.md-body, .markdown-body) img { max-width: 100%; height: auto; border-radius: var(--radius-md); margin-block: 0.5em; }
+:is(.md-body, .markdown-body) code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.9em;
+  background: var(--bg-input);
+  border-radius: var(--radius-xs);
+  padding: 0.1em 0.3em;
+}
+:is(.md-body, .markdown-body) pre {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 4;
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+  padding: 0.85em;
+  margin-block: 0.65em;
+}
+:is(.md-body, .markdown-body) pre code { background: none; padding: 0; border-radius: 0; white-space: inherit; }
+:is(.md-body, .markdown-body) blockquote { border-left: 3px solid var(--accent-line); padding-left: 0.85em; color: var(--text-muted); margin: 0.65em 0; }
+:is(.md-body, .markdown-body) hr { border: 0; border-top: 1px solid var(--border); margin-block: 0.85em; }
+:is(.md-body, .markdown-body) table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin-block: 0.65em;
+}
+:is(.md-body, .markdown-body) :is(th, td) { border: 1px solid var(--border-strong); padding: 0.4em 0.65em; text-align: left; overflow-wrap: anywhere; }
+:is(.md-body, .markdown-body) th { background: var(--bg-card); }
+:is(.md-body, .markdown-body) :is(th, td)[align="left"] { text-align: left; }
+:is(.md-body, .markdown-body) :is(th, td)[align="center"] { text-align: center; }
+:is(.md-body, .markdown-body) :is(th, td)[align="right"] { text-align: right; }

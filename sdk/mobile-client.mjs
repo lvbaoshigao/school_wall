@@ -48,6 +48,16 @@ function normalizeHeaders(value, allowedNames) {
   }
   return Object.fromEntries(Object.entries(normalized));
 }
+function prepareConfessionPayload(input, cryptoSource, direct) {
+  const allowed = direct ? ['receiver_id', 'wall_id', 'client_message_id'] : ['content', 'wall_id', 'client_message_id'];
+  if (!plainObject(input) || Object.keys(input).some(key => !allowed.includes(key))) throw invalid('Unknown confession input field');
+  if (direct) id(input.receiver_id);
+  else if (typeof input.content !== 'string' || !input.content.trim() || input.content.length > 2000) throw invalid('Reply content must contain 1–2000 characters');
+  if (input.wall_id !== undefined) id(input.wall_id);
+  const clientId = input.client_message_id ?? createClientMessageId(cryptoSource);
+  if (typeof clientId !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(clientId)) throw invalid('Invalid client_message_id');
+  return Object.freeze({ ...input, client_message_id: clientId });
+}
 function id(value) {
   if ((typeof value !== 'number' && typeof value !== 'string') || !/^[1-9]\d*$/.test(String(value))
     || !Number.isSafeInteger(Number(value))) throw invalid('An ID must be a positive safe integer');
@@ -217,6 +227,7 @@ export class SchoolWallClient {
   getCapabilities(options) { return this.request('/capabilities', { ...options, auth: false, wallId: null }); }
   login(credentials, options) { return this.request('/auth/login', { ...options, method: 'POST', body: credentials, auth: false, wallId: null }); }
   getMe(options) { return this.request('/auth/me', options); }
+  getAccountStatistics(options) { return this.callOperation('getAccountStatistics', {}, options); }
   updateProfile(profile, options) { return this.request('/auth/profile', { ...options, method: 'PUT', body: profile }); }
   changePassword(passwords, options) { return this.request('/auth/password', { ...options, method: 'PUT', body: passwords }); }
   getPreferences(options) { return this.request('/auth/prefs', options); }
@@ -258,6 +269,24 @@ export class SchoolWallClient {
     }
   }
 
+  getConfessionStats(query, options) { return this.callOperation('getConfessionStats', { query }, options); }
+  getReceivedConfessions(query, options) { return this.callOperation('getReceivedConfessions', { query }, options); }
+  getConfessionThread(messageId, query, options) { return this.callOperation('getConfessionThread', { path: { id: messageId }, query }, options); }
+  prepareDirectConfession(input) { return prepareConfessionPayload(input, this.crypto, true); }
+  prepareConfessionReply(input) { return prepareConfessionPayload(input, this.crypto, false); }
+  async sendDirectConfession(input, options) {
+    const prepared = this.prepareDirectConfession(input);
+    try { return { ...await this.callOperation('sendDirectConfession', { body: prepared }, options), clientMessageId: prepared.client_message_id }; }
+    catch (error) { if (error instanceof ApiError) error.clientMessageId = prepared.client_message_id; throw error; }
+  }
+  async replyToConfession(messageId, input, options) {
+    const prepared = this.prepareConfessionReply(input);
+    try { return { ...await this.callOperation('replyToConfession', { path: { id: messageId }, body: prepared }, options), clientMessageId: prepared.client_message_id }; }
+    catch (error) { if (error instanceof ApiError) error.clientMessageId = prepared.client_message_id; throw error; }
+  }
+  requestConfessionIdentity(messageId, input, options) { return this.callOperation('requestConfessionIdentity', { path: { id: messageId }, body: input }, options); }
+  getConfessionIdentityRequests(query, options) { return this.callOperation('getConfessionIdentityRequests', { query }, options); }
+  decideConfessionIdentity(requestId, input, options) { return this.callOperation('decideConfessionIdentity', { path: { requestId }, body: input }, options); }
   readMessage(messageId, options) { return this.request('/messages/' + id(messageId) + '/read', { ...options, method: 'PUT' }); }
   readMessages(ids, options) { return this.request('/messages/read-batch', { ...options, method: 'PUT', body: { ids } }); }
   readAllMessages(type, options) { return this.request('/messages/read-all', { ...options, method: 'PUT', body: type === undefined ? {} : { type } }); }
@@ -327,7 +356,10 @@ export class SchoolWallClient {
   blockUser(userId, options) { return this.callOperation('blockUser', { body: { user_id: userId } }, options); }
   unblockUser(userId, options) { return this.callOperation('unblockUser', { body: { user_id: userId } }, options); }
   deleteVote(voteId, options) { return this.callOperation('deleteVote', { path: { id: voteId } }, options); }
-  getTreeMessages(conversationId, query, options) { return this.callOperation('getTreeMessages', { path: { conversationId }, query }, options); }
+  getTreeMessages(conversationId, query, options) {
+    const normalized = query && (query.mark_read === 0 || query.mark_read === 1) ? { ...query, mark_read: String(query.mark_read) } : query;
+    return this.callOperation('getTreeMessages', { path: { conversationId }, query: normalized }, options);
+  }
 }
 
 function segment(value) {

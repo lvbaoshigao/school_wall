@@ -11,11 +11,12 @@
             |-- /api/       代理：限流、体积上限、超时
             |-- /dashboard  代理：应用生成 nonce CSP 与看板会话票据
             |-- /uploads/   代理：应用校验证据图片访问票据并返回缓存策略
+            |-- /rele/      代理：本地壁纸与必应离线回退，保留应用图片缓存头
             |-- /assets/    直接读取前端产物，长缓存
             |-- /           SPA，index.html 要求重新验证缓存
 ~~~
 
-上传文件不能由 Nginx alias 直接公开。公开图片与私密证据统一由应用处理；私密响应的 private, no-store 和 no-referrer 会原样保留。前端 CSP 允许 data: / blob: 图片预览；看板使用应用生成的 nonce CSP，代理不向它叠加前端 CSP。
+本地壁纸 /rele/ 由后端限定静态目录提供，经代理保留一天缓存和条件请求响应，不进入 SPA 回退。上传文件不能由 Nginx alias 直接公开。公开图片与私密证据统一由应用处理；私密响应的 private, no-store 和 no-referrer 会原样保留。前端 CSP 允许 data: / blob: 图片预览；看板使用应用生成的 nonce CSP，代理不向它叠加前端 CSP。
 
 ## 首次安装与更新
 

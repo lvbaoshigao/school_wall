@@ -252,7 +252,7 @@ router.post('/', authRequired, wallContext, (req, res) => {
   const result = req.db.prepare(`
     INSERT INTO posts (wall_id, content, category, is_anonymous, author_id, author_ip, is_markdown)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(req.wallId, content.trim(), cat, is_anonymous ? 1 : 0, authorId, ipHash, req.body.is_markdown ? 1 : 0);
+  `).run(req.wallId, req.body.is_markdown ? content.trimEnd() : content.trim(), cat, is_anonymous ? 1 : 0, authorId, ipHash, req.body.is_markdown ? 1 : 0);
 
   const post = req.db.prepare(`
     SELECT ${POST_SELECT} FROM posts p LEFT JOIN users u ON p.author_id=u.id WHERE p.id = ?

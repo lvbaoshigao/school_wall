@@ -50,6 +50,7 @@ const PREF_SCHEMA = {
   high_contrast:     { type: 'bool', def: false },
   always_focus_ring: { type: 'bool', def: false },
   disable_blur:      { type: 'bool', def: false },
+  liquid_glass:      { type: 'bool', def: true },
 
   // ===== 外观与聊天 =====
   accent: { type: 'enum', values: ['indigo', 'teal', 'forest', 'amber', 'rose', 'slate'], def: 'teal' },
@@ -66,7 +67,7 @@ const PREF_SCHEMA = {
 const PREF_SCOPES = Object.freeze({
   all: Object.freeze(Object.keys(PREF_SCHEMA)),
   appearance: Object.freeze(['accent', 'theme_mode', 'wallpaper_enabled', 'wallpaper_source', 'reduce_motion',
-    'high_contrast', 'always_focus_ring', 'disable_blur']),
+    'high_contrast', 'always_focus_ring', 'disable_blur', 'liquid_glass']),
   chat: Object.freeze(['chat_send_shortcut', 'chat_density', 'chat_show_timestamps', 'chat_poll_interval']),
   notifications: Object.freeze(['badge_interaction', 'badge_announcement', 'badge_system', 'badge_report',
     'unread_interval', 'notify_on_comment', 'notify_on_like']),

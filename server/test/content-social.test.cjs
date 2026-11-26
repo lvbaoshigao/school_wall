@@ -215,7 +215,7 @@ test('批量已读中后续更新失败时回滚已更新的普通消息', async
 
 for (const type of ['private', 'confession']) {
   test(`${type} 撤回同时移除标题与正文，已有引用显示撤回状态`, async () => {
-    const original = await request(1, '/messages', { method: 'POST', body: { receiver_id: 3, type, title: '标题中的敏感信息', content: '原消息正文' } });
+    const original = await request(1, '/messages', { method: 'POST', body: { receiver_id: 3, type, title: '标题中的敏感信息', content: '原消息正文', ...(type === 'confession' ? { allow_replies: true } : {}) } });
     assert.equal(original.status, 200);
     const originalId = original.body.id;
     const reply = await request(3, '/messages', { method: 'POST', body: { receiver_id: 1, type, content: '回复', reply_to_id: originalId } });

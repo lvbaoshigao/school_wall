@@ -4,21 +4,17 @@ import { useRoute } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
 import api from '../api'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import { useMarkdown } from '../composables/useMarkdown'
 import { useFocusTrap } from '../composables/useFocusTrap'
 
-marked.setOptions({ breaks: true, gfm: true })
-
 const userStore = useUserStore()
 const wallStore = useWallStore()
 const route = useRoute()
 const toast = useToast()
-const { truncateText } = useMarkdown()
+const { renderMarkdown, renderPlainText, truncateText } = useMarkdown()
 const errorMsg = ref('')
 const settingsModal = ref(null)
 const permissionsModal = ref(null)
@@ -427,8 +423,13 @@ function insertMd(before, after) {
   annForm.value.content = annForm.value.content.substring(0, start) + before + selected + after + annForm.value.content.substring(end)
   nextTick(() => { el.focus(); el.selectionStart = start + before.length; el.selectionEnd = start + before.length + selected.length })
 }
-function renderAnn(content) { return DOMPurify.sanitize(marked.parse(content || '')) }
-const renderedAnnPreview = computed(() => DOMPurify.sanitize(marked.parse(annForm.value.content || '*暂无内容*')))
+function renderAnn(content, isMarkdown = true) {
+  return isMarkdown ? renderMarkdown(content) : renderPlainText(content)
+}
+const renderedAnnPreview = computed(() => renderAnn(
+  annForm.value.content || (annForm.value.is_markdown ? '*暂无内容*' : '暂无内容'),
+  annForm.value.is_markdown,
+))
 
 async function loadCategories() {
   const wallId = wallStore.currentWallId
@@ -989,7 +990,7 @@ onBeforeUnmount(() => {
             <div class="md-spacer"></div>
             <button class="md-btn" :class="{ active: showMdPreview }" @click="showMdPreview = !showMdPreview">预览</button>
           </div>
-          <div class="md-body">
+          <div class="md-editor-body">
             <textarea ref="mdTextarea" v-model="annForm.content" placeholder="公告内容（支持 Markdown）..."></textarea>
             <div v-if="showMdPreview" class="md-preview markdown-body" v-html="renderedAnnPreview"></div>
           </div>
@@ -1015,7 +1016,7 @@ onBeforeUnmount(() => {
           <strong><Icon v-if="a.is_pinned" name="pin" :size="13" label="置顶" />{{ a.title }}</strong>
           <button class="btn btn-sm btn-danger" @click="deleteAnnouncement(a.id)">删除</button>
         </div>
-        <div class="ann-body markdown-body" v-html="renderAnn(a.content)"></div>
+        <div class="ann-body markdown-body" v-html="renderAnn(a.content, a.is_markdown)"></div>
       </div>
     </div>
 
@@ -1886,8 +1887,8 @@ body.light-theme .side-item.active {
 .filter-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
 .filter-row input, .filter-row select { flex: 1; min-width: 100px; }
 
-select { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 6px 10px; border-radius: var(--radius-sm); font-size: 0.8125rem; }
-select option { background: #333; color: #fff; }
+select { background: var(--bg-input); border: 1px solid var(--control-border); color: var(--text-primary); padding: 6px 10px; border-radius: var(--radius-sm); font-size: 0.8125rem; }
+select option { background: var(--surface-raised); color: var(--text-primary); }
 
 /* 成员管理按钮统一大小 */
 /* 成员管理的一排操作控件。原来 select 完全没样式（浏览器默认外观，高度与字号
@@ -1969,22 +1970,22 @@ select option { background: #333; color: #fff; }
 .evidence-box { background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); padding: 10px 12px; margin-top: 6px; }
 .evidence-pre { font-size: 0.75rem; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; max-height: 200px; overflow-y: auto; }
 
-.md-editor { margin: 10px 0; border: 1px solid rgba(255,255,255,0.15); border-radius: var(--radius-md); overflow: hidden; }
-.md-toolbar { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px; background: rgba(0,0,0,0.2); border-bottom: 1px solid rgba(255,255,255,0.1); }
+.md-editor { margin: 10px 0; border: 1px solid var(--border-strong); border-radius: var(--radius-md); overflow: hidden; }
+.md-toolbar { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
 .md-btn { background: none; border: none; color: var(--text-secondary); padding: 5px 9px; font-size: 0.8125rem; cursor: pointer; border-radius: var(--radius-sm); font-weight: 600; }
-.md-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+.md-btn:hover { background: var(--bg-input-focus); color: var(--text-primary); }
 .md-btn.active { background: color-mix(in srgb, var(--accent-1) 30%, transparent); color: var(--text-link); }
 .md-spacer { flex: 1; }
-.md-body { display: flex; }
-.md-body textarea { flex: 1; border: none; background: rgba(255,255,255,0.05); color: #fff; padding: 12px; font-size: 0.875rem; line-height: 1.6; resize: vertical; min-height: 150px; font-family: 'SF Mono', monospace; }
-.md-preview { flex: 1; padding: 12px; border-left: 1px solid rgba(255,255,255,0.1); overflow-y: auto; max-height: 300px; min-height: 150px; }
+.md-editor-body { display: flex; min-width: 0; }
+.md-editor-body textarea { flex: 1; border: none; background: var(--bg-input); color: var(--text-primary); padding: 12px; font-size: 0.875rem; line-height: 1.6; resize: vertical; min-height: 150px; font-family: 'SF Mono', monospace; }
+.md-preview { flex: 1; padding: 12px; border-left: 1px solid var(--border); overflow-y: auto; max-height: 300px; min-height: 150px; }
 
 .markdown-body { font-size: 0.9375rem; line-height: 1.7; color: var(--text-primary); }
-.markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 10px 0 6px; color: #fff; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 10px 0 6px; color: var(--text-primary); }
 .markdown-body code { background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: var(--radius-xs); font-size: 0.8125rem; }
 .markdown-body pre { background: rgba(0,0,0,0.3); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto; }
 .markdown-body a { color: var(--text-link); text-decoration: underline; }
-.markdown-body strong { color: #fff; }
+.markdown-body strong { color: var(--text-primary); }
 
 /* 墙资料编辑。
    注意 .section 只有 margin-bottom、没有 padding —— 直接套 .glass 会让内容贴住

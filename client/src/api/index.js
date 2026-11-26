@@ -53,6 +53,9 @@ if (typeof window !== 'undefined') {
 
 export function getApiErrorMessage(error, fallback = '请求失败，请稍后重试') {
   const message = error?.response?.data?.error
+  if (error?.response?.status === 404 && message === '接口不存在') {
+    return '服务版本尚未更新，请重启后端服务后重试；刷新网页不能更新后端。'
+  }
   if (typeof message === 'string' && message.trim()) return message.slice(0, 500)
   if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') return '请求超时，请检查网络后重试'
   if (!error?.response && error?.request) return '网络连接失败，请检查网络后重试'

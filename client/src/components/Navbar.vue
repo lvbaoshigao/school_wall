@@ -23,7 +23,7 @@ const userStore = useUserStore()
 const wallStore = useWallStore()
 const settingsStore = useSettingsStore()
 const router = useRouter()
-const { renderMarkdown, truncateText } = useMarkdown()
+const { renderMarkdown, renderPlainText, truncateText } = useMarkdown()
 const toast = useToast()
 
 const navRef = ref(null)
@@ -296,8 +296,8 @@ function openAnnDetail(ann) {
   showAnnDetail.value = true
 }
 
-function renderAnnouncement(content) {
-  return renderMarkdown(content)
+function renderAnnouncement(announcement) {
+  return announcement?.is_markdown ? renderMarkdown(announcement.content) : renderPlainText(announcement?.content)
 }
 </script>
 
@@ -424,6 +424,7 @@ function renderAnnouncement(content) {
                 <div class="dropdown-header"><strong>{{ userName }}</strong><span class="text-muted">@{{ user?.username }}</span></div>
                 <div class="dropdown-divider"></div>
                 <button class="dropdown-item" @click="go('/profile')">个人主页</button>
+                <button class="dropdown-item" @click="go('/statistics')">统计信息</button>
                 <button class="dropdown-item" @click="go('/settings')">设置</button>
                 <button v-if="canOpenAdmin" class="dropdown-item" @click="go('/admin')">管理后台</button>
                 <button v-if="userStore.can('global.dashboard')" class="dropdown-item" @click="openDashboard">运行看板</button>
@@ -471,6 +472,7 @@ function renderAnnouncement(content) {
           <button class="mobile-item" @click="go('/walls')">加入 / 申请建墙</button>
           <button class="mobile-item" @click="openAnnouncements">公告<span v-if="unreadAnnouncement > 0" class="unread-badge">{{ unreadAnnouncement > 99 ? '99+' : unreadAnnouncement }} 条未读</span></button>
           <button class="mobile-item" @click="go('/profile')">个人主页</button>
+          <button class="mobile-item" @click="go('/statistics')">统计信息</button>
           <div class="mobile-divider"></div>
           <template v-for="item in settingsStore.visibleNav" :key="item.key">
             <template v-if="item.type === 'dropdown'">
@@ -529,7 +531,7 @@ function renderAnnouncement(content) {
                 <strong>{{ selectedAnn.title }}</strong>
                 <span class="text-muted" style="font-size:12px">{{ new Date(selectedAnn.created_at).toLocaleDateString() }}</span>
               </div>
-              <div class="ann-item-body md-body" v-html="renderAnnouncement(selectedAnn.content)"></div>
+              <div class="ann-item-body md-body" v-html="renderAnnouncement(selectedAnn)"></div>
               <div class="ann-item-footer text-muted">—— {{ selectedAnn.author_name }}</div>
             </div>
           </div>
@@ -540,7 +542,7 @@ function renderAnnouncement(content) {
                 <strong>{{ a.title }}</strong>
                 <span class="text-muted" style="font-size:12px">{{ new Date(a.created_at).toLocaleDateString() }}</span>
               </div>
-              <div class="ann-item-body">{{ truncateText(a.content, 80) }}</div>
+              <div class="ann-item-body">{{ truncateText(a.content, 80, !!a.is_markdown) }}</div>
               <div class="ann-item-footer text-muted">—— {{ a.author_name }}</div>
             </div>
           </div>
@@ -1026,6 +1028,7 @@ html[data-reduce-motion='on'] .navbar { --nav-morph: 0; }
 .ann-item:hover { background: var(--bg-input-focus); }
 .ann-item-header { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
 .ann-item-body { font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: var(--text-primary); margin-bottom: 6px; }
+.ann-item-body.md-body { white-space: normal; word-break: normal; overflow-wrap: anywhere; }
 .ann-item-footer { font-size: 12px; text-align: right; }
 .ann-detail-item { padding: 12px 0; }
 .ann-detail-view { display: flex; flex-direction: column; gap: 12px; }

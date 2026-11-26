@@ -30,6 +30,11 @@
   --glass-mobile-filter: blur(12px) saturate(125%);
   --glass-mobile-strong-filter: blur(16px) saturate(130%);
   --nav-glass-filter: blur(24px) saturate(145%);
+  /* 液态质感只叠加静态高光，不创建额外模糊层或常驻动画。 */
+  --glass-edge: transparent;
+  --glass-sheen: transparent;
+  --motion-fast: 160ms;
+  --motion-panel: 220ms;
   --page-ambient: #25262e;
   --overlay: rgba(12, 13, 17, 0.64);
   --z-nav: 1000;
@@ -231,7 +236,7 @@ html[data-high-contrast='on'] .navbar .nav-inner { background: var(--surface-rai
 .stagger-item {
   opacity: 0;
   animation: riseIn 0.45s var(--ease) forwards;
-  animation-delay: calc(var(--i, 0) * 40ms);
+  animation-delay: calc(min(var(--i, 0), 6) * 32ms);
 }
 
 /* 尊重系统「减少动态效果」偏好：入场动画整体关闭，且必须清掉 stagger 延迟，
@@ -295,6 +300,20 @@ body.light-theme {
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
 }
 
+/* 默认启用；data 属性尚未初始化时也保持相同外观，避免首屏跳变。 */
+:where(html:not([data-liquid-glass='off'])) body {
+  --glass-edge: rgba(255, 255, 255, 0.17);
+  --glass-sheen: rgba(255, 255, 255, 0.055);
+}
+:where(html:not([data-liquid-glass='off'])) body.light-theme {
+  --glass-edge: rgba(255, 255, 255, 0.88);
+  --glass-sheen: rgba(255, 255, 255, 0.3);
+}
+html[data-liquid-glass='off'] body {
+  --navbar-shell-highlight: transparent;
+  --navbar-shell-sheen: transparent;
+}
+
 /* ----- Reset ----- */
 * {
   margin: 0;
@@ -307,6 +326,7 @@ html {
 }
 
 body {
+  --glass-highlight: inset 0 1px 0 var(--glass-edge);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   font-size: var(--font-base);
   line-height: var(--leading-normal);
@@ -320,7 +340,7 @@ body {
 /* 公共输入与键盘规范；沿用原有组件 API 与字号偏好。 */
 button, input, textarea, select { font-family: inherit; }
 button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
-button { touch-action: manipulation; }
+button { touch-action: manipulation; -webkit-user-select: none; user-select: none; }
 button:not(:disabled), a[href], input, textarea, select { scroll-margin-block: 90px; }
 :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
 button:disabled { cursor: not-allowed; }
@@ -368,44 +388,35 @@ html[data-app-layout='conversation'] .back-to-top { display: none; }
 /* ----- 毛玻璃卡片 ----- */
 .glass {
   background: var(--surface-card);
+  background-image: linear-gradient(145deg, var(--glass-sheen), transparent 52%);
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-  transition: box-shadow 0.3s var(--ease), background 0.3s var(--ease), transform 0.3s var(--ease);
+  box-shadow: var(--shadow-md), var(--glass-highlight);
+  transition: box-shadow var(--motion-panel) var(--ease), background-color var(--motion-panel) var(--ease), border-color var(--motion-panel) var(--ease);
 }
 
 .glass-strong {
   background: var(--surface-panel);
+  background-image: linear-gradient(145deg, var(--glass-sheen), transparent 52%);
   -webkit-backdrop-filter: var(--glass-strong-filter);
   backdrop-filter: var(--glass-strong-filter);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-lg), var(--glass-highlight);
 }
 
-/* 亮色主题下的 glass 调整 */
-body.light-theme .glass {
-  background: var(--surface-card);
-  -webkit-backdrop-filter: var(--glass-filter);
-  backdrop-filter: var(--glass-filter);
-}
-
-body.light-theme .glass-strong {
-  background: var(--surface-panel);
-  -webkit-backdrop-filter: var(--glass-strong-filter);
-  backdrop-filter: var(--glass-strong-filter);
-}
-
-/* 共享毛玻璃表面：标题与设置侧栏也使用相同的壁纸柔化效果。 */
+/* 标题、搜索和设置侧栏复用同一表面，不增加嵌套模糊层。 */
 .home-topbar, .settings-masthead, .settings-search, .category-navigation {
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
+  background-image: linear-gradient(145deg, var(--glass-sheen), transparent 52%);
+  box-shadow: var(--glass-highlight);
 }
 .navbar { --text-muted: var(--text-secondary); }
 
-/* 开关沿用账号中的 disable_blur，默认 false 即默认启用毛玻璃。 */
+/* 可读性优先于液态玻璃；在 body 层覆盖，亮色主题也能可靠降级。 */
 html[data-blur='off'] body,
 html[data-high-contrast='on'] body {
   --surface-card: var(--surface-card-solid);
@@ -416,10 +427,20 @@ html[data-high-contrast='on'] body {
   --nav-glass-filter: none;
   --glass-mobile-filter: none;
   --glass-mobile-strong-filter: none;
+  --glass-edge: transparent;
+  --glass-sheen: transparent;
+  --navbar-shell-highlight: transparent;
+  --navbar-shell-sheen: transparent;
 }
-html[data-high-contrast='on'] .glass-strong { background: var(--surface-raised); }
+html[data-high-contrast='on'] body {
+  --text-secondary: var(--text-primary);
+  --text-muted: var(--text-primary);
+  --control-border: var(--text-primary);
+  --bg-input: var(--surface-raised);
+}
 
-@media (prefers-reduced-transparency: reduce) {
+/* 浏览器和系统能力降级与用户关闭模糊保持一致。 */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
   body, body.light-theme {
     --surface-card: var(--surface-card-solid);
     --surface-panel: var(--surface-raised);
@@ -427,8 +448,12 @@ html[data-high-contrast='on'] .glass-strong { background: var(--surface-raised);
     --glass-filter: none;
     --glass-strong-filter: none;
     --nav-glass-filter: none;
-  --glass-mobile-filter: none;
-  --glass-mobile-strong-filter: none;
+    --glass-mobile-filter: none;
+    --glass-mobile-strong-filter: none;
+    --glass-edge: transparent;
+    --glass-sheen: transparent;
+    --navbar-shell-highlight: transparent;
+    --navbar-shell-sheen: transparent;
   }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
@@ -439,8 +464,12 @@ html[data-high-contrast='on'] .glass-strong { background: var(--surface-raised);
     --glass-filter: none;
     --glass-strong-filter: none;
     --nav-glass-filter: none;
-  --glass-mobile-filter: none;
-  --glass-mobile-strong-filter: none;
+    --glass-mobile-filter: none;
+    --glass-mobile-strong-filter: none;
+    --glass-edge: transparent;
+    --glass-sheen: transparent;
+    --navbar-shell-highlight: transparent;
+    --navbar-shell-sheen: transparent;
   }
 }
 
@@ -454,7 +483,7 @@ input, textarea, select {
   font-size: var(--font-base);
   outline: none;
   width: 100%;
-  transition: all var(--transition-slow);
+  transition: background-color var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease);
 }
 
 input::placeholder, textarea::placeholder {
@@ -478,122 +507,86 @@ body.light-theme select option {
 }
 
 /* ----- 按钮 ----- */
-/* 基类自带一套可读的中性配色：过去这里只写了 color:#fff 而没有 background，
-   漏写变体的 .btn 会拿到浏览器默认的 ButtonFace（近白），白底白字看不见。
-   现在裸 .btn 等同于 secondary 外观，有色变体在下方各自覆盖。
-   padding 比原来少 1px，抵消新增的 1px 边框，按钮外框尺寸保持不变。 */
+/* .btn 为中性默认；变体仅更换颜色，尺寸、焦点和反馈保持一致。 */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   padding: 9px 23px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-strong);
+  background-color: var(--bg-input);
+  background-image: linear-gradient(155deg, var(--glass-sheen), transparent 60%);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   font-size: var(--font-base);
   font-weight: 600;
+  line-height: var(--leading-tight);
+  text-align: center;
+  text-decoration: none;
+  vertical-align: middle;
   cursor: pointer;
-  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease), background 0.25s var(--ease), opacity 0.25s var(--ease);
   color: var(--text-primary);
+  box-shadow: var(--glass-highlight);
+  transition: transform var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease), background-color var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease), opacity var(--motion-fast) var(--ease);
   position: relative;
   overflow: hidden;
 }
 
-/* 按钮悬停轻微上浮 + 放大（非线性，无回弹） */
-.btn:hover:not(:disabled) {
-  transform: translateY(-1px) scale(1.02);
+/* 仅精确指针悬停时轻抬，触屏不会残留 hover 放大态。 */
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled):not([aria-disabled='true']):not([aria-busy='true']) { transform: translateY(-1px); }
 }
-.btn:active:not(:disabled) {
-  transform: translateY(0) scale(0.99);
-  transition-duration: 0.08s;
+.btn:active:not(:disabled):not([aria-disabled='true']):not([aria-busy='true']) {
+  transform: translateY(1px);
+  transition-duration: 80ms;
 }
+.btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
 
-/* 按压扩散光晕。
-   原先用 width/height 从 0 插值到 300px —— 每次按下都要让浏览器重算该按钮的
-   布局盒，即便 overflow:hidden 裁剪掉了溢出部分，动画期间仍会逐帧触发 layout。
-   改成 transform: scale() + opacity：只走合成器，不参与布局计算。 */
+/* 按压仅改变按钮范围内的透明度，无扩散光斑或常驻 GPU 图层。 */
 .btn::after {
   content: '';
   position: absolute;
-  top: 50%; left: 50%;
-  width: 300px; height: 300px;
-  margin: -150px 0 0 -150px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.2);
-  transform: translateZ(0) scale(0);
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.08);
   opacity: 0;
   pointer-events: none;
-  transition: transform 0.45s var(--ease), opacity 0.45s var(--ease);
+  transition: opacity var(--motion-fast) var(--ease);
+}
+.btn:active:not(:disabled):not([aria-disabled='true']):not([aria-busy='true'])::after { opacity: 0.3; }
+
+.btn-primary, .btn-danger, .btn-success { color: #fff; border-color: transparent; background-image: none; }
+.btn-primary { background-color: var(--btn-fill); box-shadow: var(--btn-shadow), inset 0 1px 0 var(--btn-ring); }
+.btn-danger { background-color: var(--danger-fill); box-shadow: 0 2px 8px rgba(220, 80, 80, 0.28), inset 0 1px 0 var(--btn-ring); }
+.btn-success { background-color: var(--success-fill); box-shadow: 0 2px 8px rgba(46, 160, 90, 0.28), inset 0 1px 0 var(--btn-ring); }
+.btn-secondary { background-color: var(--bg-input); border-color: var(--control-border); }
+
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover:not(:disabled):not([aria-disabled='true']):not([aria-busy='true']) { background-color: var(--btn-fill-hover); box-shadow: var(--btn-shadow-hover), inset 0 1px 0 var(--btn-ring); }
+  .btn-secondary:hover:not(:disabled):not([aria-disabled='true']):not([aria-busy='true']) { background-color: var(--bg-input-focus); }
+  .btn-danger:hover:not(:disabled):not([aria-disabled='true']):not([aria-busy='true']) { background-color: var(--danger-fill-hover); box-shadow: 0 6px 18px rgba(220, 80, 80, 0.4), inset 0 1px 0 var(--btn-ring); }
+  .btn-success:hover:not(:disabled):not([aria-disabled='true']):not([aria-busy='true']) { background-color: var(--success-fill-hover); box-shadow: 0 6px 18px rgba(46, 160, 90, 0.4), inset 0 1px 0 var(--btn-ring); }
 }
 
-.btn:active::after {
-  transform: translateZ(0) scale(1);
-  opacity: 1;
-  transition: transform 0.45s var(--ease), opacity 0.06s linear;
-}
-
-/* 有色填充的三个变体：基类不再给白字，这里必须自己声明，
-   否则深色文字会压在渐变底上。边框也要收掉，避免在实心按钮外圈留一道亮边。 */
-.btn-primary,
-.btn-danger,
-.btn-success {
-  color: #fff;
-  border-color: transparent;
-}
-
-.btn-primary {
-  background: var(--btn-fill);
-  box-shadow: var(--btn-shadow), inset 0 1px 0 var(--btn-ring);
-}
-
-/* 悬停位移统一由上方 .btn:hover:not(:disabled) 负责，这里只换底色与阴影 */
-.btn-primary:hover:not(:disabled) {
-  background: var(--btn-fill-hover);
-  box-shadow: var(--btn-shadow-hover), inset 0 1px 0 var(--btn-ring);
-}
-
-.btn-secondary {
-  background: var(--bg-input);
-  border: 1px solid var(--border-strong);
-}
-
-.btn-secondary:hover {
-  background: var(--bg-input-focus);
-}
-
-.btn-danger {
-  background: var(--danger-fill);
-  box-shadow: 0 2px 8px rgba(220, 80, 80, 0.28), inset 0 1px 0 var(--btn-ring);
-}
-
-.btn-danger:hover:not(:disabled) {
-  background: var(--danger-fill-hover);
-  box-shadow: 0 6px 18px rgba(220, 80, 80, 0.4), inset 0 1px 0 var(--btn-ring);
-}
-
-/* 「通过 / 启用 / 标记处理」这类确认操作在 Admin 里一直写着 btn-success，
-   但这个变体从来没定义过，等于裸 .btn，之前就是白底白字的主要来源。 */
-.btn-success {
-  background: var(--success-fill);
-  box-shadow: 0 2px 8px rgba(46, 160, 90, 0.28), inset 0 1px 0 var(--btn-ring);
-}
-
-.btn-success:hover:not(:disabled) {
-  background: var(--success-fill-hover);
-  box-shadow: 0 6px 18px rgba(46, 160, 90, 0.4), inset 0 1px 0 var(--btn-ring);
-}
-
-.btn-sm {
-  padding: 5px 13px;
-  font-size: 12px;
-}
-
-.btn:disabled {
-  opacity: 0.5;
+.btn-sm { padding: 5px 13px; font-size: var(--font-xs); }
+.btn:disabled, .btn[aria-disabled='true'] {
+  opacity: 0.6;
   cursor: not-allowed;
   transform: none;
+  box-shadow: none;
 }
+.btn[aria-busy='true'] { cursor: progress; }
+
+/* 图标操作保留布局和语义，统一为小幅反馈，避免与主按钮放大幅度不一。 */
+.post-card .post-actions .action-btn {
+  transition: transform var(--motion-fast) var(--ease), background-color var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.post-card .post-actions .action-btn:hover { transform: none; }
+@media (hover: hover) and (pointer: fine) {
+  .post-card .post-actions .action-btn:hover:not(:disabled) { transform: translateY(-1px); }
+}
+.post-card .post-actions .action-btn:active:not(:disabled) { transform: translateY(1px); }
+.post-card .post-actions .action-btn:disabled { transform: none; opacity: 0.6; }
 
 /* ----- 链接 ----- */
 a {
@@ -716,9 +709,7 @@ h4 { font-size: var(--font-md); line-height: var(--leading-normal); font-weight:
 
 /* 空状态里的引导按钮：毛玻璃质感 */
 .empty-state .btn {
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  background: var(--btn-fill);
+  background-color: var(--btn-fill);
   border: 1px solid var(--btn-ring);
   box-shadow: var(--btn-shadow);
   color: #fff;
@@ -997,6 +988,32 @@ body.light-theme .ok-msg {
   z-index: 2000;
 }
 
+/* 确认框只在出现时短暂过渡，不改变弹窗业务或路由缓存生命周期。 */
+.confirm-overlay .confirm-modal.glass-strong {
+  background: var(--surface-panel);
+  background-image: linear-gradient(145deg, var(--glass-sheen), transparent 52%);
+  animation: panelReveal var(--motion-panel) var(--ease) both;
+}
+@keyframes panelReveal {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
+html[data-reduce-motion='on'] :is(.btn, .post-card .post-actions .action-btn):is(:hover, :active) { transform: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.btn, .post-card .post-actions .action-btn):is(:hover, :active) { transform: none !important; }
+}
+@media (forced-colors: active) {
+  .btn, .btn-primary, .btn-secondary, .btn-danger, .btn-success {
+    background: ButtonFace;
+    color: ButtonText;
+    border-color: ButtonText;
+    box-shadow: none;
+  }
+  .btn::after { display: none; }
+  .glass, .glass-strong { background: Canvas; border-color: CanvasText; box-shadow: none; }
+}
+
 /* ==========================================
    公共动画（各组件统一复用）
    ========================================== */
@@ -1106,6 +1123,7 @@ body.light-theme .ok-msg {
   }
 
   .glass, .glass-strong { border-radius: var(--radius-md); }
+  body { --glass-filter: var(--glass-mobile-filter); --glass-strong-filter: var(--glass-mobile-strong-filter); }
 
   /* 移动端自动降级毛玻璃：同一屏可能叠 2~3 层 backdrop-filter
      （navbar + dropdown + 卡片），低端安卓 GPU 会明显掉帧。

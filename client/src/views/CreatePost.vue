@@ -32,7 +32,7 @@ const error = ref('')
 const showConfirmPost = ref(false)
 const confirmPostText = ref('')
 const categories = ['吐槽', '分享', '求助', '讨论', '其他']
-const postContent = computed(() => [content.value.trim(), ...images.value.map(url => '[img]' + url + '[/img]')].filter(Boolean).join('\n'))
+const postContent = computed(() => [content.value.trim() ? content.value.trimEnd() : '', ...images.value.map(url => '[img]' + url + '[/img]')].filter(Boolean).join('\n'))
 const renderedPreview = computed(() => renderMarkdown(content.value || '*暂无内容*'))
 const showDiscardDraft = ref(false)
 const { draftStatus, hasDraft, captureDraft, completeDraft, discardDraft, isCurrentScope } = usePostDraft({
@@ -171,6 +171,7 @@ async function doSubmit() {
     await api.post('/posts', payload, { headers: { Authorization: 'Bearer ' + userStore.token, 'X-Wall-Id': captured.scope.wallId } })
     completeDraft(captured)
     if (disposed || !isCurrentScope(captured.scope)) return
+    wallStore.markPostPublished(captured.scope.wallId)
     toast.success('帖子已发布')
     router.push('/')
   } catch (e) {

@@ -16,7 +16,7 @@
 {"data":{"prefs":{}},"error":null,"meta":{"apiVersion":"1","requestId":"server-generated-opaque-id"}}
 ~~~
 
-上例 prefs 仅演示包络位置；实际偏好接口返回完整 40 项。失败 JSON：
+上例 prefs 仅演示包络位置；实际偏好接口返回完整 41 项。失败 JSON：
 
 ~~~json
 {"data":null,"error":{"code":"UNAUTHENTICATED","message":"请先登录"},"meta":{"apiVersion":"1","requestId":"server-generated-opaque-id"}}
@@ -44,7 +44,7 @@ HTTP 状态不被伪装成 200。响应头 X-API-Version: 1 和 X-Request-ID 可
 
 JWT 目前有效期为 7 天，但修改密码、封禁、账号删除等会提前失效。PUT /auth/password 使用 {oldPassword,newPassword}，返回新 token 并使旧 token_version 失效。没有 refresh/session 续签接口。SDK 不存储 token，不使用 localStorage，不自动接受登录/改密返回的 token；调用方应将其写入平台安全存储并更新 getToken() 的来源。
 
-帖子、评论、投票等墙内资源使用 X-Wall-Id。只返回当前有效成员可见的该墙数据；管理员也按现有权限集检查。不要把墙 ID 当作访问授权。路径墙 ID 与头、query 或 body 的墙上下文不能冲突。私聊不依赖当前墙头来扩大历史可见范围；发送表白信必须显式选择双方均为有效成员的墙。
+帖子、评论、投票等墙内资源使用 X-Wall-Id。只返回当前有效成员可见的该墙数据；管理员也按现有权限集检查。不要把墙 ID 当作访问授权。路径墙 ID 与头、query 或 body 的墙上下文不能冲突。私聊不依赖当前墙头来扩大历史可见范围；发送表白信必须显式选择双方均为有效成员的墙。表白统计、收信列表和身份申请列表接受可选 wall_id 或 X-Wall-Id；都省略时仅合并本人当前所有有效墙，多个来源必须一致，显式指定墙仍要求本人是有效成员。SDK 默认继承当前所选墙；需要本人跨墙汇总时显式传 requestOptions.wallId=null。
 
 匿名帖子/投票的公共响应中 author_id、昵称等为 null，IP 哈希不外发。收到的匿名表白信隐藏发送者身份；不要从引用、会话卡片或旧预览反推。树洞继续沿用已有专用接口和匿名身份规则，本 SDK 不把树洞映射成普通私聊，也不承诺树洞引用能力。
 
@@ -52,15 +52,15 @@ DELETE /messages/{id} 和 DELETE /messages/chat/{userId} 都是**单侧隐藏**�
 
 ## 全量覆盖与调用边界
 
-本规范覆盖真实 Express 注册的 **155 个显式方法/路径组合、140 个路径模板**：145 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 10 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 103 个操作包含新增的公开壁纸图片接口，既有鉴权与内部操作排除策略保持一致。
+本规范覆盖真实 Express 注册的 **164 个显式方法/路径组合、149 个路径模板**：154 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 10 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 112 个操作包含新增的公开壁纸图片及本人账户统计接口，既有鉴权与内部操作排除策略保持一致。
 
 | 范围 | 操作数 | 鉴权与用途 |
 | --- | ---: | --- |
-| 普通族及有权限的墙内操作 | 109 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
+| 普通族及有权限的墙内操作 | 118 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
 | 管理族、建墙审核及看板票据入口 | 36 | 管理操作仍要求对应 global 或 wall 权限；票据入口要求 global.dashboard |
 | /dashboard/api 内部操作 | 10 | 看板票据或 Cookie；Cookie 写操作另需 CSRF；不由公共移动客户端调用 |
 
-公共 SDK 操作目录覆盖 **144 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 10 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
+公共 SDK 操作目录覆盖 **153 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 10 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
 
 OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabilities、/openapi.json 外，标准 /api 路径可通过旧 /api 前缀使用。旧 /api 本身不是能力发现入口。内部操作逐项 servers: [{url:"/"}]，最终路径严格为同一部署源上的 /dashboard/api/...，不能把它们拼到 /api/v1 下，也不能把根服务器地址当作任意外域授权。
 
@@ -80,7 +80,7 @@ OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabil
 
 | 资源 | 真实端点与说明 |
 | --- | --- |
-| 账号 | POST /auth/login；GET /auth/me；PUT /auth/profile；PUT /auth/password |
+| 账号 | POST /auth/login；GET /auth/me、/auth/statistics；PUT /auth/profile；PUT /auth/password |
 | 偏好 | GET /auth/prefs；PUT /auth/prefs；GET /auth/prefs/schema；POST /auth/prefs/reset |
 | 墙 | GET /walls、/walls/discover、/walls/{id}；POST /walls/{id}/join、/leave |
 | 帖子 | GET/POST /posts；GET /posts/search；GET/DELETE /posts/{id} |
@@ -92,7 +92,68 @@ OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabil
 | 上传 | POST /upload/image、/upload/bug-image；PUT /avatar/upload |
 | 壁纸 | GET /wallpaper?source=bing&idx=0；GET /wallpaper/image/{file} 返回缓存 JPEG |
 
-普通 JSON 请求体上限 128 KiB；图片上传 JSON 上限 5 MiB。消息最多 2000 字符，标题 100；帖子正文 2000；评论 500；投票标题 100、描述 500，2–10 个非空且去空格后不同的选项，每项 50 字符。密码上限是 1024 **UTF-8 字节**，新密码至少 6 字符；用户名 3–20 字符且不能带首尾空白/控制字符。资料字段具体上限见 OpenAPI，不传字段表示保留，不要将本地整份陈旧 profile 覆盖回服务器。
+普通 JSON 请求体上限 128 KiB；图片上传 JSON 上限 5 MiB。消息最多 2000 字符，标题 100；表白信和 Markdown 帖子保留开头缩进，仅去除末尾空白；普通文本帖子和私聊仍去除首尾空白。帖子正文 2000；评论 500；投票标题 100、描述 500，2–10 个非空且去空格后不同的选项，每项 50 字符。密码上限是 1024 **UTF-8 字节**，新密码至少 6 字符；用户名 3–20 字符且不能带首尾空白/控制字符。资料字段具体上限见 OpenAPI，不传字段表示保留，不要将本地整份陈旧 profile 覆盖回服务器。
+
+## 本人账户统计
+
+GET /auth/statistics（操作名 getAccountStatistics）需要 Bearer，仅返回当前登录账号的全局账户概览。无需加入墙；X-Wall-Id 不影响 counts，不能用切换墙头查询其他范围。它不是全站统计，也不同于本人收到的表白信统计。传入任何 user_id 查询参数（包括本人 ID、空值或数组）均返回400；不提供查询他人统计的路径。响应使用 Cache-Control: no-store。
+
+旧 /api 返回以下对象；/api/v1 将它放在 data 中：
+
+~~~json
+{"registered_at":"2024-03-02 13:14:15","counts":{"walls_joined":2,"friends":3,"named_posts":4,"comments":5,"bookmarks":6,"votes_participated":7}}
+~~~
+
+registered_at 原样来自 users.created_at，历史缺失为 null；通常是服务端本地时间 YYYY-MM-DD HH:mm:ss，无时区后缀，不能擅自追加 Z 当作 UTC。joined_days 由前端依据注册日期计算，不在响应中。所有计数总是非负整数，无记录返回0。
+
+| counts 字段 | 统计口径 |
+| --- | --- |
+| walls_joined | 本人已加入且墙与成员状态都为 active 的不同墙数；待审、被封、停用或已不存在的墙不计 |
+| friends | accepted 关系中仍存在的不同对端账号数，不额外限制对端账号状态；正反重复合并，自关联、孤儿关系、pending、blocked 行不计 |
+| named_posts | author_id 为本人且 is_anonymous=0 的实名发帖数；author_id 为 null 或历史保留 author_id 的匿名贴均不计，不按 IP/正文追溯归属 |
+| comments | author_id 为本人的评论数 |
+| bookmarks | 本人收藏且帖子仍存在的不同帖子数 |
+| votes_participated | 本人参与且投票仍存在的不同 vote_id 数；历史重复记录只计一次 |
+
+除加入墙数的有效成员条件外，活动计数是本人跨墙汇总，不随当前墙或成员退出改变查询范围；删除的资源及对应无效收藏/投票参与不计。接口只返回注册时间和上述计数，不返回内容、匿名归属、对端身份或其他账号数据。SDK 提供 getAccountStatistics(options)，并支持 operations.getAccountStatistics() / callOperation('getAccountStatistics')；三种入口都省略当前墙头，不读取 getWallId()，不接受 user_id 查询。
+
+## 表白信、线程与身份申请
+
+以下路径均相对 /api/v1；所有请求需要 Bearer。新操作复用旧 /api 路由和原有 v1 包络，未新增一套认证或权限。POST /messages 的 type=confession 继续接受原有标题、正文、匿名标记、墙上下文和 client_message_id，新增 allow_replies:boolean，省略默认为 false。既有 private 消息不受该开关影响。
+
+| 方法与路径 | 请求与返回 |
+| --- | --- |
+| GET /messages/confessions/stats | 可选 wall_id；返回 {anonymous,named,total} |
+| GET /messages/confessions/received | 可选 wall_id、page（默认1）、limit（默认20，最大100）、anonymous（all/1/0）；返回 {messages,total,page,limit,hasMore} |
+| POST /messages/confessions/direct | {receiver_id,wall_id?,client_message_id?}，必须有墙上下文；返回现有发送确认 |
+| GET /messages/confessions/{id}/thread | 可选 wall_id、before、limit（默认50，最大100）；返回 {confession,messages,hasMore,next_before_id} |
+| POST /messages/confessions/{id}/replies | {content,client_message_id?,wall_id?}；返回现有发送确认 |
+| POST /messages/confessions/{id}/identity-requests | {confirmed:true,message?,wall_id?}；返回 {request} |
+| GET /messages/confessions/identity-requests | 可选 wall_id、status（pending/approved/rejected）；返回 {requests}，最多检查最新500条候选后过滤权限 |
+| PUT /messages/confessions/identity-requests/{requestId} | {decision:approve/reject,wall_id?}；返回 {request} |
+
+统计与收信列表仅含本人收到的原始 letter/direct，排除回复、撤回、收件人已删除副本与不再有效的墙。线程消息在一页内按回复 ID 正序；before 读取更早回复。GET 线程不自动标记已读，继续使用 read/read-batch。读取只要求本人原信副本可见且仍是有效墙成员；保留的历史不代表当前仍可互动，原信任何一方副本删除后不再返回回复。新增回复最多2000字，保留开头的 Markdown 缩进、移除末尾空白，服务器重新核查原信双方未删除、原信未撤回、双方账号/成员身份有效且没有拉黑；allow_replies=false 时返回403。匿名原作者的回复保持匿名，收件人自己回复时 receiver_id 也可能为 null，不能从回复参与者字段反推原作者。
+
+直接表白不支持回复，由服务器生成实名文案“xxx在此网站的表白信界面对你进行表白”。禁止伪造 content、title、is_anonymous 或 sender_id。线程回复也不允许调用方提供 receiver_id、sender_id 或 is_anonymous；参与者与匿名规则由服务器决定。
+
+所有 confession 消息（含原收件箱、已发送列表）新增 confession_kind:letter/direct/reply、confession_root_id（原信为0、回复为原信ID）、allow_replies、can_reply、identity_request 和 revealed_sender。新增字段不会替代原消息外形；通用 Message 声明将其设为可选，专用 ConfessionMessage 声明保证其存在。界面应按当前 can_reply 显示可用动作，不能只依赖本地保存的 allow_replies。
+
+匿名原信收件人提出身份申请前必须明确确认，并发送 confirmed:true。message 是可选的0–2000字 Markdown 说明，必须使用共享安全 Markdown 渲染入口。每封原信仅一次申请，重复申请、重复决定均返回409；仅原作者可以批准或拒绝。request={id,message_id,wall_id,status,message,created_at,decided_at,is_author,requester:{id,nickname,avatar}}；status 为 pending/approved/rejected，requester 是原收件人，不包含匿名原作者身份。
+
+批准只为原信指定收件人提供 revealed_sender:{id,nickname,avatar}；sender_id/nickname/avatar/link 仍隐藏，拒绝不会提供身份。identity_request 是当前原信上的 {id,status,message,created_at,decided_at} 或 null。不要把身份披露数据写入公共缓存、其他账号状态或公开会话摘要。
+
+SDK 新增 getConfessionStats、getReceivedConfessions、getConfessionThread、sendDirectConfession、replyToConfession、requestConfessionIdentity、getConfessionIdentityRequests 和 decideConfessionIdentity。prepareDirectConfession 与 prepareConfessionReply 可在请求前生成并冻结稳定 cid：先持久化准备对象，再调用发送方法；重试必须复用该对象。两个发送方法与 sendMessage 一样返回 clientMessageId，ApiError 也保留该字段。低层 callOperation/operations 仅转发调用方 body，不自动生成 cid。示例：
+
+~~~js
+const letter = api.prepareMessage({ receiver_id: peerId, type: 'confession',
+  content: letterText, is_anonymous: true, allow_replies: true, wall_id: wallId });
+await api.sendMessage(letter);
+const direct = api.prepareDirectConfession({ receiver_id: peerId, wall_id: wallId });
+await api.sendDirectConfession(direct);
+const reply = api.prepareConfessionReply({ content: replyText, wall_id: wallId });
+await api.replyToConfession(originalId, reply);
+await api.requestConfessionIdentity(originalId, { confirmed: true, message: '**请问你是谁？**', wall_id: wallId });
+~~~
 
 ## 偏好与分组重置
 
@@ -104,6 +165,7 @@ GET /auth/prefs/schema 返回 {version:1,schema,defaults,scopes}。schema 每项
 
 | 键 | 允许值 | 默认 |
 | --- | --- | --- |
+| liquid_glass | boolean；appearance 分组 | true |
 | theme_mode | system / light / dark | system |
 | wallpaper_enabled | boolean | true |
 | wallpaper_source | bing / local | bing |
@@ -150,7 +212,7 @@ if (image.status === 304) {
 - mark_read 只接受字符串/查询值 0 或 1，默认 1：GET 历史会将**本次返回**且由本人接收的可见消息标为已读。搜索预览、定位预览可显式传 0。
 - 历史响应包含 messages、hasMore、hasMoreBefore、hasMoreAfter、next_before_id、next_after_id、next_before、unreadMarked。游标不是任意用户消息的访问令牌。
 
-显示引用应优先用 reply_to.available/content/sender_nickname/reason。兼容字段 reply_to_content 仍存在，但必须跟随实时可见性，不能把客户端缓存当作访问许可。私聊发送对象必须是好友或共享有效墙的成员、账号可用且双方无拉黑；引用还要求原消息可见、同双方/类型/墙、非匿名、未撤回。表白信同样遵循对应墙授权。
+显示引用应优先用 reply_to.available/content/sender_nickname/reason。兼容字段 reply_to_content 仍存在，但必须跟随实时可见性，不能把客户端缓存当作访问许可。私聊发送对象必须是好友或共享有效墙的成员、账号可用且双方无拉黑；引用还要求原消息可见、同双方/类型/墙、非匿名、未撤回。表白信同样遵循对应墙授权；新信默认 allow_replies=false，只有原信允许回复时才能在专用线程端点继续，不能用旧 reply_to_id 发送绕过。
 
 树洞专用 GET /messages/tree-hole/{conversationId} 现在可选传 limit（1–200）与 before、mark_read（0/1，默认 1），before 必须伴随 limit；不支持 after、around_id、q。移动端应显式传 limit 防止加载整个会话。省略 limit 保留旧全历史契约。返回 messages、conversation_id、hasMore、next_before_id/next_before、unreadMarked、is_closed、is_initiator、other_user_id:null、can_report:true；依旧执行匿名授权，不暴露对方用户 ID，也不加入普通私聊引用能力。
 
@@ -215,6 +277,6 @@ TypeScript 的 NodeNext/Bundler 消费 .mjs 时，会通过 [mobile-client.d.mts
 
 ## 契约维护与当前限制
 
-完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 155 个操作，其中 144 个提供公共 SDK 目录入口，11 个看板票据或内部操作明确排除。测试源码、类型检查夹具与临时验收数据已清理。
+完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 164 个操作，其中 153 个提供公共 SDK 目录入口，11 个看板票据或内部操作明确排除。SDK 回归测试保留在 sdk/test，可运行 node --test sdk/test/*.mjs；生成一致性检查不写文件。服务端测试使用隔离临时 DATA_DIR，运行 npm test --prefix server；网页回归运行 npm test --prefix client，构建检查运行 npm run build --prefix client。不要用真实生产数据库启动服务来代替隔离验收。
 
 当前限制：无 token refresh、离线冲突合并、后台推送、WebSocket 或设备管理；历史本地时间缺少 offset；after 不包含既有消息的变更事件；朋友列表及墙列表仍是原有数组而不是统一分页；帖子搜索 total 是截断数量。调用方应按 capabilities/真实端点工作，不将文档或 SDK 视为未来功能承诺。

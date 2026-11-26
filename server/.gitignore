@@ -5,8 +5,14 @@ data.db.bak_*
 server.log
 uploads/avatars/*
 uploads/images/*
+uploads/bug-reports/*
 !uploads/avatars/.gitkeep
 !uploads/images/.gitkeep
+!uploads/bug-reports/.gitkeep
 
-# ���ݿⱸ��Ŀ¼
+# 数据库备份与可选的本地 DATA_DIR
 backups/
+/data/
+
+# 后端自动获取的壁纸与归档元数据，可从网络或 rele 重新生成
+wallpaper-cache/

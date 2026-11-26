@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { authRequired, settleBan, SECRET } = require('../middleware/auth');
 const { treeConversation, canAccessTree } = require('../lib/treeAccess');
+const { loadConfessionContext, presentConfession } = require('../lib/confessions');
 const { getSetting } = require('../db');
 const { hashPassword, verifyPassword, isPasswordInput } = require('../lib/password');
 const { checkQuota, encodeValidatedImage } = require('../lib/uploads');
@@ -247,6 +248,34 @@ router.get('/me', authRequired, (req, res) => {
   settleBan(req.db, user);
 
   res.json(user);
+});
+
+// 本人跨墙账户概览：不经过 wallContext，也不接受指定其他账号。
+router.get('/statistics', authRequired, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  if (Object.prototype.hasOwnProperty.call(req.query, 'user_id')) {
+    return res.status(400).json({ error: '账户统计仅支持当前登录用户，不能指定user_id' });
+  }
+  const statistics = req.db.prepare(`
+    SELECT u.created_at AS registered_at,
+      (SELECT COUNT(DISTINCT wm.wall_id) FROM wall_members wm
+        JOIN walls w ON w.id = wm.wall_id
+        WHERE wm.user_id = u.id AND wm.status = 'active' AND w.status = 'active') AS walls_joined,
+      (SELECT COUNT(DISTINCT CASE WHEN f.user_id = u.id THEN f.friend_id ELSE f.user_id END)
+        FROM friends f JOIN users peer ON peer.id = CASE WHEN f.user_id = u.id THEN f.friend_id ELSE f.user_id END
+        WHERE f.status = 'accepted' AND f.user_id <> f.friend_id
+        AND (f.user_id = u.id OR f.friend_id = u.id)) AS friends,
+      (SELECT COUNT(*) FROM posts WHERE author_id = u.id AND is_anonymous = 0) AS named_posts,
+      (SELECT COUNT(*) FROM comments WHERE author_id = u.id) AS comments,
+      (SELECT COUNT(DISTINCT b.post_id) FROM bookmarks b JOIN posts p ON p.id = b.post_id
+        WHERE b.user_id = u.id) AS bookmarks,
+      (SELECT COUNT(DISTINCT vr.vote_id) FROM vote_records vr JOIN votes v ON v.id = vr.vote_id
+        WHERE vr.user_id = u.id) AS votes_participated
+    FROM users u WHERE u.id = ?
+  `).get(req.user.id);
+  if (!statistics) return res.status(404).json({ error: '用户不存在' });
+  const { registered_at, ...counts } = statistics;
+  res.json({ registered_at: registered_at ?? null, counts });
 });
 
 // 修改密码
@@ -568,14 +597,18 @@ router.get('/export', authRequired, (req, res) => {
   const uid = req.user.id;
   const q = (sql, ...params) => req.db.prepare(sql).all(...params);
   const treeAccess = new Map();
-  const exportMessages = rows => rows.filter(message => {
-    if (message.type !== 'tree_hole') return true;
-    const conversation = message.conversation_id;
-    if (!treeAccess.has(conversation)) {
-      treeAccess.set(conversation, canAccessTree(req, treeConversation(req, conversation)));
-    }
-    return treeAccess.get(conversation);
-  }).map(({ conversation_id, ...message }) => message);
+  const exportMessages = rows => {
+    const confessionContext = loadConfessionContext(req, rows);
+    return rows.filter(message => {
+      if (message.type !== 'tree_hole') return true;
+      const conversation = message.conversation_id;
+      if (!treeAccess.has(conversation)) {
+        treeAccess.set(conversation, canAccessTree(req, treeConversation(req, conversation)));
+      }
+      return treeAccess.get(conversation);
+    }).map(({ conversation_id, ...message }) => message.type === 'confession'
+      ? presentConfession(req, message, confessionContext) : message).filter(Boolean);
+  };
 
   try {
     const profile = req.db.prepare(`

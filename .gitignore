@@ -6,8 +6,71 @@ docs/REVIEW-*.md
 *_tmp.txt
 .env_check.txt
 
-# 打包产物
+# 依赖、构建产物与构建缓存
+node_modules/
+dist/
+dist-ssr/
+.vite/
+.vite-temp/
+.cache/
+*.tsbuildinfo
+.eslintcache
 *.tgz
+
+# 本地配置与认证密钥；配置示例仍应提交
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.jwt_secret
+.jwt_secret.*
+
+# SQLite 数据库、日志、临时落盘与备份副本
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite-*
+*.sqlite.*
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.*
+/data/
+
+# 运行日志与诊断输出
+logs/
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# 测试输出与缓存（保留 test/ 和 *.test.* 测试源码）
+coverage/
+.nyc_output/
+.tap/
+.vitest/
+test-results/
+playwright-report/
+blob-report/
+*.lcov
+
+# 操作系统、编辑器及临时杂项文件
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
 
 # WorkBuddy 会话数据
 .workbuddy/
