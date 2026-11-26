@@ -10,6 +10,7 @@ import BackToTop from './components/BackToTop.vue'
 import PublishFab from './components/PublishFab.vue'
 import api, { readStorage } from './api'
 import { useToast } from './composables/useToast'
+import { focusIfActive } from './utils/focus.js'
 
 const userStore = useUserStore()
 const wallStore = useWallStore()
@@ -20,7 +21,7 @@ const mainRef = ref(null)
 const cacheScope = computed(() => [userStore.sessionRevision, userStore.user?.id || 'guest', wallStore.currentWallId || 'none'].join(':'))
 watch(() => route.path, async () => {
   await nextTick()
-  mainRef.value?.focus({ preventScroll: true })
+  focusIfActive(mainRef.value)
 })
 
 // 主页要用三栏（左分类 / 帖子 / 右墙介绍），需要比其它页面更宽的容器；

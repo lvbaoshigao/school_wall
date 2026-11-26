@@ -1,4 +1,5 @@
 import { nextTick, onBeforeUnmount, watch } from 'vue'
+import { focusIfActive } from '../utils/focus.js'
 
 const FOCUSABLE = [
   'a[href]', 'button', 'input:not([type="hidden"])', 'select', 'textarea',
@@ -32,10 +33,14 @@ export function useFocusTrap(isOpen, containerRef, onClose) {
     if (!el) return
     if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1')
     const items = focusable()
-    ;(items.find(node => node.hasAttribute('data-focus-initial')) || items[0] || el).focus({ preventScroll: true })
+    const target = items.find(node => node.hasAttribute('data-focus-initial')) || items[0] || el
+    // 长提示框的输入项需要滚入弹窗可视区；其余初始焦点保持页面位置。
+    focusIfActive(target, { preventScroll: target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' })
   }
 
   function onFocusIn(event) {
+    // 窗口/文档的焦点边界事件不代表用户把焦点移到了弹窗外。
+    if (event.target?.nodeType !== 1) return
     if (isTop() && containerRef.value && !containerRef.value.contains(event.target)) focusFirst()
   }
 
@@ -54,7 +59,7 @@ export function useFocusTrap(isOpen, containerRef, onClose) {
     if (!items.length || index < 0 || (event.shiftKey ? index === 0 : index === items.length - 1)) {
       event.preventDefault()
       if (!items.length) focusFirst()
-      else (event.shiftKey ? items[items.length - 1] : items[0]).focus()
+      else focusIfActive(event.shiftKey ? items[items.length - 1] : items[0], { preventScroll: false })
     }
   }
 
@@ -69,7 +74,7 @@ export function useFocusTrap(isOpen, containerRef, onClose) {
     if (index >= 0) traps.splice(index, 1)
     if (!traps.length && document.body.style.overflow === 'hidden') document.body.style.overflow = previousOverflow
     if (wasTop) {
-      if (lastActive?.isConnected) lastActive.focus({ preventScroll: true })
+      if (lastActive?.isConnected) focusIfActive(lastActive)
       else traps[traps.length - 1]?.focusFirst()
     }
     lastActive = null

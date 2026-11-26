@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, nextTick, useId } from 'vue'
+import { ref, watch, useId } from 'vue'
 import { useFocusTrap } from '../composables/useFocusTrap'
 
 defineOptions({ inheritAttrs: false })
@@ -19,7 +19,6 @@ const props = defineProps({
 
 const emit = defineEmits(['confirm', 'cancel', 'update:show', 'update:promptValue'])
 
-const inputRef = ref(null)
 const inputVal = ref(props.promptValue)
 const modalRef = ref(null)
 const fieldId = useId()
@@ -31,8 +30,7 @@ useFocusTrap(() => props.show, modalRef, () => onCancel())
 watch(() => props.show, (v) => {
   if (v) {
     inputVal.value = props.promptValue
-    // prompt 模式优先聚焦输入框；非 prompt 模式由 focus trap 聚焦第一个按钮
-    if (props.prompt) nextTick(() => inputRef.value?.focus())
+    // 初始焦点统一由 useFocusTrap 按 data-focus-initial 选择，避免重复抢焦点。
   }
 })
 
@@ -64,7 +62,6 @@ function onCancel() {
           <input
             :id="fieldId"
             :data-focus-initial="prompt ? '' : undefined"
-            ref="inputRef"
             v-model="inputVal"
             :placeholder="promptPlaceholder"
             @keydown.enter="!$event.isComposing && onConfirm()"
