@@ -50,7 +50,7 @@ const unreadScope = computed(() => [userStore.sessionRevision, userStore.user?.i
 const primaryKeys = new Set(['home', 'publish', 'chat', 'inbox'])
 const primaryNav = computed(() => settingsStore.visibleNav.filter(item => primaryKeys.has(item.key)))
 const secondaryNav = computed(() => settingsStore.visibleNav.filter(item => !primaryKeys.has(item.key) && item.type !== 'search'))
-const moreActive = computed(() => secondaryNav.value.some(item => item.type === 'link' ? isActive(item) : item.children?.some(child => isActive(child))))
+const moreActive = computed(() => secondaryNav.value.some(item => isActive(item)))
 function disableLeavingPanel(element) { element.setAttribute('inert', '') }
 // 树洞入口按「在当前墙是否拥有树洞权限」显示。
 // 重构前这里还带了 || isGlobalAdmin，但服务端从来只认 wall_members.wall_role ——
@@ -211,6 +211,7 @@ function goSearch() {
 }
 
 function isActive(item) {
+  if (item.children) return item.children.some(child => isActive(child))
   const p = router.currentRoute.value.path
   if (item.path === '/') return p === '/'
   return p === item.path || p.startsWith(item.path + '/')
@@ -377,7 +378,7 @@ function renderAnnouncement(announcement) {
           </div>
           </Transition>
         </div>
-        <button v-else-if="isLoggedIn && settingsStore.nav.search !== false" class="nav-btn nav-search-shortcut nav-search-shortcut-visible" aria-label="搜索帖子" @click="go('/search')"><Icon name="search" :size="17" />搜索帖子</button>
+        <button v-else-if="isLoggedIn && settingsStore.nav.search !== false" class="nav-btn nav-search-shortcut nav-search-shortcut-visible" :class="{ 'nav-active': isActive({ path: '/search' }) }" :aria-current="isActive({ path: '/search' }) ? 'page' : undefined" aria-label="搜索帖子" @click="go('/search')"><Icon name="search" :size="17" /><span class="nav-label">搜索帖子</span></button>
       </div>
 
       <!-- 核心入口有固定上限；辅助入口收进更多，给等宽两翼保留可靠空间。 -->
@@ -386,8 +387,8 @@ function renderAnnouncement(announcement) {
           <div class="nav-primary-links">
             <template v-for="item in primaryNav" :key="item.key">
               <div v-if="item.type === 'dropdown'" class="dropdown-wrapper">
-                <button class="nav-btn" :aria-controls="'nav-menu-' + item.key" :aria-expanded="openDropdown === item.key" @click="toggleDropdown(item.key)">
-                  {{ item.label }}<Icon name="chevron-down" :size="14" />
+                <button class="nav-btn" :class="{ 'nav-active': isActive(item) || openDropdown === item.key }" :aria-controls="'nav-menu-' + item.key" :aria-expanded="openDropdown === item.key" @click="toggleDropdown(item.key)">
+                  <span class="nav-label">{{ item.label }}</span><Icon name="chevron-down" :size="14" />
                 </button>
                 <Transition name="nav-scale" @before-leave="disableLeavingPanel">
                   <div v-if="openDropdown === item.key" :id="'nav-menu-' + item.key" class="dropdown" @click="openDropdown = ''">
@@ -396,14 +397,14 @@ function renderAnnouncement(announcement) {
                 </Transition>
               </div>
               <button v-else-if="item.type === 'link'" class="nav-btn nav-btn-with-dot" :class="{ 'nav-active': isActive(item) }" :aria-current="isActive(item) ? 'page' : undefined" @click="go(item.path)">
-                {{ item.label }}
+                <span class="nav-label">{{ item.label }}</span>
                 <span v-if="item.key === 'chat' && unreadChat > 0" class="nav-dot" role="status" aria-label="有未读消息"></span>
                 <span v-if="item.key === 'inbox' && unreadSystem > 0" class="nav-dot" role="status" aria-label="有未读消息"></span>
                 <span v-if="item.key === 'inbox' && unreadCount > 0" class="unread-badge" role="status" :aria-label="unreadCount + ' 条未读'">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
               </button>
             </template>
             <div v-if="secondaryNav.length" class="dropdown-wrapper nav-more-wrapper">
-              <button class="nav-btn" :class="{ 'nav-active': moreActive }" aria-controls="nav-more-menu" :aria-expanded="openDropdown === 'more'" @click="toggleDropdown('more')">更多<Icon name="chevron-down" :size="14" /></button>
+              <button class="nav-btn" :class="{ 'nav-active': moreActive || openDropdown === 'more' }" aria-controls="nav-more-menu" :aria-expanded="openDropdown === 'more'" @click="toggleDropdown('more')"><span class="nav-label">更多</span><Icon name="chevron-down" :size="14" /></button>
               <Transition name="nav-scale" @before-leave="disableLeavingPanel">
                 <div v-if="openDropdown === 'more'" id="nav-more-menu" class="dropdown more-dropdown">
                   <template v-for="item in secondaryNav" :key="item.key">
@@ -712,14 +713,24 @@ function renderAnnouncement(announcement) {
 /* 纯图标按钮（主题/壁纸）：收窄内边距，保持与文字按钮同高 */
 .nav-icon-btn { width: 44px; padding: 0; justify-content: center; }
 
-/* 激活项：轻标记 —— 浅底 + 1px 描边，不用外发光大色块 */
-.nav-btn.nav-active {
-  background: color-mix(in srgb, var(--accent-1) 18%, transparent);
-  border-color: color-mix(in srgb, var(--accent-1) 50%, transparent);
-  color: var(--text-primary);
+/* 激活项仅保留文字强调与下划横条，悬停时也不显示选中框。 */
+.nav-btn.nav-active { background: none; color: var(--text-link); font-weight: 600; }
+
+/* 横条以文字为基准，不包含按钮留白、下拉箭头和未读角标。 */
+.nav-label { position: relative; display: inline-block; flex-shrink: 0; }
+.nav-btn.nav-active .nav-label::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 85%;
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-1);
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
-.nav-btn.nav-active { color: var(--text-link); font-weight: 600; }
 .mobile-item.mobile-active { background: var(--accent-soft); color: var(--text-link); font-weight: 600; }
 
 .admin-btn { color: #ffd700; }

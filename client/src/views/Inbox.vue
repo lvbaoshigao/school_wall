@@ -466,7 +466,6 @@ onBeforeUnmount(() => { disposed = true; listVersion++; listController?.abort();
   <div class="inbox-page">
     <div class="page-header">
       <h2 class="page-title">收件箱</h2>
-      <RouterLink v-if="wallId" class="btn btn-sm btn-secondary" to="/statistics">表白统计</RouterLink>
       <div class="header-actions" v-if="activeTab === 'inbox'">
         <button class="btn btn-sm btn-secondary" @click="markAllRead" :disabled="loading || bulkBusy || totalUnread === 0">全部已读</button>
         <button class="btn btn-sm btn-danger" @click="deleteAll" :disabled="loading || bulkBusy || messages.length === 0">全部删除</button>
