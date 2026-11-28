@@ -11,6 +11,7 @@ const { getSetting } = require('../db');
 const { hashPassword, verifyPassword, isPasswordInput } = require('../lib/password');
 const { checkQuota, encodeValidatedImage } = require('../lib/uploads');
 const { UPLOADS_DIR } = require('../lib/paths');
+const { setSessionCookie, clearSessionCookie, sessionCsrf, jsonSessionCsrf, readSession } = require('../lib/sessionCookie');
 
 const AVATAR_DIR = path.join(UPLOADS_DIR, 'avatars');
 
@@ -122,7 +123,7 @@ router.put('/prefs', authRequired, (req, res) => {
 });
 
 // 注册
-router.post('/register', wrap(async (req, res) => {
+router.post('/register', jsonSessionCsrf, wrap(async (req, res) => {
   // 系统未初始化时禁止注册（必须先通过 /api/setup 完成首次设置）
   if (getSetting(req.db, 'initialized', '0') !== '1') {
     return res.status(403).json({ error: '系统未初始化，请先完成首次设置' });
@@ -156,11 +157,12 @@ router.post('/register', wrap(async (req, res) => {
   }
 
   const token = jwt.sign({ id: result.lastInsertRowid, username, role: 'user', tv: 0 }, SECRET, { expiresIn: '7d' });
+  setSessionCookie(req, res, { id: result.lastInsertRowid, username, token_version: 0 });
   res.json({ token, user: { id: result.lastInsertRowid, username, nickname: nickname || username, role: 'user' } });
 }));
 
 // 登录
-router.post('/login', wrap(async (req, res) => {
+router.post('/login', jsonSessionCsrf, wrap(async (req, res) => {
   // 系统未初始化时禁止登录
   if (getSetting(req.db, 'initialized', '0') !== '1') {
     return res.status(403).json({ error: '系统未初始化，请先完成首次设置' });
@@ -218,6 +220,7 @@ router.post('/login', wrap(async (req, res) => {
   }
 
   const token = jwt.sign({ id: user.id, username: user.username, role: user.role, tv: user.token_version || 0 }, SECRET, { expiresIn: '7d' });
+  setSessionCookie(req, res, user);
   res.json({
     token,
     user: {
@@ -230,6 +233,25 @@ router.post('/login', wrap(async (req, res) => {
     }
   });
 }));
+
+// Cookie 只用于换取现有 API Bearer；不经过也不替代 authRequired 的封禁守卫。
+router.post('/refresh', sessionCsrf, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const session = readSession(req);
+  // Never mutate cookies here: a delayed failed refresh must not clear a new login.
+  const now = Math.floor(Date.now() / 1000);
+  if (!session || session.expiresAt <= now) return res.status(401).json({ error: '登录状态已失效，请重新登录' });
+  const { user } = session;
+  // A refreshed Bearer cannot outlive the original, fixed 30-day session.
+  const token = jwt.sign({ id: user.id, username: user.username, role: user.role, tv: user.token_version || 0,
+    exp: Math.min(now + 7 * 24 * 60 * 60, session.expiresAt) }, SECRET, { algorithm: 'HS256' });
+  res.json({ token });
+});
+
+router.post('/logout', sessionCsrf, (req, res) => {
+  clearSessionCookie(req, res);
+  res.json({ message: '已退出登录' });
+});
 
 // 获取当前用户信息
 router.get('/me', authRequired, (req, res) => {
@@ -302,8 +324,9 @@ router.put('/password', authRequired, wrap(async (req, res) => {
   const fresh = req.db.prepare('SELECT username, role, token_version FROM users WHERE id = ?').get(req.user.id);
   const token = jwt.sign(
     { id: req.user.id, username: fresh.username, role: fresh.role, tv: fresh.token_version || 0 },
-    SECRET, { expiresIn: '7d' }
+    req.db.temporarySecret ?? SECRET, { expiresIn: '7d' }
   );
+  setSessionCookie(req, res, { ...fresh, id: req.user.id });
   res.json({ message: '密码修改成功', token });
 }));
 

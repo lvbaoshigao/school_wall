@@ -83,10 +83,10 @@ async function submitAppeal() {
   }
 }
 
-function backToLogin() {
+async function backToLogin() {
   writeStorage('banInfo', null, 'sessionStorage')
-  userStore.logout()
-  router.push('/login')
+  await userStore.logout()
+  await router.push('/login')
 }
 
 function backToWalls() {

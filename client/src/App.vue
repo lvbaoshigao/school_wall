@@ -8,7 +8,7 @@ import Navbar from './components/Navbar.vue'
 import ToastContainer from './components/ToastContainer.vue'
 import BackToTop from './components/BackToTop.vue'
 import PublishFab from './components/PublishFab.vue'
-import api, { readStorage } from './api'
+import api, { readStorage, restoreSession } from './api'
 import { useToast } from './composables/useToast'
 import { focusIfActive } from './utils/focus.js'
 
@@ -283,6 +283,7 @@ onMounted(async () => {
   window.visualViewport?.addEventListener('scroll', scheduleViewport)
   document.addEventListener('focusin', scheduleViewport)
   document.addEventListener('focusout', scheduleViewport)
+  try { await restoreSession() } catch { /* 路由和登录表单保留重试入口。 */ }
   if (userStore.token) {
     await userStore.fetchUser()
     if (userStore.isLoggedIn) {

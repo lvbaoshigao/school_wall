@@ -55,7 +55,7 @@ function harness(t, { enabled = true, wallpaperSource = 'bing', decode = async (
     setTimeout(fn, delay) { const id = Symbol(); timers.set(id, { fn, delay }); return id },
     clearTimeout(id) { timers.delete(id) },
     useUserStore: () => ({ user: null, token: null, sessionRevision: 0 }), useWallStore: () => ({ currentWallId: null }),
-    useSettingsStore: () => settings, useRoute: () => Vue.reactive({ name: 'Home', path: '/' }), readStorage: () => null,
+    useSettingsStore: () => settings, useRoute: () => Vue.reactive({ name: 'Home', path: '/' }), readStorage: () => null, restoreSession: async () => '',
     useToast: () => ({ error() {} }), focusIfActive() {}, provide() {},
     Navbar: empty, ToastContainer: empty, BackToTop: empty, PublishFab: empty,
     onMounted: fn => mount.push(fn), onBeforeUnmount: fn => unmount.push(fn),

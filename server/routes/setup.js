@@ -6,6 +6,7 @@ const { getSetting } = require('../db');
 // SECRET 必须从认证模块取同一份：原来这里既没 require jwt 也没 require SECRET，
 // 初始化成功路径走到 jwt.sign 必然抛 ReferenceError，首次部署永远 500。
 const { SECRET } = require('../middleware/auth');
+const { setSessionCookie, clearSessionCookie, jsonSessionCsrf } = require('../lib/sessionCookie');
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -60,14 +61,17 @@ module.exports = (setupLimiter) => {
     res.json({ initialized, userCount, testAvailable, temporary });
   });
 
-  router.post('/', setupLimiter, (req, res) => { Promise.resolve().then(async () => {
+  router.post('/', setupLimiter, jsonSessionCsrf, (req, res) => { Promise.resolve().then(async () => {
     if (req.body?.temporary === true) {
       if (Object.keys(req.body).length !== 1) return res.status(400).json({ error: '测试模式无需填写初始化信息' });
       if (!isLocalTestRequest(req)) return res.status(403).json({ error: '一次性测试仅支持本机访问' });
       const db = req.db;
       if (getSetting(db, 'initialized', '0') !== '1' && db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0) {
         const session = db.startTemporary?.(secret => createTestSession(db, secret));
-        if (session) return res.json(session);
+        if (session) {
+          clearSessionCookie(req, res);
+          return res.json(session);
+        }
       }
       return res.status(409).json({ error: '一次性测试仅在没有数据库且未初始化时可用' });
     }
@@ -163,6 +167,7 @@ module.exports = (setupLimiter) => {
 
       // 首次设置必须确保落盘，这里走同步写而不是脏标记。
       req.db.saveNow();
+      setSessionCookie(req, res, { id: userId, username, token_version: 0 });
 
       res.json({
         message: '初始化完成！',

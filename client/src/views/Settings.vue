@@ -149,7 +149,7 @@ async function confirmAction() {
   if (!action || busy.value) return
   if (action.kind === 'import') { const text = pendingImport.value?.text; pendingImport.value = null; if (text) await applyImport(text) }
   else if (action.kind === 'reset') await applyReset(action.scope)
-  else if (action.kind === 'clear') { userStore.logout(); writeStorage('banInfo', null, 'sessionStorage'); await router.replace('/login') }
+  else if (action.kind === 'clear') { await userStore.logout(); writeStorage('banInfo', null, 'sessionStorage'); await router.replace('/login') }
 }
 function cancelConfirmation() { confirmation.value = null; pendingImport.value = null }
 function download(blob, filename) {

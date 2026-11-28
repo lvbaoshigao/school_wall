@@ -48,7 +48,7 @@ async function wallHarness(user, initial = [wallOne, wallTwo]) {
   const source = await readFile(new URL('../src/stores/wall.js', import.meta.url), 'utf8')
   const requests = [], selected = []
   const api = { get(path) { const request = deferred(); requests.push({ path, ...request }); return request.promise } }
-  const deps = { ...Vue, defineStore, api, readStorage: () => null, setRequestWallId: id => selected.push(id), getSessionToken: () => 'one', subscribeSessionChange: () => () => {}, getApiErrorMessage, useUserStore: () => user }
+  const deps = { ...Vue, defineStore, api, readStorage: () => null, setRequestWallId: id => selected.push(id), getSessionToken: () => user.token || 'one', subscribeSessionChange: () => () => {}, getApiErrorMessage, useUserStore: () => user }
   const useWallStore = new Function(...Object.keys(deps), source.replace(/^import[^\n]*\n/gm, '').replace('export const useWallStore', 'const useWallStore') + '\nreturn useWallStore')(...Object.values(deps))
   const pinia = createPinia()
   const store = useWallStore(pinia)
@@ -103,6 +103,19 @@ function confirm(h, name = wallOne.name) {
   h.state.wallDeletionPassword.value = 'current-secret'
   h.state.wallDeletionAcknowledged.value = true
 }
+
+test('wall loading accepts a successful response after same-account token renewal', async t => {
+  const user = { token: 'expired-token' }
+  const h = await wallHarness(user, [])
+  t.after(h.dispose)
+  h.store.loaded = false
+  const loading = h.store.fetchMyWalls()
+  user.token = 'renewed-token'
+  h.requests[0].resolve({ data: [wallOne] })
+  await loading
+  assert.equal(h.store.loaded, true)
+  assert.equal(h.store.currentWall.id, 1)
+})
 
 test('wall management permission alone exposes the navigation entry without wall membership and responds to revocation', async t => {
   const source = await readFile(new URL('../src/components/Navbar.vue', import.meta.url), 'utf8')

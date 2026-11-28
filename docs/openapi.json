@@ -290,7 +290,7 @@
         "tags": [
           "auth"
         ],
-        "description": "No refresh token or automatic session refresh endpoint. Save token through platform secure storage; do not log or embed credentials.",
+        "description": "Returns a 7-day API Bearer and sets a 30-day HttpOnly sw_session Cookie for browser login recovery. Requires application/json and a trusted Origin when supplied. Mobile callers continue to store the Bearer in platform secure storage; do not log or embed credentials.",
         "security": [],
         "requestBody": {
           "required": true,
@@ -364,6 +364,161 @@
           },
           "413": {
             "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "operationId": "restoreBrowserSession",
+        "summary": "Restore a browser login from the persistent Cookie",
+        "tags": [
+          "auth"
+        ],
+        "x-internal": true,
+        "description": "Browser session operation, excluded from the credentials:omit mobile SDK. Requires X-Requested-With: school-wall; Origin, when supplied, must be same-origin or explicitly allowed. Legacy /api is also supported. Responses are no-store. Returns an API Bearer valid for min(7 days, remaining Cookie lifetime). Rechecks the live account and token_version; never rotates or clears the Cookie. Missing, expired or revoked Cookie returns 401. Business ban checks still apply to the returned Bearer.",
+        "security": [
+          {
+            "BrowserSessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Requested-With",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "school-wall"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; legacy payload is inside data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "token"
+                      ],
+                      "properties": {
+                        "token": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logoutBrowserSession",
+        "summary": "Clear the persistent browser login Cookie",
+        "tags": [
+          "auth"
+        ],
+        "x-internal": true,
+        "description": "Browser session operation, excluded from the credentials:omit mobile SDK. Requires X-Requested-With: school-wall; Origin, when supplied, must be same-origin or explicitly allowed. Legacy /api is also supported. Responses are no-store. Clears sw_session even when the API Bearer has expired; no valid Bearer is required. The browser also clears its local token. Does not revoke copied Bearer tokens.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "X-Requested-With",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "school-wall"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; legacy payload is inside data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "message"
+                      ],
+                      "properties": {
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
           },
           "429": {
             "$ref": "#/components/responses/Error429"
@@ -18608,7 +18763,13 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-        "description": "Authorization: Bearer <caller token>. Token invalidation/password rotation is server enforced. No cookie-based auth, refresh token or implicit localStorage."
+        "description": "Authorization: Bearer <caller token>. Token invalidation/password rotation is server enforced. Standard API operations require this header; sw_session only authenticates the separate browser recovery endpoint. The mobile SDK does not use cookies or implicit localStorage."
+      },
+      "BrowserSessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sw_session",
+        "description": "HttpOnly, SameSite=Lax, host-only, Path=/api, fixed 30-day lifetime; Secure over HTTPS. Independent aud=school-wall-session. Only POST /auth/refresh accepts this credential. Password rotation and account revocation invalidate it."
       },
       "DashboardCookieAuth": {
         "type": "apiKey",

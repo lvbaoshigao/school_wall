@@ -179,11 +179,11 @@ onUnmounted(() => {
   clearInterval(unreadTimer)
 })
 
-function logout() {
-  userStore.logout()
+async function logout() {
   showMenu.value = false
   showMobileMenu.value = false
-  router.push('/login')
+  await userStore.logout()
+  await router.push('/login')
 }
 
 function toggleDropdown(key) {

@@ -30,6 +30,12 @@
 
 未知 API 返回 JSON 404；缺失脚本、图片和保留的后端路径不再返回状态为 200 的 SPA 首页。只有接受 HTML 的页面请求才使用 SPA 回退。前端可用与数据库可用是两回事，监控应查询 `/api/health`。
 
+## 网页持久登录
+
+普通 API 仍使用 7 天 Bearer JWT。登录、注册、正式初始化或改密成功时，服务器另外写入 30 天有效的 sw_session HttpOnly Cookie（SameSite=Lax、Path=/api、host-only，HTTPS 下设置 Secure）。Cookie 使用独立 audience，只能通过 POST /api/auth/refresh 换取 Bearer，不能用于业务鉴权；换发令牌不超过 Cookie 原有到期时间，自动恢复不会无限延长登录。版本化入口 /api/v1/auth/refresh 提供相同能力和 v1 响应包络。
+
+网页首次进入时，在路由鉴权前恢复 Cookie；API 令牌过期时并发请求共用一次恢复，再各自重试一次。网络或服务器暂时故障不会直接丢弃本地会话。退出登录通过 POST /api/auth/logout 清除 Cookie，并同步本地退出状态，防止迟到请求重新登录；改密仍通过 token_version 吊销旧令牌和旧 Cookie。一次性测试不签发持久 Cookie。恢复与退出接口要求非简单请求头 X-Requested-With: school-wall 和可信 Origin；登录、注册和初始化限定 JSON 请求并检查来源。部署必须正确配置 HTTPS 与可信反向代理跳数。
+
 ## 管理概览接口
 
 - Vue 管理区使用 `GET /api/admin/overview`；版本化客户端使用 `GET /api/v1/admin/overview`，后者保留统一响应信封。

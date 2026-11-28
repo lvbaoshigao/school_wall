@@ -42,7 +42,9 @@ HTTP 状态不被伪装成 200。响应头 X-API-Version: 1 和 X-Request-ID 可
 
 登录 POST /auth/login 使用调用方输入的 username/password；不发布或假设任何默认公开用户名、密码。成功返回 data.token 和 data.user。除明确标注的登录、注册、首次设置、健康检查、壁纸及版本发现/静态文档外，标准 API 需要 Authorization: Bearer <token>。公开并不代表绕过部署 IP 守卫或各路由限流；健康检查按既有顺序位于这两者之前。
 
-JWT 目前有效期为 7 天，但修改密码、封禁、账号删除等会提前失效。PUT /auth/password 使用 {oldPassword,newPassword}，返回新 token 并使旧 token_version 失效。没有 refresh/session 续签接口。SDK 不存储 token，不使用 localStorage，不自动接受登录/改密返回的 token；调用方应将其写入平台安全存储并更新 getToken() 的来源。
+JWT 目前有效期为 7 天，但修改密码、封禁、账号删除等会提前失效。PUT /auth/password 使用 {oldPassword,newPassword}，返回新 token 并使旧 token_version 失效。网页新增 POST /auth/refresh（Cookie 恢复）与 POST /auth/logout（清除 Cookie），普通业务接口仍仅使用 Bearer。SDK 不存储 token，不使用 localStorage，不自动接受登录/改密返回的 token；调用方应将其写入平台安全存储并更新 getToken() 的来源。
+
+网页登录、注册、正式初始化和改密成功时，服务器写入 sw_session：HttpOnly、SameSite=Lax、Path=/api、host-only、固定 30 天，HTTPS 下设置 Secure。Cookie 使用独立 aud=school-wall-session，不能直接充当普通 API Bearer。POST /auth/refresh 返回 {token}（v1 放在 data 中），新令牌最多有效 7 天且不超过原 Cookie 到期时间；它不轮换或延长 Cookie。恢复时重新核对账号、用户名、token_version 和状态；封禁账号取得的令牌仍受全部业务封禁守卫限制，仅保留申诉能力。POST /auth/logout 无需有效 Bearer，删除 Cookie；网页同步清除本地会话并记录退出状态。上述两接口强制 X-Requested-With: school-wall，携带 Origin 时必须同源或在明确配置的允许来源内；登录、注册、初始化也必须使用 application/json 并通过来源检查。Cookie 缺失、损坏、到期或凭据已撤销为 401，CSRF 检查失败为 403。一次性测试不设置持久 Cookie。这两个网页会话操作不纳入使用 credentials:omit 的移动 SDK 目录。
 
 帖子、评论、投票等墙内资源使用 X-Wall-Id。只返回当前有效成员可见的该墙数据；管理员也按现有权限集检查。不要把墙 ID 当作访问授权。路径墙 ID 与头、query 或 body 的墙上下文不能冲突。私聊不依赖当前墙头来扩大历史可见范围；发送表白信必须显式选择双方均为有效成员的墙。表白统计、收信列表和身份申请列表接受可选 wall_id 或 X-Wall-Id；都省略时仅合并本人当前所有有效墙，多个来源必须一致，显式指定墙仍要求本人是有效成员。SDK 默认继承当前所选墙；需要本人跨墙汇总时显式传 requestOptions.wallId=null。
 
@@ -52,15 +54,15 @@ DELETE /messages/{id} 和 DELETE /messages/chat/{userId} 都是**单侧隐藏**�
 
 ## 全量覆盖与调用边界
 
-本规范覆盖真实 Express 注册的 **169 个显式方法/路径组合、154 个路径模板**：157 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 12 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 117 个操作包含新增的公开壁纸图片、本人账户统计、管理概览、永久删除校园墙及看板内部读取/导出接口，既有鉴权与内部操作排除策略保持一致。
+本规范覆盖真实 Express 注册的 **171 个显式方法/路径组合、156 个路径模板**：159 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 12 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 119 个操作包含新增的公开壁纸图片、本人账户统计、管理概览、永久删除校园墙及看板内部读取/导出接口，既有鉴权与内部操作排除策略保持一致。
 
 | 范围 | 操作数 | 鉴权与用途 |
 | --- | ---: | --- |
-| 普通族及有权限的墙内操作 | 118 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
+| 普通族及有权限的墙内操作 | 120 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
 | 管理族、建墙审核及看板票据入口 | 39 | 管理操作仍要求对应 global 或 wall 权限；票据入口要求 global.dashboard |
 | /dashboard/api 内部操作 | 12 | 原有端点接受看板票据或 Cookie，新增概览/导出仅 Cookie 同源；Cookie 写操作另需 CSRF；不由公共移动客户端调用 |
 
-公共 SDK 操作目录覆盖 **156 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 12 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
+公共 SDK 操作目录覆盖 **156 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）、网页 /auth/refresh、/auth/logout 和 12 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
 
 OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabilities、/openapi.json 外，标准 /api 路径可通过旧 /api 前缀使用。旧 /api 本身不是能力发现入口。内部操作逐项 servers: [{url:"/"}]，最终路径严格为同一部署源上的 /dashboard/api/...，不能把它们拼到 /api/v1 下，也不能把根服务器地址当作任意外域授权。
 
@@ -392,10 +394,10 @@ TypeScript 的 NodeNext/Bundler 消费 .mjs 时，会通过 [mobile-client.d.mts
 
 私密图片 ticket 有效期 5 分钟；证据 API 及私密图片使用 no-store，不要把完整 URL 写日志、公开分享或长期缓存。过期后重读本人/有处理权限的记录取得新 URL；静态签名不是任意图片访问权。账号 token_version 变化或失效会使关联票据不可用。公开帖子图片和头像仍按原公开规则访问。
 
-生产必须使用 HTTPS，避免明文 bearer/password。浏览器/WebView 跨源调用只允许部署明确配置的 CORS 源；v1 不放宽 CORS，不新增 Cookie 会话。原生 HTTP 客户端虽不受浏览器 CORS 机制约束，仍必须满足服务器认证、IP 守卫、墙成员身份及权限。不要使用外部图片代理/日志平台传输证据或完整 token。
+生产必须使用 HTTPS，避免明文 bearer/password。浏览器/WebView 跨源调用只允许部署明确配置的 CORS 源；v1 不放宽 CORS；网页会话 Cookie 只用于上述恢复/退出流程，普通 API 不接受 Cookie 代替 Bearer。原生 HTTP 客户端虽不受浏览器 CORS 机制约束，仍必须满足服务器认证、IP 守卫、墙成员身份及权限。不要使用外部图片代理/日志平台传输证据或完整 token。
 
 ## 契约维护与当前限制
 
-完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 169 个操作，其中 156 个提供公共 SDK 目录入口，13 个看板票据或内部操作明确排除。SDK 回归测试保留在 sdk/test，可运行 node --test sdk/test/*.mjs；生成一致性检查不写文件。服务端测试使用隔离临时 DATA_DIR，运行 npm test --prefix server；网页回归运行 npm test --prefix client，构建检查运行 npm run build --prefix client。不要用真实生产数据库启动服务来代替隔离验收。
+完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 171 个操作，其中 156 个提供公共 SDK 目录入口，13 个看板票据或内部操作明确排除，另排除 2 个网页 Cookie 会话操作。SDK 回归测试保留在 sdk/test，可运行 node --test sdk/test/*.mjs；生成一致性检查不写文件。服务端测试使用隔离临时 DATA_DIR，运行 npm test --prefix server；网页回归运行 npm test --prefix client，构建检查运行 npm run build --prefix client。不要用真实生产数据库启动服务来代替隔离验收。
 
-当前限制：无 token refresh、离线冲突合并、后台推送、WebSocket 或设备管理；历史本地时间缺少 offset；after 不包含既有消息的变更事件；朋友列表及墙列表仍是原有数组而不是统一分页；帖子搜索 total 是截断数量。调用方应按 capabilities/真实端点工作，不将文档或 SDK 视为未来功能承诺。
+当前限制：移动 SDK 不自动刷新 token；无离线冲突合并、后台推送、WebSocket 或设备管理；历史本地时间缺少 offset；after 不包含既有消息的变更事件；朋友列表及墙列表仍是原有数组而不是统一分页；帖子搜索 total 是截断数量。调用方应按 capabilities/真实端点工作，不将文档或 SDK 视为未来功能承诺。

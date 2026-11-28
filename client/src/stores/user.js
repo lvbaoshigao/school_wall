@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, onScopeDispose } from 'vue'
-import api, { getSessionToken, setSessionToken, subscribeSessionChange, getApiErrorMessage } from '../api'
+import api, { getSessionToken, setSessionToken, subscribeSessionChange, getApiErrorMessage, clearSessionCookie } from '../api'
 import { postDrafts } from '../utils/postDrafts.js'
 
 export const useUserStore = defineStore('user', () => {
@@ -38,14 +38,14 @@ export const useUserStore = defineStore('user', () => {
   }
 
   async function fetchPermissions() {
-    const requestedToken = token.value
-    if (!requestedToken) return
+    const requestedRevision = sessionRevision.value
+    if (!token.value) return
     try {
       const res = await api.get('/permissions/me')
-      if (token.value !== requestedToken) return
+      if (sessionRevision.value !== requestedRevision) return
       perms.value = { global: Array.isArray(res.data?.global) ? res.data.global : [], walls: res.data?.walls || {} }
     } catch {
-      if (token.value === requestedToken) perms.value = { global: [], walls: {} }
+      if (sessionRevision.value === requestedRevision) perms.value = { global: [], walls: {} }
     }
   }
 
@@ -87,17 +87,17 @@ export const useUserStore = defineStore('user', () => {
   async function fetchUser() {
     if (!token.value) return null
     if (restorePromise) return restorePromise
-    const requestedToken = token.value
+    const requestedRevision = sessionRevision.value
     const request = (async () => {
       restoreError.value = ''
       try {
         const res = await api.get('/auth/me')
-        if (token.value !== requestedToken) return null
+        if (sessionRevision.value !== requestedRevision) return null
         user.value = res.data
         await fetchPermissions()
         return user.value
       } catch (error) {
-        if (token.value !== requestedToken) return null
+        if (sessionRevision.value !== requestedRevision) return null
         if (error.response?.status === 401) logout()
         else restoreError.value = getApiErrorMessage(error, '无法恢复账户信息，请重试')
         return null
@@ -108,27 +108,30 @@ export const useUserStore = defineStore('user', () => {
   }
 
   async function updateProfile(data) {
-    const requestedToken = token.value
+    const requestedRevision = sessionRevision.value
     const res = await api.put('/auth/profile', data)
-    if (token.value === requestedToken) user.value = { ...user.value, ...res.data }
+    if (sessionRevision.value === requestedRevision) user.value = { ...user.value, ...res.data }
     return res.data
   }
 
   async function updateAvatar(avatarBase64) {
-    const requestedToken = token.value
+    const requestedRevision = sessionRevision.value
     const res = await api.put('/auth/avatar', { avatar: avatarBase64 })
-    if (token.value === requestedToken && user.value) user.value = { ...user.value, avatar: res.data.avatar }
+    if (sessionRevision.value === requestedRevision && user.value) user.value = { ...user.value, avatar: res.data.avatar }
     return res.data
   }
 
   async function changePassword(oldPassword, newPassword) {
-    const requestedToken = token.value
+    const requestedRevision = sessionRevision.value
     const res = await api.put('/auth/password', { oldPassword, newPassword })
-    if (res.data?.token && token.value === requestedToken) setSessionToken(res.data.token, { resetContext: false })
+    if (res.data?.token && sessionRevision.value === requestedRevision) setSessionToken(res.data.token, { resetContext: false })
     return res
   }
 
-  function logout() { setSessionToken('') }
+  function logout() {
+    setSessionToken('')
+    return clearSessionCookie()
+  }
 
   return {
     token, user, perms, isLoggedIn, roleLabel, sessionRevision, restoreError,

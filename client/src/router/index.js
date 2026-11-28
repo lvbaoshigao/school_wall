@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
-import api from '../api'
+import api, { restoreSession } from '../api'
 
 // 只缓存正式初始化；临时状态在后端重启后失效。
 let setupStatus = null
@@ -56,7 +56,8 @@ const router = createRouter({
 router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
   const wallStore = useWallStore()
-  // 首次导航先恢复账户/权限，避免刷新后界面闪错状态。
+  // 首次导航先尝试持久 Cookie，再恢复账户/权限。
+  try { await restoreSession() } catch { /* 暂时断网时保留登录页面，后续导航可重试。 */ }
   if (userStore.isLoggedIn && !userStore.user && to.path !== '/banned') await userStore.fetchUser()
 
   // 未正式初始化时，仅已登录的临时会话可以进入站点。

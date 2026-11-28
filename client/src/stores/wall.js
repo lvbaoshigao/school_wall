@@ -29,19 +29,18 @@ export const useWallStore = defineStore('wall', () => {
   async function fetchMyWalls() {
     if (!getSessionToken()) return myWalls.value
     if (pendingRequest) return pendingRequest
-    const requestedToken = getSessionToken()
     const requestedVersion = loadVersion
     const request = (async () => {
       loadError.value = ''
       try {
         const res = await api.get('/walls')
-        if (getSessionToken() !== requestedToken || requestedVersion !== loadVersion) return myWalls.value
+        if (requestedVersion !== loadVersion) return myWalls.value
         if (!Array.isArray(res.data)) throw new Error('校园墙列表格式无效')
         myWalls.value = res.data.filter(w => wallId(w.id)).map(w => ({ ...w, id: wallId(w.id) }))
         loaded.value = true
         if (!currentWall.value) setCurrentWall(myWalls.value.find(w => !w.member_status || w.member_status === 'active')?.id ?? null)
       } catch (error) {
-        if (getSessionToken() === requestedToken && requestedVersion === loadVersion) loadError.value = getApiErrorMessage(error, '校园墙加载失败，请重试')
+        if (requestedVersion === loadVersion) loadError.value = getApiErrorMessage(error, '校园墙加载失败，请重试')
         // 短暂网络故障不抹掉已加载的墙，也不把失败记成成功。
       }
       return myWalls.value

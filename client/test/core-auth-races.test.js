@@ -38,11 +38,12 @@ async function createUserHarness() {
     },
     subscribeSessionChange(listener) { listeners.add(listener); return () => listeners.delete(listener) },
     getApiErrorMessage: (_error, fallback) => fallback,
+    clearSessionCookie: async () => {},
   })
   const executable = source.replace(/^import .+$/gm, '').replace('export const useUserStore', 'const useUserStore')
   runInContext(executable + '\nthis.useUserStore = useUserStore', context)
   const store = context.useUserStore(createPinia())
-  return { store, api, requests, clearedDrafts, token: () => token }
+  return { store, api, requests, clearedDrafts, token: () => token, setToken: context.setSessionToken }
 }
 
 function session(id, token = 'token-' + id) { return { data: { token, user: { id, username: 'user-' + id } } } }
@@ -164,6 +165,17 @@ test('password refresh during permission loading does not cancel accepted login'
   await login
   assert.equal(h.store.user.id, 1)
   assert.equal(h.token(), 'refreshed-token')
+})
+
+test('user and permissions responses survive renewal within the same account', async () => {
+  const h = await createUserHarness()
+  h.store.acceptSession(session(1).data)
+  h.api.get = async path => {
+    h.setToken('renewed-' + path, { resetContext: false })
+    return { data: path === '/auth/me' ? { id: 1, nickname: 'restored' } : { global: ['example.permission'], walls: {} } }
+  }
+  assert.equal((await h.store.fetchUser()).nickname, 'restored')
+  assert.equal(h.store.can('example.permission'), true)
 })
 
 test('a failed newer login still prevents an older attempt from silently taking over', async () => {

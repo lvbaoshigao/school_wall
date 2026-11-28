@@ -1,6 +1,9 @@
 import axios from 'axios'
 
-const api = axios.create({ baseURL: '/api', timeout: 10000 })
+const api = axios.create({
+  baseURL: '/api', timeout: 10000, withCredentials: true,
+  headers: { 'X-Requested-With': 'school-wall' },
+})
 const sessionListeners = new Set()
 
 export function readStorage(key, storage = 'localStorage') {
@@ -15,6 +18,10 @@ export function writeStorage(key, value, storage = 'localStorage') {
 }
 
 let sessionToken = readStorage('token') || ''
+let sessionRevision = 0
+let refreshPromise = null
+let initialSessionPromise = null
+let sessionLoggedOut = readStorage('sessionLoggedOut') === '1'
 let requestWallId = readStorage('currentWallId') || ''
 export function setRequestWallId(value) {
   const id = Number(value)
@@ -28,22 +35,87 @@ export function subscribeSessionChange(listener) {
   return () => sessionListeners.delete(listener)
 }
 
-// resetContext=false 仅用于同一账户改密后的 token 换发。
+// resetContext=false 用于 Cookie 恢复或同一账户的令牌换发。
 export function setSessionToken(value, { resetContext = true } = {}) {
   const nextToken = typeof value === 'string' ? value : ''
   const previousToken = sessionToken
   sessionToken = nextToken
   writeStorage('token', nextToken)
   if (resetContext) {
+    sessionRevision++
+    if (nextToken) {
+      sessionLoggedOut = false
+      writeStorage('sessionLoggedOut', null)
+    }
     setRequestWallId(null)
     writeStorage('banInfo', null, 'sessionStorage')
   }
   for (const listener of sessionListeners) listener({ token: nextToken, previousToken, resetContext })
 }
 
+// 仅比较恢复前后的账号，真实令牌验签与授权仍完全由服务端负责。
+function tokenAccount(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replaceAll('-', '+').replaceAll('_', '/')))
+    return Number.isSafeInteger(payload.id) && payload.id > 0 ? payload : null
+  } catch { return null }
+}
+
+// Cookie 只用于换发 Bearer，普通 API 仍由服务端按现有权限校验。
+function refreshSession() {
+  if (sessionLoggedOut) return Promise.resolve('')
+  if (refreshPromise) return refreshPromise
+  const revision = sessionRevision
+  const previousToken = sessionToken
+  const request = api.post('/auth/refresh', {}, { skipSessionRefresh: true }).then(async ({ data }) => {
+    // 退出、换号或改密后，迟到的恢复响应不能覆盖当前会话。
+    if (revision !== sessionRevision || previousToken !== sessionToken || sessionLoggedOut) return ''
+    if (typeof data?.token !== 'string' || !data.token) throw new Error('登录恢复响应不完整，请重试')
+    const previousAccount = tokenAccount(previousToken)
+    const nextAccount = tokenAccount(data.token)
+    if (previousAccount && nextAccount && (previousAccount.id !== nextAccount.id ||
+        previousAccount.username && nextAccount.username && previousAccount.username !== nextAccount.username)) {
+      // Cookie 与缓存账号不一致时要求明确登录，不能把原请求重放到另一个账号。
+      setSessionToken('')
+      await clearSessionCookie()
+      redirectTo('/login')
+      return ''
+    }
+    setSessionToken(data.token, { resetContext: false })
+    return data.token
+  })
+  refreshPromise = request
+  const clear = () => { if (refreshPromise === request) refreshPromise = null }
+  request.then(clear, clear)
+  return request
+}
+
+export function restoreSession() {
+  if (!initialSessionPromise) {
+    initialSessionPromise = sessionToken || sessionLoggedOut
+      ? Promise.resolve(sessionToken)
+      : refreshSession().catch(error => {
+        if (error.response?.status === 401) return '' // 首次访问或 Cookie 已过期。
+        initialSessionPromise = null // 网络恢复后允许重试。
+        throw error
+      })
+  }
+  return initialSessionPromise
+}
+
+export function clearSessionCookie() {
+  // 网络断开或旧登录响应迟到时，重新打开页面也不能自动恢复已退出的账号。
+  sessionLoggedOut = true
+  writeStorage('sessionLoggedOut', '1')
+  return api.post('/auth/logout', {}, { skipSessionRefresh: true }).catch(() => {})
+}
+
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
     if (event.storageArea && event.storageArea !== globalThis.localStorage) return
+    if (event.key === 'sessionLoggedOut' || event.key === null) {
+      sessionLoggedOut = event.key !== null && event.newValue === '1'
+    }
     if (event.key === 'token' || event.key === null) {
       const nextToken = event.key === null ? '' : (event.newValue || '')
       if (nextToken !== sessionToken) setSessionToken(nextToken)
@@ -81,6 +153,8 @@ export function getPasswordError(value, { login = false } = {}) {
 api.interceptors.request.use(config => {
   config.headers = config.headers || {}
   if (sessionToken && !config.headers.Authorization) config.headers.Authorization = 'Bearer ' + sessionToken
+  // 同一账号换发令牌后可重试旧请求，退出或换号后的请求则直接失效。
+  if (sessionToken && config.headers.Authorization === 'Bearer ' + sessionToken) config.sessionRevision = sessionRevision
   const pathWallId = new RegExp('(?:^|/)walls/([0-9]+)(?:/|$)').exec(config.url || '')?.[1]
   const wallId = pathWallId || requestWallId
   // 帖子卡片等调用方可明确指定所属墙，禁止用当前墙覆盖。
@@ -104,11 +178,27 @@ api.interceptors.response.use(res => res, async error => {
   const status = error.response?.status
   const data = error.response?.data
   const requestToken = error.config?.headers?.Authorization?.replace(/^Bearer /, '')
-  const isCurrentSession = !!requestToken && requestToken === sessionToken
-  const publicAuth = new RegExp('^(?:/auth/(?:login|register)|/setup(?:/status)?)(?:[/?]|$)').test(error.config?.url || '')
+  const isCurrentSession = !!requestToken && error.config?.sessionRevision === sessionRevision && !!sessionToken
+  const publicAuth = new RegExp('^(?:/auth/(?:login|register|refresh|logout)|/setup(?:/status)?)(?:[/?]|$)').test(error.config?.url || '')
 
-  // 登录密码错误应留在表单；旧请求的401不能注销刚换发的新会话。
-  if (status === 401 && !publicAuth && isCurrentSession) {
+  // 多个过期请求共用一次 Cookie 续期；每个原请求最多重试一次。
+  if (status === 401 && !publicAuth && isCurrentSession && !error.config.sessionRetried && !error.config.skipSessionRefresh) {
+    const revision = sessionRevision
+    try {
+      const token = requestToken === sessionToken ? await refreshSession() : sessionToken
+      if (token && revision === sessionRevision && !sessionLoggedOut) {
+        error.config.headers.Authorization = 'Bearer ' + token
+        error.config.sessionRetried = true
+        return api.request(error.config)
+      }
+    } catch (refreshError) {
+      // 网络/服务器错误不能丢弃仍可恢复的登录状态。
+      if (refreshError.response?.status !== 401) return Promise.reject(refreshError)
+    }
+  }
+
+  // 登录密码错误应留在表单；旧账号的401不能注销刚登录的新账号。
+  if (status === 401 && !publicAuth && requestToken === sessionToken && error.config?.sessionRevision === sessionRevision) {
     setSessionToken('')
     redirectTo('/login')
   } else if (status === 403 && data?.code === 'BANNED' && (!requestToken || isCurrentSession)) {

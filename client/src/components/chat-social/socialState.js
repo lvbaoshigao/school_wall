@@ -32,14 +32,18 @@ export function createSocialScope(readContext) {
   let version = 0
   let disposed = false
   const controllers = new Set()
-  const signature = () => JSON.stringify(readContext())
+  // 会话序号区分退出/换号；同一会话的 Bearer 续期不作废在途响应。
+  const signature = (context = readContext()) => {
+    const { token, ...identity } = context
+    return JSON.stringify(Number.isSafeInteger(context.session) ? identity : context)
+  }
   function reset() { version++; for (const controller of controllers) controller.abort(); controllers.clear() }
   return {
     reset,
     dispose() { disposed = true; reset() },
     request() {
       const context = readContext()
-      const key = JSON.stringify(context)
+      const key = signature(context)
       const ownVersion = version
       const controller = new AbortController()
       controllers.add(controller)

@@ -254,7 +254,7 @@ async function deleteAccount() {
   try {
     await api.delete('/auth/account', { data: { password: deletePassword.value } })
     toast.success('账号已注销')
-    userStore.logout()
+    await userStore.logout()
     await router.replace('/login')
   } catch (e) {
     toast.error(getApiErrorMessage(e, '注销失败，请重试'))
