@@ -52,15 +52,15 @@ DELETE /messages/{id} 和 DELETE /messages/chat/{userId} 都是**单侧隐藏**�
 
 ## 全量覆盖与调用边界
 
-本规范覆盖真实 Express 注册的 **167 个显式方法/路径组合、152 个路径模板**：155 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 12 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 115 个操作包含新增的公开壁纸图片、本人账户统计、管理概览及看板内部读取/导出接口，既有鉴权与内部操作排除策略保持一致。
+本规范覆盖真实 Express 注册的 **169 个显式方法/路径组合、154 个路径模板**：157 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 12 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 117 个操作包含新增的公开壁纸图片、本人账户统计、管理概览、永久删除校园墙及看板内部读取/导出接口，既有鉴权与内部操作排除策略保持一致。
 
 | 范围 | 操作数 | 鉴权与用途 |
 | --- | ---: | --- |
 | 普通族及有权限的墙内操作 | 118 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
-| 管理族、建墙审核及看板票据入口 | 37 | 管理操作仍要求对应 global 或 wall 权限；票据入口要求 global.dashboard |
+| 管理族、建墙审核及看板票据入口 | 39 | 管理操作仍要求对应 global 或 wall 权限；票据入口要求 global.dashboard |
 | /dashboard/api 内部操作 | 12 | 原有端点接受看板票据或 Cookie，新增概览/导出仅 Cookie 同源；Cookie 写操作另需 CSRF；不由公共移动客户端调用 |
 
-公共 SDK 操作目录覆盖 **154 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 12 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
+公共 SDK 操作目录覆盖 **156 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 12 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
 
 OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabilities、/openapi.json 外，标准 /api 路径可通过旧 /api 前缀使用。旧 /api 本身不是能力发现入口。内部操作逐项 servers: [{url:"/"}]，最终路径严格为同一部署源上的 /dashboard/api/...，不能把它们拼到 /api/v1 下，也不能把根服务器地址当作任意外域授权。
 
@@ -94,6 +94,7 @@ CSV 使用 UTF-8 BOM、CRLF、单元格引号转义及公式前缀防护，文�
 | 账号 | POST /auth/login；GET /auth/me、/auth/statistics；PUT /auth/profile；PUT /auth/password |
 | 偏好 | GET /auth/prefs；PUT /auth/prefs；GET /auth/prefs/schema；POST /auth/prefs/reset |
 | 墙 | GET /walls、/walls/discover、/walls/{id}；POST /walls/{id}/join、/leave |
+| 永久删墙 | GET /walls/admin/{id}/deletion-preview；DELETE /walls/admin/{id}；仅 global.wall.manage，见下节 |
 | 帖子 | GET/POST /posts；GET /posts/search；GET/DELETE /posts/{id} |
 | 评论 | POST /posts/{id}/comments；DELETE /posts/{postId}/comments/{commentId} |
 | 私聊 | GET /messages/conversations；GET /messages/conversation/{userId}；POST /messages |
@@ -105,6 +106,65 @@ CSV 使用 UTF-8 BOM、CRLF、单元格引号转义及公式前缀防护，文�
 | 管理概览 | GET /admin/overview；days 为7、30或90，wall_id 可选；按有效权限汇总，见下节 |
 
 普通 JSON 请求体上限 128 KiB；图片上传 JSON 上限 5 MiB。消息最多 2000 字符，标题 100；表白信和 Markdown 帖子保留开头缩进，仅去除末尾空白；普通文本帖子和私聊仍去除首尾空白。帖子正文 2000；评论 500；投票标题 100、描述 500，2–10 个非空且去空格后不同的选项，每项 50 字符。密码上限是 1024 **UTF-8 字节**，新密码至少 6 字符；用户名 3–20 字符且不能带首尾空白/控制字符。资料字段具体上限见 OpenAPI，不传字段表示保留，不要将本地整份陈旧 profile 覆盖回服务器。
+
+## 永久删除校园墙
+
+GET /api/v1/walls/admin/{id}/deletion-preview（操作名 adminGetWallDeletionPreview）预览删除影响，DELETE /api/v1/walls/admin/{id}（操作名 adminDeleteWall）执行永久删除；旧 /api/walls/admin/{id}/deletion-preview 与 DELETE /api/walls/admin/{id} 复用同一路由及业务逻辑。旧 /api 成功直接返回下述业务对象，v1 将它放入 data，并保留 error:null 与 meta 包络。
+
+两个操作均使用普通 Bearer，要求当前操作者具有有效 global.wall.manage。无需选择当前墙、无需目标墙成员身份；目标只由路径 id 指定，不由 X-Wall-Id、当前所选墙或墙主身份授权。id 必须为严格正安全整数。本路由响应（包括错误）使用 Cache-Control: no-store。
+
+预览 data 为 {wall:{id,name,description,status,owner_id,created_at},counts,warnings:[string],can_delete:true}。owner_id 可为 null；created_at 沿用服务端本地时间字符串，不自动追加 UTC 偏移。can_delete 为 true 仅表示授权操作者取得当前预览；预览不锁定数据，也不替代删除时的再次校验。
+
+DELETE 必须提交 JSON 对象 {confirm_name,password}，两个字段均必填。confirm_name 必须与目标墙**当前完整名称精确相同**，不去空白、不忽略大小写、不作 Unicode 归一化；password 必须是**当前操作者的现密码**。不要将密码、完整请求体或预览保存在日志、离线队列或持久缓存中。成功 data 为 {message,deleted_wall_id,counts,warnings:[string]}。
+
+预览和删除结果均完整包含以下19个 counts 字段，全部为非负整数，无记录为0；它们描述目标墙的记录和附件候选，不是全站账号统计。本版全部候选附件保留，deletable_attachments 恒为0，retained_attachments=attachments；附件计数不表示已删除磁盘文件。
+
+| counts 字段 | 范围 |
+| --- | --- |
+| members | 目标墙成员记录 |
+| wall_applications | 与目标墙关联的建墙申请 |
+| ban_logs | 目标墙封禁日志 |
+| posts | 目标墙帖子 |
+| comments | 目标墙相关评论 |
+| likes | 目标墙相关点赞 |
+| bookmarks | 目标墙相关收藏 |
+| messages | 归属于目标墙的消息 |
+| announcements | 目标墙公告 |
+| votes | 目标墙投票 |
+| vote_options | 目标墙相关投票选项 |
+| vote_records | 目标墙相关投票记录 |
+| reports | 目标墙安全举报 |
+| post_reports | 目标墙帖子举报 |
+| user_reports | 目标墙用户举报 |
+| user_permissions | 目标墙范围内的权限记录 |
+| attachments | 目标墙关联的附件候选 |
+| deletable_attachments | 本版恒为0，不执行物理文件删除 |
+| retained_attachments | 本版保留全部候选，恒等于 attachments |
+
+数据库内目标墙及其所属记录在**单一事务**内删除；任何数据库故障均全回滚。事务内预检若发现投票记录与选项归属不一致（其他墙的 vote_records.option_id 指向待删墙的 vote_options，或本墙记录指向其他投票、失效选项），会拒绝删除并返回409 WALL_REFERENCE_CONFLICT，全量回滚、保留全部数据，不执行附件清理。用户/账号、账号偏好、全局数据和其他墙的数据不会被删除。允许删除最后一面墙，但不会重置 setup/首次设置状态。**本版删墙仅清数据库，全部候选附件保留，不执行物理 unlink，也不在提交后删除磁盘文件。** 现有上传未记录墙归属，编码或文本引用不能完备证明附件专属，不能据此安全删除文件。warnings 说明附件保留及独立存储清理仍需重新核对引用，应展示给操作者；成功响应只确认数据库删除已提交，不表示磁盘文件已删除。
+
+| HTTP | code | 处理 |
+| --- | --- | --- |
+| 400 | INVALID_WALL_ID | 修正路径 id |
+| 400 | INVALID_CONFIRMATION | 补齐确认字段，重新核对目标墙当前精确名称 |
+| 403 | PASSWORD_INVALID | 由操作者重新输入现密码 |
+| 403 | PERMISSION_DENIED | 当前账号缺少 global.wall.manage，不能靠换墙重试 |
+| 404 | WALL_NOT_FOUND | 目标墙不存在，刷新管理列表 |
+| 409 | WALL_REFERENCE_CONFLICT | 异常跨墙投票引用阻止删除；全部数据保留，先修复引用，再由操作者决定是否重试 |
+
+401、413、429及500仍遵循通用响应规则。SDK 通过已支持的 operations/callOperation 入口调用；无需新增便捷方法。它不读取 getWallId()，即使提供 params.wallId 或 requestOptions.wallId，也不为这两个操作发送 X-Wall-Id。通用入口校验路径 id、允许的 query 键和 JSON 对象正文是否存在；字段内容、精确墙名、现密码及实时权限均由服务端校验。
+
+~~~js
+const preview = await api.operations.adminGetWallDeletionPreview({ path: { id: targetWallId } });
+// 展示 preview.data.wall、counts 和 warnings；由操作者输入完整墙名及现密码并确认。
+const deleted = await api.callOperation('adminDeleteWall', {
+  path: { id: targetWallId },
+  body: { confirm_name: enteredWallName, password: enteredCurrentPassword },
+});
+// 展示 deleted.data.warnings，并刷新墙列表及当前界面状态。
+~~~
+
+**不得自动重试破坏性 DELETE。** SDK 本身不自动重试；网络中断、TIMEOUT、ABORTED 或网关错误不代表服务端未提交。前端会清除旧预览、确认信息和密码，提示结果未确认，要求先重新读取管理列表或预览确认服务器状态，再由操作者重新确认后决定后续动作；不要复用密码请求做后台循环重放。
 
 ## 本人账户统计
 
@@ -336,6 +396,6 @@ TypeScript 的 NodeNext/Bundler 消费 .mjs 时，会通过 [mobile-client.d.mts
 
 ## 契约维护与当前限制
 
-完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 167 个操作，其中 154 个提供公共 SDK 目录入口，13 个看板票据或内部操作明确排除。SDK 回归测试保留在 sdk/test，可运行 node --test sdk/test/*.mjs；生成一致性检查不写文件。服务端测试使用隔离临时 DATA_DIR，运行 npm test --prefix server；网页回归运行 npm test --prefix client，构建检查运行 npm run build --prefix client。不要用真实生产数据库启动服务来代替隔离验收。
+完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 169 个操作，其中 156 个提供公共 SDK 目录入口，13 个看板票据或内部操作明确排除。SDK 回归测试保留在 sdk/test，可运行 node --test sdk/test/*.mjs；生成一致性检查不写文件。服务端测试使用隔离临时 DATA_DIR，运行 npm test --prefix server；网页回归运行 npm test --prefix client，构建检查运行 npm run build --prefix client。不要用真实生产数据库启动服务来代替隔离验收。
 
 当前限制：无 token refresh、离线冲突合并、后台推送、WebSocket 或设备管理；历史本地时间缺少 offset；after 不包含既有消息的变更事件；朋友列表及墙列表仍是原有数组而不是统一分页；帖子搜索 total 是截断数量。调用方应按 capabilities/真实端点工作，不将文档或 SDK 视为未来功能承诺。

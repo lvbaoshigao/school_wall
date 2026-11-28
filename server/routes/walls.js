@@ -1,10 +1,39 @@
 const express = require('express');
 const { authRequired, requirePerm, wallPathContext, settleWallBan } = require('../middleware/auth');
 const { parseDuration, banUntilFrom, formatUntil, logBan, banNotice, unbanNotice } = require('../lib/ban');
+const { verifyPassword, isPasswordInput } = require('../lib/password');
+const { deletionPlan, deleteWallData } = require('../lib/wallDeletion');
 
 const router = express.Router();
 
 const MAX_WALL_ADMINS = 5;
+
+function noStore(req, res, next) {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+}
+
+function wallDeletionId(raw) {
+  if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) return 0;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : 0;
+}
+
+function deletionError(res, status, code, message) {
+  return res.status(status).json({ error: message, code });
+}
+
+function requireWallManage(req, res) {
+  if (req.can('global.wall.manage', 0)) return true;
+  deletionError(res, 403, 'PERMISSION_DENIED', '权限不足');
+  return false;
+}
+
+function recheckSession(req, res) {
+  let authenticated = false;
+  authRequired(req, res, () => { authenticated = true; });
+  return authenticated;
+}
 
 function positiveId(raw) {
   if (typeof raw !== 'string' && typeof raw !== 'number') return 0;
@@ -12,6 +41,66 @@ function positiveId(raw) {
   const id = Number(raw);
   return Number.isSafeInteger(id) ? id : 0;
 }
+router.use('/admin/:wallId', noStore);
+router.param('wallId', (req, res, next, value) => {
+  if (!wallDeletionId(value)) return deletionError(res, 400, 'INVALID_WALL_ID', '校园墙ID无效');
+  next();
+});
+
+router.get('/admin/:wallId/deletion-preview', authRequired, (req, res) => {
+  if (!requireWallManage(req, res)) return;
+  const plan = deletionPlan(req.db, Number(req.params.wallId));
+  if (!plan) return deletionError(res, 404, 'WALL_NOT_FOUND', '校园墙不存在');
+  delete plan._internal;
+  return res.json(plan);
+});
+
+router.delete('/admin/:wallId', authRequired, (req, res) => {
+  if (!requireWallManage(req, res)) return;
+  const { confirm_name, password } = req.body || {};
+  if (typeof confirm_name !== 'string' || !confirm_name || confirm_name.length > 256 || !isPasswordInput(password)) {
+    return deletionError(res, 400, 'INVALID_CONFIRMATION', '确认信息无效');
+  }
+
+  const wall = req.db.prepare('SELECT id, name FROM walls WHERE id=?').get(Number(req.params.wallId));
+  if (!wall) return deletionError(res, 404, 'WALL_NOT_FOUND', '校园墙不存在');
+  if (confirm_name !== wall.name) return deletionError(res, 400, 'INVALID_CONFIRMATION', '校园墙名称确认不匹配');
+  const credential = req.db.prepare("SELECT password_hash FROM users WHERE id=? AND status='active'").get(req.user.id);
+  if (!credential) return deletionError(res, 403, 'PERMISSION_DENIED', '当前账号不可执行此操作');
+
+  Promise.resolve().then(async () => {
+    const verified = await verifyPassword(password, credential.password_hash);
+    if (!verified.ok) return deletionError(res, 403, 'PASSWORD_INVALID', '当前密码不正确');
+
+    // Password verification yields to other requests; refresh token, account,
+    // permission and credential state before starting the synchronous transaction.
+    if (!recheckSession(req, res)) return;
+    if (!requireWallManage(req, res)) return;
+    const current = req.db.prepare("SELECT password_hash FROM users WHERE id=? AND status='active'").get(req.user.id);
+    if (!current || current.password_hash !== credential.password_hash) {
+      return deletionError(res, 403, 'PASSWORD_INVALID', '账号凭据已变更，请重新输入当前密码');
+    }
+    const plan = deletionPlan(req.db, Number(req.params.wallId));
+    if (!plan) return deletionError(res, 404, 'WALL_NOT_FOUND', '校园墙不存在');
+    if (plan.wall.name !== confirm_name) return deletionError(res, 400, 'INVALID_CONFIRMATION', '校园墙名称确认不匹配');
+    const deletedWallId = plan.wall.id;
+    const result = deleteWallData(req.db, plan);
+    req.db.markDirty?.();
+    return res.json({
+      message: '校园墙及其关联数据已永久删除',
+      deleted_wall_id: deletedWallId,
+      counts: result.counts,
+      warnings: result.warnings,
+    });
+  }).catch(error => {
+    if (error.code === 'WALL_REFERENCE_CONFLICT') {
+      return deletionError(res, 409, 'WALL_REFERENCE_CONFLICT', '存在跨墙关联数据，已取消删除');
+    }
+    console.error('[Wall deletion] Transaction failed:', error.message);
+    if (!res.headersSent) res.status(500).json({ error: '删除失败，数据库未更改' });
+  });
+});
+
 for (const name of ['id', 'uid']) {
   router.param(name, (req, res, next, value) => {
     if (!positiveId(value)) return res.status(400).json({ error: 'ID 无效' });

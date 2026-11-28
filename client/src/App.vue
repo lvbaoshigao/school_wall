@@ -35,6 +35,11 @@ const mounted = ref(false)
 
 const wallpaperUrl = ref('')
 const wallpaperLoaded = ref(false)
+const wallpaperImageRef = ref(null)
+const wallpaperRenderRequest = ref(0)
+const wallpaperNotice = ref('')
+// 随项目发布的有限兜底资源；不依赖壁纸元数据 API。
+const localWallpaperFallbacks = ['/rele/1.jpg', '/rele/2.jpg', '/rele/3.jpg', '/rele/4.png']
 const systemTheme = window.matchMedia?.('(prefers-color-scheme: dark)')
 const systemDark = ref(systemTheme?.matches || false)
 // 初始化期间只读本地兼容值；迁移与持久化都由设置 store 负责。
@@ -48,6 +53,13 @@ const themeMode = computed(() => {
 const currentTheme = computed(() => themeMode.value === 'system' ? (systemDark.value ? 'dark' : 'light') : themeMode.value)
 const wallpaperEnabled = computed(() => settingsStore.prefs.wallpaper_enabled !== false)
 const wallpaperSource = computed(() => settingsStore.prefs.wallpaper_source === 'local' ? 'local' : 'bing')
+const wallpaperNoticeMessage = computed(() => {
+  if (wallpaperNotice.value === 'fallback') return '必应壁纸暂不可用，已改用本地壁纸。'
+  if (wallpaperNotice.value === 'local-fallback') return '壁纸服务暂不可用，已使用内置本地壁纸。'
+  if (wallpaperNotice.value === 'retained') return '壁纸加载失败，已保留当前壁纸。'
+  if (wallpaperNotice.value === 'unavailable') return '壁纸暂不可用，已显示主题背景。'
+  return ''
+})
 let wallpaperRequest = 0
 let wallpaperAbort = null
 let wallpaperPreloadCancel = null
@@ -55,8 +67,8 @@ let wallpaperInitializing = false
 let wallpaperIndex = 0
 let wallpaperTotal = 0
 let wallpaperActualSource = 'bing'
-let previousWallpaperUrl = ''
-let wallpaperImageFallbackUsed = false
+let wallpaperAttemptedUrls = new Set()
+let wallpaperAttemptedSources = new Set()
 
 async function setThemeMode(mode) {
   if (!['system', 'light', 'dark'].includes(mode) || themeSaving.value) return false
@@ -120,11 +132,11 @@ watch([wallpaperEnabled, wallpaperSource], ([enabled]) => {
     wallpaperRequest++
     cancelWallpaperWork()
     wallpaperUrl.value = ''
-    previousWallpaperUrl = ''
     wallpaperLoaded.value = false
+    wallpaperNotice.value = ''
     wallpaperTotal = 0
   }
-})
+}, { flush: 'sync' })
 
 function cancelWallpaperWork() {
   wallpaperAbort?.abort()
@@ -170,56 +182,93 @@ function preloadWallpaper(url) {
   })
 }
 
-async function getRandomWallpaper(rotate = false, forceLocal = false) {
-  if (!wallpaperEnabled.value) return
+async function getRandomWallpaper(rotate = false, forceLocal = false, recovering = false) {
+  if (!wallpaperEnabled.value || !mounted.value) return
   const requestId = ++wallpaperRequest
   cancelWallpaperWork()
   const controller = new AbortController()
   wallpaperAbort = controller
+  // 渲染失败的恢复沿用本轮记录，每个来源、URL 最多尝试一次，避免 error 重试循环。
+  if (!recovering) {
+    wallpaperAttemptedUrls = new Set()
+    wallpaperAttemptedSources = new Set()
+  }
+  const attemptedUrls = wallpaperAttemptedUrls
+  const attemptedSources = wallpaperAttemptedSources
+  const isCurrent = () => requestId === wallpaperRequest && wallpaperEnabled.value && mounted.value && !controller.signal.aborted
+  const preferredSource = wallpaperSource.value
   // 自动回退后，换图沿实际本地图库轮换；刷新或切换来源时重试首选来源。
-  const useLocal = forceLocal || wallpaperSource.value === 'local' || (rotate && wallpaperActualSource === 'local')
+  const useLocal = forceLocal || preferredSource === 'local' || (rotate && wallpaperActualSource === 'local')
   const sources = useLocal ? ['local'] : ['bing', 'local']
   const nextIndex = rotate && wallpaperTotal ? (wallpaperIndex + 1) % wallpaperTotal : undefined
-  // 图片已解码才替换当前壁纸；保留原有 URL 也让浏览器可以复用缓存。
-  for (const source of sources) {
-    try {
-      const params = { source }
-      if (nextIndex !== undefined) params.idx = nextIndex
-      const res = await api.get('/wallpaper', { params, signal: controller.signal, timeout: 8000 })
-      if (requestId !== wallpaperRequest) return
-      const url = safeWallpaperUrl(res.data?.url)
-      if (url !== wallpaperUrl.value) await preloadWallpaper(url)
-      if (requestId !== wallpaperRequest || !wallpaperEnabled.value) return
-      if (url !== wallpaperUrl.value) previousWallpaperUrl = wallpaperUrl.value
-      wallpaperUrl.value = url
-      wallpaperLoaded.value = true
-      wallpaperIndex = Number.isInteger(res.data?.idx) ? res.data.idx : 0
-      wallpaperTotal = Number.isInteger(res.data?.total) && res.data.total > 0 ? res.data.total : 0
-      wallpaperActualSource = new URL(url).pathname.startsWith('/rele/') ? 'local' : 'bing'
-      wallpaperImageFallbackUsed = wallpaperActualSource === 'local'
-      return
-    } catch {
-      if (requestId !== wallpaperRequest || controller.signal.aborted) return
-    }
+  const activate = async (value, details, directFallback = false) => {
+    const url = safeWallpaperUrl(value)
+    if (attemptedUrls.has(url)) return false
+    attemptedUrls.add(url)
+    // 图片已解码才替换当前壁纸；加载失败时保留已经显示的背景。
+    if (url !== wallpaperUrl.value) await preloadWallpaper(url)
+    if (!isCurrent()) return false
+    wallpaperRenderRequest.value = requestId
+    wallpaperUrl.value = url
+    wallpaperLoaded.value = true
+    wallpaperIndex = Number.isInteger(details?.idx) && details.idx >= 0 ? details.idx : 0
+    wallpaperTotal = Number.isInteger(details?.total) && details.total > 0 ? details.total : 0
+    wallpaperActualSource = new URL(url).pathname.startsWith('/rele/') ? 'local' : 'bing'
+    wallpaperNotice.value = directFallback ? 'local-fallback' : (preferredSource === 'bing' && wallpaperActualSource === 'local' ? 'fallback' : '')
+    return true
   }
-  // 断网时继续显示已有壁纸；首次加载失败则使用常驻主题渐变底。
-  if (requestId === wallpaperRequest) wallpaperLoaded.value = true
+  try {
+    for (const source of sources) {
+      if (!isCurrent()) return
+      if (attemptedSources.has(source)) continue
+      attemptedSources.add(source)
+      try {
+        const params = { source }
+        if (nextIndex !== undefined) params.idx = nextIndex
+        const res = await api.get('/wallpaper', { params, signal: controller.signal, timeout: 8000 })
+        if (!isCurrent()) return
+        if (await activate(res.data?.url, res.data)) return
+      } catch {
+        if (!isCurrent()) return
+      }
+    }
+    // API 不可用不代表静态资源不可用；仅尝试随项目发布的这四张图片。
+    const start = nextIndex === undefined ? 0 : nextIndex % localWallpaperFallbacks.length
+    for (let offset = 0; offset < localWallpaperFallbacks.length; offset++) {
+      if (!isCurrent()) return
+      const idx = (start + offset) % localWallpaperFallbacks.length
+      try {
+        if (await activate(localWallpaperFallbacks[idx], { idx, total: localWallpaperFallbacks.length }, true)) return
+      } catch {
+        if (!isCurrent()) return
+      }
+    }
+    if (isCurrent()) {
+      wallpaperLoaded.value = true
+      wallpaperNotice.value = wallpaperUrl.value ? 'retained' : 'unavailable'
+    }
+  } finally {
+    if (wallpaperAbort === controller) wallpaperAbort = null
+  }
+}
+
+function isCurrentWallpaperEvent(event) {
+  const target = event?.target
+  return mounted.value && wallpaperEnabled.value && wallpaperRenderRequest.value === wallpaperRequest &&
+    target && target === wallpaperImageRef.value &&
+    (target.currentSrc || target.src) === wallpaperUrl.value
 }
 
 function onWallpaperLoad(event) {
-  if (!event?.target || event.target.currentSrc === wallpaperUrl.value || event.target.src === wallpaperUrl.value) wallpaperLoaded.value = true
+  if (isCurrentWallpaperEvent(event)) wallpaperLoaded.value = true
 }
 
 function onWallpaperError(event) {
-  const failedUrl = event?.target?.currentSrc || event?.target?.src
-  if (failedUrl && failedUrl !== wallpaperUrl.value) return
-  wallpaperUrl.value = previousWallpaperUrl
-  previousWallpaperUrl = ''
-  wallpaperLoaded.value = true
-  if (!wallpaperImageFallbackUsed && wallpaperEnabled.value) {
-    wallpaperImageFallbackUsed = true
-    getRandomWallpaper(false, true)
-  }
+  if (!isCurrentWallpaperEvent(event)) return
+  wallpaperAttemptedUrls.add(wallpaperUrl.value)
+  wallpaperUrl.value = ''
+  wallpaperLoaded.value = false
+  getRandomWallpaper(false, true, true)
 }
 
 onMounted(async () => {
@@ -268,6 +317,8 @@ onBeforeUnmount(() => {
     <div v-if="wallpaperEnabled" class="bg-wallpaper" :class="{ loaded: wallpaperLoaded }">
       <img
         v-if="wallpaperUrl"
+        :key="wallpaperRenderRequest"
+        ref="wallpaperImageRef"
         :src="wallpaperUrl"
         @load="onWallpaperLoad"
         @error="onWallpaperError"
@@ -287,6 +338,7 @@ onBeforeUnmount(() => {
       :theme-saving="themeSaving"
     />
     <main id="main-content" ref="mainRef" tabindex="-1" class="main-content" :class="{ 'main-wide': isWideLayout, 'main-conversation': isConversationLayout, 'main-settings': isSettingsLayout }">
+      <p v-if="wallpaperEnabled && wallpaperNoticeMessage" class="wallpaper-notice" role="status" aria-live="polite" aria-atomic="true">{{ wallpaperNoticeMessage }}</p>
       <router-view v-slot="{ Component, route }">
         <!-- key 必须是 route.name 而不是 route.fullPath：
              放在 keep-alive 内部的组件一旦 key 变化就会被视为不同组件而强制重建，
@@ -381,6 +433,17 @@ onBeforeUnmount(() => {
   );
 }
 
+.wallpaper-notice {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card-solid);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .main-content {
   max-width: var(--container);
   margin: 0 auto;
@@ -409,6 +472,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 .main-conversation > * { min-height: 0; min-width: 0; flex: 1; }
+.main-conversation > .wallpaper-notice { flex: 0 0 auto; }
 .app-conversation :deep(.navbar) { top: var(--visual-viewport-offset-top); }
 @media (max-width: 768px) {
   .main-content { padding-inline: max(12px, var(--safe-area-left)) max(12px, var(--safe-area-right)); padding-top: calc(var(--app-header-height) + var(--page-top-gap)); }

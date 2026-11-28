@@ -14909,6 +14909,682 @@
         ]
       }
     },
+    "/walls/admin/{id}/deletion-preview": {
+      "get": {
+        "operationId": "adminGetWallDeletionPreview",
+        "summary": "Preview permanent wall deletion",
+        "tags": [
+          "walls-admin"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Strict positive safe integer identifying the target wall; numeric prefixes/suffixes are rejected."
+          }
+        ],
+        "x-required-permissions": [
+          "global.wall.manage"
+        ],
+        "description": "Bearer-authenticated management operation shared by legacy GET /api/walls/admin/{id}/deletion-preview and GET /api/v1/walls/admin/{id}/deletion-preview. Requires effective global.wall.manage, not current-wall selection or membership; X-Wall-Id does not select or authorize the target. Returns the target wall, all 19 nonnegative integer counts, warnings and can_delete=true. This is a current preview, not a reservation or deletion authorization token; confirm the current exact wall name and operator password when deleting. Users/accounts, account preferences, global data and other walls are outside deletion scope. All attachment candidates are retained in this release: deletable_attachments=0 and retained_attachments=attachments. No physical files are unlinked; independent storage cleanup requires fresh reference checks. The last wall may be deleted without resetting setup. All responses, including errors, use Cache-Control: no-store.",
+        "responses": {
+          "200": {
+            "description": "Success; legacy /api returns this business object directly, and /api/v1 places it in data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AdminWallDeletionPreview"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_WALL_ID: id is not a strict positive safe integer.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED: missing, invalid, expired or revoked Bearer token.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "PERMISSION_DENIED: effective global.wall.manage is required.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALL_NOT_FOUND: the target wall does not exist.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database or internal failure. A failed database deletion transaction is fully rolled back; no partial database deletion is committed.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/walls/admin/{id}": {
+      "delete": {
+        "operationId": "adminDeleteWall",
+        "summary": "Permanently delete a wall and its scoped data",
+        "tags": [
+          "walls-admin"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Strict positive safe integer identifying the target wall; numeric prefixes/suffixes are rejected."
+          }
+        ],
+        "x-required-permissions": [
+          "global.wall.manage"
+        ],
+        "description": "Bearer-authenticated destructive operation shared by legacy DELETE /api/walls/admin/{id} and DELETE /api/v1/walls/admin/{id}. Requires effective global.wall.manage, not current-wall selection or membership; X-Wall-Id does not select or authorize the target. A JSON body with confirm_name and password is required. confirm_name must exactly match the current wall name without trimming or normalization; password is the current operator password, not the wall owner password. Recompute and delete only the target wall and its scoped records in one database transaction; any database failure fully rolls back. Transaction preflight rejects inconsistent vote_records/option_id ownership, including other-wall records referencing target-wall vote_options and target-wall records referencing another vote or a missing option, with 409 WALL_REFERENCE_CONFLICT; all data is preserved and no attachment cleanup is performed. Do not delete users/accounts, account preferences, global data or records belonging to other walls. Deleting the last wall is allowed and does not reset setup. This release deletes database records only; no physical files are unlinked. All candidate attachments are retained: deletable_attachments=0 and retained_attachments=attachments. Upload records do not record wall ownership, and encoded or textual references cannot completely prove exclusive ownership. warnings explains that independent storage cleanup requires fresh reference checks. counts is a database-record/attachment-candidate snapshot, not a disk-file deletion result. All responses, including errors, use Cache-Control: no-store. Do not automatically retry this destructive request; network loss or timeout does not establish whether the server committed.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminWallDeletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; legacy /api returns this business object directly, and /api/v1 places it in data.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AdminWallDeletionResult"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_WALL_ID: id is not a strict positive safe integer. INVALID_CONFIRMATION: confirm_name/password is missing or invalid, or confirm_name does not exactly match the current wall name.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED: missing, invalid, expired or revoked Bearer token.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "PERMISSION_DENIED: effective global.wall.manage is required. PASSWORD_INVALID: the current operator password is incorrect.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "WALL_NOT_FOUND: the target wall does not exist.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "WALL_REFERENCE_CONFLICT: transaction preflight found vote_records from another wall whose option_id references target-wall vote_options, or target-wall records whose option_id belongs to another vote or is missing. Deletion is rejected and the transaction fully rolls back, preserving all data; no attachment cleanup is performed. Repair inconsistent references before a deliberate retry.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the JSON size limit.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database or internal failure. A failed database deletion transaction is fully rolled back; no partial database deletion is committed.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                },
+                "description": "Do not cache this management response, including errors."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/walls/admin/{id}/status": {
       "put": {
         "operationId": "adminSetWallStatus",
@@ -23536,6 +24212,260 @@
           "owner_name",
           "member_count",
           "post_count"
+        ]
+      },
+      "AdminWallDeletionWall": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "owner_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "description": "SQLite local timestamp without an explicit UTC offset."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "status",
+          "owner_id",
+          "created_at"
+        ]
+      },
+      "AdminWallDeletionCounts": {
+        "type": "object",
+        "description": "All 19 fields are always present and are nonnegative integers. Counts describe target-wall records and attachment candidates only; they are not account/global totals.",
+        "additionalProperties": false,
+        "properties": {
+          "members": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "wall_applications": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "ban_logs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "posts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "comments": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "likes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "bookmarks": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "messages": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "announcements": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "votes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "vote_options": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "vote_records": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "reports": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "post_reports": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "user_reports": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "user_permissions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "attachments": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Attachment candidates associated with the wall; all are retained in this release. This is not a count of deleted disk files."
+          },
+          "deletable_attachments": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 0,
+            "enum": [
+              0
+            ],
+            "description": "Always 0 in this release: wall deletion never physically unlinks disk files."
+          },
+          "retained_attachments": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "All attachment candidates are retained; retained_attachments=attachments in this release. Independent storage cleanup requires fresh reference checks."
+          }
+        },
+        "required": [
+          "members",
+          "wall_applications",
+          "ban_logs",
+          "posts",
+          "comments",
+          "likes",
+          "bookmarks",
+          "messages",
+          "announcements",
+          "votes",
+          "vote_options",
+          "vote_records",
+          "reports",
+          "post_reports",
+          "user_reports",
+          "user_permissions",
+          "attachments",
+          "deletable_attachments",
+          "retained_attachments"
+        ]
+      },
+      "AdminWallDeletionPreview": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "wall": {
+            "$ref": "#/components/schemas/AdminWallDeletionWall"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/AdminWallDeletionCounts"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Explains that all candidate attachments are retained and independent storage cleanup requires fresh reference checks; do not interpret localized text as error codes."
+          },
+          "can_delete": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "The preview is available to this authorized operator; deletion still requires fresh exact-name and current-password confirmation."
+          }
+        },
+        "required": [
+          "wall",
+          "counts",
+          "warnings",
+          "can_delete"
+        ]
+      },
+      "AdminWallDeletionRequest": {
+        "type": "object",
+        "properties": {
+          "confirm_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact current wall name; no trimming, case folding or Unicode normalization."
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "format": "password",
+            "writeOnly": true,
+            "description": "Current password of the authenticated operator; never persist or log this value."
+          }
+        },
+        "required": [
+          "confirm_name",
+          "password"
+        ]
+      },
+      "AdminWallDeletionResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "deleted_wall_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "counts": {
+            "$ref": "#/components/schemas/AdminWallDeletionCounts"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Explains that all candidate attachments are retained and independent storage cleanup requires fresh reference checks. A successful response confirms committed database deletion only, not physical file removal."
+          }
+        },
+        "required": [
+          "message",
+          "deleted_wall_id",
+          "counts",
+          "warnings"
         ]
       },
       "AdminWallStatus": {

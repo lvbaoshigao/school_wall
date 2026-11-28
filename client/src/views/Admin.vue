@@ -3,12 +3,13 @@ import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick, defineAsync
 import { useRoute } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
-import api from '../api'
+import api, { getApiErrorMessage } from '../api'
 import { useToast } from '../composables/useToast'
 import Icon from '../components/Icon.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import { useMarkdown } from '../composables/useMarkdown'
 import { useFocusTrap } from '../composables/useFocusTrap'
+import { focusIfActive } from '../utils/focus.js'
 
 const AdminOverview = defineAsyncComponent(() => import('../components/admin/AdminOverview.vue'))
 const userStore = useUserStore()
@@ -70,6 +71,38 @@ const users = ref([])
 const userFilter = ref({ role: '', status: '', q: '' })
 const wallApps = ref([])
 const allWalls = ref([])
+const allWallsPanel = ref(null)
+let allWallsLoadVersion = 0
+const showWallDeletion = ref(false)
+const wallDeletionModal = ref(null)
+const wallDeletionTarget = ref(null)
+const wallDeletionPreview = ref(null)
+const wallDeletionResultWarnings = ref([])
+const WALL_DELETION_COUNTS = [
+  { key: 'members', label: '墙成员关系' }, { key: 'wall_applications', label: '建墙申请记录' },
+  { key: 'ban_logs', label: '本墙封禁日志' }, { key: 'posts', label: '帖子' },
+  { key: 'comments', label: '评论' }, { key: 'likes', label: '点赞记录' },
+  { key: 'bookmarks', label: '收藏记录' }, { key: 'messages', label: '关联消息' },
+  { key: 'announcements', label: '本墙公告' }, { key: 'votes', label: '投票' },
+  { key: 'vote_options', label: '投票选项' }, { key: 'vote_records', label: '投票记录' },
+  { key: 'reports', label: '安全举报' }, { key: 'post_reports', label: '帖子举报' },
+  { key: 'user_reports', label: '用户举报' }, { key: 'user_permissions', label: '本墙权限覆盖' },
+  { key: 'attachments', label: '待核对附件引用' }, { key: 'deletable_attachments', label: '可安全清理附件' },
+  { key: 'retained_attachments', label: '保留附件（不删除）' },
+]
+const wallDeletionLoading = ref(false)
+const wallDeletionBusy = ref(false)
+const wallDeletionError = ref('')
+const wallDeletionName = ref('')
+const wallDeletionPassword = ref('')
+const wallDeletionAcknowledged = ref(false)
+let wallDeletionVersion = 0
+let wallDeletionController = null
+useFocusTrap(() => showWallDeletion.value, wallDeletionModal, closeWallDeletion)
+const canDeleteWall = computed(() => can('global.wall.manage') && !!wallDeletionPreview.value &&
+  !wallDeletionLoading.value && !wallDeletionBusy.value && wallDeletionAcknowledged.value &&
+  wallDeletionName.value === wallDeletionPreview.value.wall.name && !!wallDeletionPassword.value)
+const wallDeletionContextKey = computed(() => JSON.stringify([userStore.sessionRevision, userStore.token, can('global.wall.manage')]))
 const userReports = ref([])
 const userReportStatusFilter = ref('')
 const safetyReports = ref([])
@@ -556,9 +589,135 @@ async function reviewWallApp(id, action) {
   catch (e) { toast.error(e.response?.data?.error || '操作失败') }
 }
 async function loadAllWalls() {
-  try { allWalls.value = (await api.get('/walls/admin/all')).data }
-  catch { errorMsg.value = '加载墙列表失败' }
+  if (!can('global.wall.manage')) return
+  const version = ++allWallsLoadVersion
+  const context = wallDeletionContextKey.value
+  try {
+    const res = await api.get('/walls/admin/all')
+    if (!disposed && version === allWallsLoadVersion && context === wallDeletionContextKey.value && can('global.wall.manage')) allWalls.value = res.data
+  } catch {
+    if (!disposed && version === allWallsLoadVersion && context === wallDeletionContextKey.value) errorMsg.value = '加载墙列表失败'
+  }
 }
+function validWallDeletionPreview(data, id) {
+  return data?.can_delete === true && data.wall?.id === id && typeof data.wall.name === 'string' && !!data.wall.name &&
+    WALL_DELETION_COUNTS.every(item => Number.isSafeInteger(data.counts?.[item.key]) && data.counts[item.key] >= 0) &&
+    Array.isArray(data.warnings) && data.warnings.every(warning => typeof warning === 'string')
+}
+function resetWallDeletion() {
+  wallDeletionVersion++
+  wallDeletionController?.abort()
+  wallDeletionController = null
+  showWallDeletion.value = false
+  wallDeletionTarget.value = null
+  wallDeletionPreview.value = null
+  wallDeletionLoading.value = false
+  wallDeletionName.value = ''
+  wallDeletionPassword.value = ''
+  wallDeletionAcknowledged.value = false
+  wallDeletionError.value = ''
+}
+function closeWallDeletion() {
+  if (!wallDeletionBusy.value) resetWallDeletion()
+}
+function openWallDeletion(wall) {
+  if (!can('global.wall.manage') || wallDeletionBusy.value || !Number.isSafeInteger(wall?.id) || wall.id <= 0) return
+  resetWallDeletion()
+  wallDeletionTarget.value = { id: wall.id, name: wall.name }
+  showWallDeletion.value = true
+  loadWallDeletionPreview()
+}
+async function loadWallDeletionPreview() {
+  const target = wallDeletionTarget.value
+  if (!target || !showWallDeletion.value || !can('global.wall.manage') || wallDeletionBusy.value || wallDeletionLoading.value) return
+  const version = ++wallDeletionVersion
+  const context = wallDeletionContextKey.value
+  const controller = new AbortController()
+  wallDeletionController = controller
+  wallDeletionLoading.value = true
+  wallDeletionError.value = ''
+  wallDeletionPreview.value = null
+  wallDeletionName.value = ''
+  wallDeletionPassword.value = ''
+  wallDeletionAcknowledged.value = false
+  try {
+    const { data } = await api.get(`/walls/admin/${target.id}/deletion-preview`, { signal: controller.signal })
+    if (disposed || version !== wallDeletionVersion || context !== wallDeletionContextKey.value || !showWallDeletion.value) return
+    if (!validWallDeletionPreview(data, target.id)) throw new Error('删除影响预览格式无效，请刷新后重试')
+    wallDeletionPreview.value = data
+  } catch (error) {
+    if (!disposed && version === wallDeletionVersion && context === wallDeletionContextKey.value && !controller.signal.aborted) {
+      wallDeletionError.value = getApiErrorMessage(error, error.message || '加载删除影响失败，请重试')
+    }
+  } finally {
+    if (version === wallDeletionVersion) {
+      wallDeletionLoading.value = false
+      wallDeletionController = null
+    }
+  }
+}
+async function doDeleteWall() {
+  if (!canDeleteWall.value) return
+  const id = wallDeletionPreview.value.wall.id
+  const session = JSON.stringify([userStore.sessionRevision, userStore.token])
+  const sameSession = () => session === JSON.stringify([userStore.sessionRevision, userStore.token])
+  wallDeletionBusy.value = true
+  wallDeletionError.value = ''
+  let deleted = false
+  try {
+    const { data } = await api.delete(`/walls/admin/${id}`, { data: { confirm_name: wallDeletionName.value, password: wallDeletionPassword.value } })
+    deleted = true
+    if (!sameSession()) return
+    const resultWarnings = Array.isArray(data?.warnings) ? data.warnings.filter(warning => typeof warning === 'string') : []
+    const restoreAllWalls = !disposed && wallStore.currentWallId === id
+    if (!disposed) {
+      allWallsLoadVersion++
+      allWalls.value = allWalls.value.filter(wall => wall.id !== id)
+      resetWallDeletion()
+    }
+    // Store the result before changing currentWallId: App's cacheScope may synchronously
+    // invalidate this Admin instance when the deleted wall was selected. If it was already
+    // disposed by navigation, still clear account state but do not request later focus theft.
+    wallStore.removeDeletedWall(id, { warnings: resultWarnings, focusAllWalls: restoreAllWalls })
+    if (!disposed) {
+      wallDeletionResultWarnings.value = resultWarnings
+      toast.success('校园墙已永久删除')
+    }
+    // These store-owned refreshes remain safe after unmount and self-guard against session changes.
+    const refreshes = await Promise.allSettled([wallStore.fetchMyWalls(), userStore.fetchPermissions()])
+    if (disposed || !sameSession()) return
+    if (wallStore.loadError || refreshes.some(result => result.status === 'rejected')) toast.warning('校园墙已删除，列表刷新失败，请重新加载页面')
+    if (can('global.wall.manage')) await loadAllWalls()
+    if (!canOpenPanel(activePanel.value)) openDefaultPanel()
+    await nextTick()
+    if (!disposed && sameSession() && activePanel.value === 'allWalls') focusIfActive(allWallsPanel.value)
+  } catch (error) {
+    if (!disposed && sameSession()) {
+      if (deleted) toast.warning('校园墙已删除，请重新加载页面以刷新管理状态')
+      else if (!error?.response || error.response.status === 408 || error.response.status >= 500) {
+        // A lost response (including a gateway error) cannot prove that DELETE
+        // did not commit. Require fresh server state and a new confirmation.
+        wallDeletionPreview.value = null
+        wallDeletionName.value = ''
+        wallDeletionAcknowledged.value = false
+        wallDeletionError.value = '未能确认删除结果，服务端可能已经完成删除。请先刷新影响预览或管理列表核实状态，不要直接重试删除。'
+      } else wallDeletionError.value = getApiErrorMessage(error, '删除失败，请检查信息后重试')
+    }
+  } finally {
+    wallDeletionPassword.value = ''
+    if (!disposed) wallDeletionBusy.value = false
+  }
+}
+watch(wallDeletionContextKey, () => {
+  resetWallDeletion()
+  allWallsLoadVersion++
+  allWalls.value = []
+  wallDeletionResultWarnings.value = []
+  if (activePanel.value === 'allWalls') {
+    if (can('global.wall.manage')) loadAllWalls()
+    else openDefaultPanel()
+  }
+}, { flush: 'sync' })
 async function toggleWallStatus(w) {
   const status = w.status === 'active' ? 'disabled' : 'active'
   try { await api.put(`/walls/admin/${w.id}/status`, { status }); loadAllWalls() }
@@ -833,6 +992,19 @@ function openDefaultPanel() {
   else activePanel.value = ''
 }
 watch(() => route.query.panel, openDefaultPanel)
+function restoreWallDeletionResult() {
+  const deletion = wallStore.consumeLastWallDeletion?.()
+  if (!deletion) { openDefaultPanel(); return }
+  wallDeletionResultWarnings.value = deletion.warnings
+  if (!deletion.focusAllWalls || !canOpenPanel('allWalls')) { openDefaultPanel(); return }
+  const session = JSON.stringify([userStore.sessionRevision, userStore.token, userStore.user?.id])
+  switchPanel('allWalls')
+  nextTick(() => {
+    if (!disposed && session === JSON.stringify([userStore.sessionRevision, userStore.token, userStore.user?.id]) && activePanel.value === 'allWalls') {
+      focusIfActive(allWallsPanel.value)
+    }
+  })
+}
 watch(overviewContextKey, () => {
   if (activePanel.value === 'overview' && !hasOverview.value) openDefaultPanel()
 }, { flush: 'sync' })
@@ -848,9 +1020,11 @@ watch(() => wallStore.currentWallId, () => {
   if (canOpenPanel(activePanel.value)) switchPanel(activePanel.value)
   else openDefaultPanel()
 })
-onMounted(openDefaultPanel)
+onMounted(restoreWallDeletionResult)
 onBeforeUnmount(() => {
   disposed = true
+  resetWallDeletion()
+  allWallsLoadVersion++
   permLoadVersion++
   clearInterval(wipeTimer)
   clearTimeout(redirectTimer)
@@ -1240,7 +1414,13 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- ============ 所有校园墙 ============ -->
-    <div v-if="activePanel === 'allWalls'">
+    <div v-if="activePanel === 'allWalls' && can('global.wall.manage')" ref="allWallsPanel" tabindex="-1" aria-label="全部校园墙管理">
+      <p v-if="!wallStore.currentWallId" class="text-muted">当前没有可用校园墙，仍可在此管理全部墙。</p>
+      <div v-if="wallDeletionResultWarnings.length" class="wall-delete-warning" role="status">
+        <strong>墙数据已永久删除，附件处理有以下提示：</strong>
+        <ul><li v-for="(warning, index) in wallDeletionResultWarnings" :key="index">{{ warning }}</li></ul>
+      </div>
+      <p v-if="!allWalls.length" class="text-muted" role="status">暂无校园墙</p>
       <div class="user-list">
         <div v-for="w in allWalls" :key="w.id" class="user-card glass">
           <div class="user-info">
@@ -1249,9 +1429,10 @@ onBeforeUnmount(() => {
             <span v-if="w.status !== 'active'" class="banned-tag">已停用</span>
           </div>
           <div class="actions">
-            <button class="btn btn-sm" :class="w.status === 'active' ? 'btn-danger' : 'btn-success'" @click="toggleWallStatus(w)">
+            <button class="btn btn-sm" :class="w.status === 'active' ? 'btn-danger' : 'btn-success'" :disabled="wallDeletionBusy" @click="toggleWallStatus(w)">
               {{ w.status === 'active' ? '停用' : '启用' }}
             </button>
+            <button class="btn btn-sm btn-danger wall-delete-trigger" :aria-label="'永久删除校园墙「' + w.name + '」'" :disabled="wallDeletionBusy" @click="openWallDeletion(w)">永久删除</button>
           </div>
         </div>
       </div>
@@ -1478,6 +1659,51 @@ onBeforeUnmount(() => {
     </div>
     </div>
     <!-- /admin-layout -->
+    <!-- 永久删除校园墙：先读取影响预览，再收集精确确认与当前密码。 -->
+    <div v-if="showWallDeletion" class="modal-overlay wall-delete-overlay" @click.self="closeWallDeletion">
+      <form ref="wallDeletionModal" tabindex="-1" class="modal glass-strong wall-delete-modal" role="dialog" aria-modal="true" aria-labelledby="wall-delete-title" aria-describedby="wall-delete-warning" :aria-busy="wallDeletionLoading || wallDeletionBusy" @submit.prevent="doDeleteWall">
+        <div class="modal-header">
+          <h3 id="wall-delete-title">永久删除校园墙</h3>
+          <button type="button" class="close-btn" aria-label="取消永久删除" data-focus-initial :disabled="wallDeletionBusy" @click="closeWallDeletion"><Icon name="close" :size="17" /></button>
+        </div>
+        <div class="wall-delete-content">
+          <div id="wall-delete-warning" class="wall-delete-warning">
+            <strong>危险操作：永久删除，无法撤销或恢复。</strong>
+            <p>将删除「{{ wallDeletionPreview?.wall.name || wallDeletionTarget?.name }}」及其关联内容。成员账号会保留，删墙不等于删除用户；其他墙及全局数据不受影响。</p>
+          </div>
+          <p v-if="wallDeletionLoading" role="status">正在计算删除影响…</p>
+          <div v-if="wallDeletionError" class="wall-delete-error" role="alert">{{ wallDeletionError }}</div>
+          <template v-if="wallDeletionPreview">
+            <h4>删除影响预览</h4>
+            <dl class="wall-delete-counts">
+              <div v-for="item in WALL_DELETION_COUNTS" :key="item.key">
+                <dt>{{ item.label }}</dt><dd>{{ wallDeletionPreview.counts[item.key].toLocaleString() }}</dd>
+              </div>
+            </dl>
+            <p class="text-muted wall-delete-note">计数为当前预览，最终删除时会重新统计，期间新增的本墙内容也会被删除。本次保留附件文件，需在独立存储清理流程中核对。</p>
+            <ul v-if="wallDeletionPreview.warnings.length" class="wall-delete-note"><li v-for="(warning, index) in wallDeletionPreview.warnings" :key="index">{{ warning }}</li></ul>
+            <fieldset class="wall-delete-fields" :disabled="wallDeletionBusy">
+              <div class="form-group">
+                <label for="wall-delete-name">输入完整墙名以确认</label>
+                <p id="wall-delete-name-hint" class="wall-delete-name">{{ wallDeletionPreview.wall.name }}</p>
+                <input id="wall-delete-name" v-model="wallDeletionName" type="text" autocomplete="off" autocapitalize="off" :spellcheck="false" aria-describedby="wall-delete-name-hint" required />
+                <p v-if="wallDeletionName && wallDeletionName !== wallDeletionPreview.wall.name" class="wall-delete-error">墙名必须完全一致，包括空格与大小写。</p>
+              </div>
+              <div class="form-group">
+                <label for="wall-delete-password">你的当前登录密码</label>
+                <input id="wall-delete-password" v-model="wallDeletionPassword" type="password" autocomplete="current-password" required />
+              </div>
+              <label class="wall-delete-ack"><input v-model="wallDeletionAcknowledged" type="checkbox" required /><span>我已核对影响，理解本墙内容将被永久删除且无法恢复。</span></label>
+            </fieldset>
+          </template>
+          <button v-if="!wallDeletionLoading" type="button" class="btn btn-secondary" :disabled="wallDeletionBusy" @click="loadWallDeletionPreview">{{ wallDeletionPreview ? '刷新影响预览' : '重试加载预览' }}</button>
+        </div>
+        <div class="modal-actions wall-delete-actions">
+          <button type="button" class="btn btn-secondary" :disabled="wallDeletionBusy" @click="closeWallDeletion">取消</button>
+          <button type="submit" class="btn btn-danger" :disabled="!canDeleteWall">{{ wallDeletionBusy ? '正在永久删除…' : '永久删除此墙' }}</button>
+        </div>
+      </form>
+    </div>
     <!-- 用户设置弹窗 -->
     <!-- 权限编辑：名号带出默认权限，在其上逐条加减 -->
     <div v-if="showPerms" class="modal-overlay" @click.self="showPerms = false">
@@ -2233,6 +2459,28 @@ select option { background: var(--surface-raised); color: var(--text-primary); }
   text-align: center; padding: 10px 0 6px; user-select: all; }
 .wipe-exec-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .wipe-input { width: 200px; letter-spacing: 4px; text-transform: uppercase; }
+.wall-delete-overlay { padding: 16px; }
+.modal.wall-delete-modal { display: flex; flex-direction: column; width: 100%; max-width: 620px; max-height: calc(100dvh - 32px); overflow: hidden; }
+.wall-delete-modal .modal-header { flex-shrink: 0; margin-bottom: 16px; }
+.wall-delete-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px; overflow-wrap: anywhere; }
+.wall-delete-warning { padding: 14px; border: 2px solid var(--danger); border-radius: var(--radius-sm); background: var(--danger-fill, rgba(255, 107, 107, 0.1)); margin-bottom: 16px; }
+.wall-delete-warning strong, .wall-delete-error { color: var(--danger); }
+.wall-delete-warning p { margin: 8px 0 0; }
+.wall-delete-error { margin: 10px 0; }
+.wall-delete-counts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin: 12px 0; }
+.wall-delete-counts > div { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.wall-delete-counts dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wall-delete-note { font-size: 0.8125rem; margin: 12px 0; }
+.wall-delete-fields { border: 0; padding: 0; margin: 16px 0; min-width: 0; }
+.wall-delete-name { font-weight: 700; white-space: pre-wrap; margin: 8px 0; user-select: all; }
+.wall-delete-ack { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; cursor: pointer; }
+.wall-delete-ack input { flex-shrink: 0; margin-top: 4px; width: 20px; height: 20px; }
+.wall-delete-modal .btn, .wall-delete-modal .close-btn, .wall-delete-modal input:not([type="checkbox"]), .wall-delete-trigger { min-height: 44px; }
+.wall-delete-modal .close-btn { min-width: 44px; }
+.wall-delete-modal input:not([type="checkbox"]) { font-size: 1rem; }
+.wall-delete-actions { flex-shrink: 0; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 12px; }
+.wall-delete-actions .btn { flex: 1 1 160px; }
+.wall-delete-modal :focus-visible { outline: 2px solid var(--accent-1); outline-offset: 2px; }
 .admin-panel { min-width: 0; }
 .modal { max-height: 88dvh; overflow-y: auto; }
 .side-item { min-height: 44px; }

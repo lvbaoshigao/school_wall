@@ -12,6 +12,30 @@ const ARCHIVE_URL = BING_ORIGIN + '/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=
 const ASSET_NAME = /^[a-f0-9]{64}\.jpg$/;
 const LOCAL_IMAGE = /\.(jpe?g|png|gif|webp|bmp)$/i;
 
+// Upstream failures (network, response validation, or an invalid remote image)
+// may use the local fallback. Filesystem and application failures must surface
+// as server errors instead of being misreported as an offline Bing response.
+function upstreamError(message, cause) {
+  const error = new Error(message);
+  if (cause !== undefined) error.cause = cause;
+  error.code = 'WALLPAPER_UPSTREAM';
+  return error;
+}
+
+function isUpstreamError(error) {
+  return error?.code === 'WALLPAPER_UPSTREAM';
+}
+
+function timeoutError(message = 'Wallpaper decode timed out') {
+  const error = upstreamError(message);
+  error.wallpaperTimeout = true;
+  return error;
+}
+
+function isMissingPath(error) {
+  return error?.code === 'ENOENT';
+}
+
 function archiveImages(value) {
   if (!Array.isArray(value)) return [];
   const images = [];
@@ -32,7 +56,7 @@ const fileFor = image => crypto.createHash('sha256').update(image.url).digest('h
 function createWallpaperService({
   localDir = path.resolve(__dirname, '../../rele'), cacheDir = path.join(DATA_DIR, 'wallpaper-cache'),
   fetchImpl = globalThis.fetch, now = Date.now, timeoutMs = 5000, retryMs = 5 * 60 * 1000,
-  metadataTtlMs = 60 * 60 * 1000, maxImageBytes = 8 * 1024 * 1024,
+  metadataTtlMs = 60 * 60 * 1000, maxImageBytes = 8 * 1024 * 1024, decodeConcurrency = 1,
 } = {}) {
   cacheDir = path.resolve(cacheDir);
   localDir = path.resolve(localDir);
@@ -41,18 +65,31 @@ function createWallpaperService({
   let localFiles = [], localReadAt = -Infinity, localPending = null;
   let pruneQueue = Promise.resolve();
   const downloads = new Map(), imageRetryAt = new Map();
+  const verifiedImages = new Map();
 
   async function initialize() {
     if (now() < initializeRetryAt) throw new Error('Wallpaper cache initialization is cooling down');
     if (!initialized) initialized = (async () => {
       await fs.mkdir(cacheDir, { recursive: true });
-      try {
-        const stat = await fs.stat(metadataPath);
-        if (stat.size > 65536) return;
-        const saved = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
-        const images = archiveImages(saved.images);
-        if (images.length && Number.isFinite(saved.fetchedAt) && saved.fetchedAt <= now()) metadata = { images, fetchedAt: saved.fetchedAt };
-      } catch {}
+      let stat;
+      try { stat = await fs.stat(metadataPath); }
+      catch (error) {
+        if (!isMissingPath(error)) throw error;
+        return;
+      }
+      if (!stat.isFile() || stat.size > 65536) return;
+      let raw;
+      try { raw = await fs.readFile(metadataPath, 'utf8'); }
+      catch (error) {
+        if (!isMissingPath(error)) throw error;
+        return;
+      }
+      let saved;
+      try { saved = JSON.parse(raw); }
+      catch { return; }
+      if (!saved || typeof saved !== 'object') return;
+      const images = archiveImages(saved.images);
+      if (images.length && Number.isFinite(saved.fetchedAt) && saved.fetchedAt <= now()) metadata = { images, fetchedAt: saved.fetchedAt };
     })().catch(error => {
       // A transient filesystem failure must not permanently cache a rejected promise.
       initialized = null;
@@ -67,30 +104,50 @@ function createWallpaperService({
     const controller = new AbortController();
     let timer;
     const expired = new Promise((_, reject) => {
-      timer = setTimeout(() => { controller.abort(); reject(new Error('Wallpaper upstream timed out')); }, Math.max(1, deadline - Date.now()));
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(upstreamError('Wallpaper upstream timed out'));
+      }, Math.max(1, deadline - Date.now()));
     });
     try {
       return await Promise.race([(async () => {
-        const response = await fetchImpl(url, { signal: controller.signal, redirect: 'error', headers: { Accept: contentType } });
-        if (!response.ok || response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== contentType) throw new Error('Invalid wallpaper response');
+        let response;
+        try {
+          response = await fetchImpl(url, { signal: controller.signal, redirect: 'error', headers: { Accept: contentType } });
+        } catch (error) {
+          throw upstreamError('Wallpaper upstream request failed', error);
+        }
+        if (!response || typeof response.ok !== 'boolean' || !response.headers || typeof response.headers.get !== 'function') {
+          throw new Error('Invalid wallpaper fetch response');
+        }
+        const actualType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+        if (!response.ok || actualType !== contentType) throw upstreamError('Invalid wallpaper response');
         const length = Number(response.headers.get('content-length'));
-        if (Number.isFinite(length) && length > maxBytes) throw new Error('Wallpaper response is too large');
-        if (!response.body) throw new Error('Empty wallpaper response');
+        if (Number.isFinite(length) && length > maxBytes) throw upstreamError('Wallpaper response is too large');
+        if (!response.body || typeof response.body.getReader !== 'function') throw upstreamError('Empty wallpaper response');
         const chunks = [], reader = response.body.getReader();
         let size = 0;
         try {
           while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+            let part;
+            try { part = await reader.read(); }
+            catch (error) { throw upstreamError('Wallpaper upstream body failed', error); }
+            if (!part || typeof part.done !== 'boolean' || (!part.done && !part.value)) throw upstreamError('Invalid wallpaper body');
+            if (part.done) break;
+            const value = Buffer.from(part.value);
             size += value.byteLength;
-            if (size > maxBytes) throw new Error('Wallpaper response is too large');
-            chunks.push(Buffer.from(value));
+            if (size > maxBytes) throw upstreamError('Wallpaper response is too large');
+            chunks.push(value);
           }
-        } finally { reader.releaseLock(); }
+        } finally {
+          try { reader.releaseLock(); } catch {}
+        }
         return Buffer.concat(chunks, size);
       })(), expired]);
-    } catch (error) { controller.abort(); throw error; }
-    finally { clearTimeout(timer); }
+    } catch (error) {
+      controller.abort();
+      throw error;
+    } finally { clearTimeout(timer); }
   }
 
   async function getMetadata(deadline) {
@@ -100,14 +157,20 @@ function createWallpaperService({
     if (!metadataPending) metadataPending = (async () => {
       try {
         const bytes = await fetchBytes(ARCHIVE_URL, 65536, 'application/json', deadline);
-        const images = archiveImages(JSON.parse(bytes.toString('utf8')).images);
-        if (!images.length) throw new Error('Empty Bing archive');
+        let payload;
+        try { payload = JSON.parse(bytes.toString('utf8')); }
+        catch (error) { throw upstreamError('Invalid Bing archive', error); }
+        const images = archiveImages(payload?.images);
+        if (!images.length) throw upstreamError('Empty Bing archive');
         metadata = { images, fetchedAt: now() };
         metadataRetryAt = 0;
         const temporary = metadataPath + '.' + crypto.randomUUID() + '.tmp';
         try { await fs.writeFile(temporary, JSON.stringify(metadata)); await fs.rename(temporary, metadataPath); }
         catch { await fs.rm(temporary, { force: true }).catch(() => {}); }
-      } catch { metadataRetryAt = now() + retryMs; }
+      } catch (error) {
+        if (!isUpstreamError(error)) throw error;
+        metadataRetryAt = now() + retryMs;
+      }
       finally { metadataPending = null; }
       return metadata;
     })();
@@ -126,28 +189,117 @@ function createWallpaperService({
     await Promise.all(entries.filter(entry => !keep.has(entry.name)).map(entry => fs.rm(path.join(cacheDir, entry.name), { force: true })));
   }
 
+  // Full JPEG validation is bounded and deadline-aware. Metadata and pixel
+  // decoding share one slot, and a timed-out job keeps its slot until sharp
+  // settles so queued requests never start after expiry.
+  const validationQueue = [];
+  let activeValidations = 0;
+  const validationConcurrency = () => Math.min(2, Math.max(1, Math.floor(Number(decodeConcurrency) || 1)));
+  function pumpValidations() {
+    while (activeValidations < validationConcurrency() && validationQueue.length) {
+      const job = validationQueue.shift();
+      if (job.settled) continue;
+      if (Date.now() >= job.deadline) { job.settled = true; job.reject(timeoutError()); continue; }
+      activeValidations++;
+      job.started = true;
+      clearTimeout(job.queueTimer);
+      const timer = setTimeout(() => {
+        if (!job.settled) { job.settled = true; job.reject(timeoutError()); }
+      }, Math.max(1, job.deadline - Date.now()));
+      Promise.resolve().then(job.task).then(value => {
+        if (!job.settled) {
+          job.settled = true;
+          if (Date.now() >= job.deadline) job.reject(timeoutError());
+          else job.resolve(value);
+        }
+      }, error => {
+        if (!job.settled) {
+          job.settled = true;
+          job.reject(Date.now() >= job.deadline ? timeoutError() : error);
+        }
+      }).finally(() => {
+        clearTimeout(timer);
+        activeValidations--;
+        pumpValidations();
+      });
+    }
+  }
+  function enqueueValidation(task, deadline) {
+    return new Promise((resolve, reject) => {
+      const job = { task, deadline, resolve, reject, settled: false, started: false, queueTimer: null };
+      job.queueTimer = setTimeout(() => {
+        if (!job.started && !job.settled) {
+          job.settled = true;
+          const index = validationQueue.indexOf(job);
+          if (index !== -1) validationQueue.splice(index, 1);
+          job.reject(timeoutError());
+        }
+      }, Math.max(1, deadline - Date.now()));
+      validationQueue.push(job);
+      pumpValidations();
+    });
+  }
+  function validateImage(input, deadline) {
+    return enqueueValidation(async () => {
+      let info;
+      try { info = await sharp(input, { limitInputPixels: 40 * 1000 * 1000 }).metadata(); }
+      catch (error) { throw upstreamError('Invalid wallpaper image', error); }
+      if (info.format !== 'jpeg' || !info.width || !info.height) throw upstreamError('Invalid wallpaper image');
+      // Metadata can be slow too; never start a full decode after it consumed
+      // the request deadline. The queue timer keeps this slot until metadata settles.
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw timeoutError();
+      try {
+        await sharp(input, { limitInputPixels: 40 * 1000 * 1000 })
+          .timeout({ seconds: Math.min(3600, Math.ceil(remaining / 1000)) }).toBuffer();
+      } catch (error) {
+        throw upstreamError('Invalid wallpaper image', error);
+      }
+      return info;
+    }, deadline);
+  }
+
   async function ensureImage(image, deadline) {
     const file = fileFor(image), destination = path.join(cacheDir, file);
     if (downloads.has(file)) return downloads.get(file);
     const pending = (async () => {
-      try {
-        const stat = await fs.stat(destination);
-        if (stat.isFile() && stat.size > 0 && stat.size <= maxImageBytes) return file;
-      } catch {}
-      if (now() < (imageRetryAt.get(file) || 0)) throw new Error('Wallpaper download is cooling down');
+      let stat;
+      try { stat = await fs.stat(destination); }
+      catch (error) {
+        if (!isMissingPath(error)) throw error;
+      }
+      if (stat?.isFile() && stat.size > 0 && stat.size <= maxImageBytes) {
+        const fingerprint = [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
+        if (verifiedImages.get(file) === fingerprint) return file;
+        try {
+          await validateImage(destination, deadline);
+          const current = await fs.stat(destination);
+          verifiedImages.set(file, [current.dev, current.ino, current.size, current.mtimeMs, current.ctimeMs].join(':'));
+          return file;
+        } catch (error) {
+          if (error?.wallpaperTimeout) throw error;
+          verifiedImages.delete(file);
+          await fs.rm(destination, { force: true });
+        }
+      } else if (stat) {
+        verifiedImages.delete(file);
+        await fs.rm(destination, { force: true });
+      }
+      if (now() < (imageRetryAt.get(file) || 0)) throw upstreamError('Wallpaper download is cooling down');
       const temporary = destination + '.' + crypto.randomUUID() + '.tmp';
       try {
         const bytes = await fetchBytes(image.url, maxImageBytes, 'image/jpeg', deadline);
-        const info = await sharp(bytes, { limitInputPixels: 40 * 1000 * 1000 }).metadata();
-        if (info.format !== 'jpeg' || !info.width || !info.height) throw new Error('Invalid wallpaper image');
+        await validateImage(bytes, deadline);
         await fs.writeFile(temporary, bytes);
         await fs.rename(temporary, destination);
+        const saved = await fs.stat(destination);
+        verifiedImages.set(file, [saved.dev, saved.ino, saved.size, saved.mtimeMs, saved.ctimeMs].join(':'));
         imageRetryAt.delete(file);
         pruneQueue = pruneQueue.then(pruneCache).catch(() => {});
         await pruneQueue;
         return file;
       } catch (error) {
-        imageRetryAt.set(file, now() + retryMs);
+        if (isUpstreamError(error)) imageRetryAt.set(file, now() + retryMs);
         await fs.rm(temporary, { force: true }).catch(() => {});
         throw error;
       }
@@ -164,8 +316,12 @@ function createWallpaperService({
           localFiles = (await fs.readdir(localDir, { withFileTypes: true }))
             .filter(entry => entry.isFile() && !entry.name.startsWith('.') && !/[\\\u0000-\u001f]/.test(entry.name) && LOCAL_IMAGE.test(entry.name))
             .map(entry => entry.name).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
-        } catch { localFiles = []; }
-        localReadAt = now(); localPending = null;
+        } catch (error) {
+          if (!isMissingPath(error)) throw error;
+          localFiles = [];
+        } finally {
+          localReadAt = now(); localPending = null;
+        }
       })();
       await localPending;
     }
@@ -195,7 +351,9 @@ function createWallpaperService({
         const file = await ensureImage(image, deadline);
         return { file, url: '/api/wallpaper/image/' + file, total: archive.images.length, idx: selected, source: 'bing', fallback: false, copyright: image.copyright };
       }
-    } catch {}
+    } catch (error) {
+      if (!isUpstreamError(error)) throw error;
+    }
     return selectLocal(idx, true);
   }
 
