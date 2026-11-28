@@ -30,13 +30,15 @@ Environment=HOST=127.0.0.1
 Environment=TRUST_PROXY=1
 # 不重建数据库（db.js 里 KEEP_DB=0 才重建，这里显式写上防手滑）
 Environment=KEEP_DB=1
+# nginx 单独提供 client/dist；后端仅提供 API、上传与管理看板。
+Environment=SERVE_CLIENT=0
 # 密钥、DATA_DIR 等配置放这里；使用简单 KEY=value，不写 shell 替换。
 # 默认数据根仍为 server/，自定义 DATA_DIR 需重新运行安装器更新可写路径。
-# 不得覆盖 HOST/PORT/TRUST_PROXY/KEEP_DB/NODE_ENV 的模板值。
+# 不得覆盖 HOST/PORT/TRUST_PROXY/KEEP_DB/NODE_ENV/SERVE_CLIENT 的模板值。
 # 前面的减号表示文件不存在也不报错。
 EnvironmentFile=-/home/server/school_wall/server/.env
 
-# 安装器通过 50-runtime.conf 覆盖为当前检查通过的 Node >=22.12.0 绝对路径。
+# 安装器通过 50-runtime.conf 覆盖为当前检查通过的 Node >=22.13.0 绝对路径。
 ExecStart=/usr/bin/node index.js
 
 # 应用自己实现了 SIGTERM 优雅关闭（落盘数据库后退出），给它 15 秒

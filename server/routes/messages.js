@@ -5,6 +5,7 @@ const { activeWallMember, treeConversation, canAccessTree, countAccessibleTreeUn
 const { effectivePerms, userCan } = require('../lib/permissions');
 const { presentMessages, canQuoteMessage } = require('../lib/messagePresentation');
 const { confessionVisibility, readableConfession } = require('../lib/confessions');
+const { adminIpAllowed } = require('../lib/ipguard');
 
 const router = express.Router();
 const confessionRoutes = require('./confessions');
@@ -292,9 +293,11 @@ router.get('/inbox', authRequired, (req, res) => {
 // 这样在别处处理过之后收件箱里不会留下已失效的按钮。
 router.get('/approvals', authRequired, (req, res) => {
   const me = req.user.id;
+  // Personal friend requests remain visible outside the administrative IP boundary.
+  const canManage = adminIpAllowed(req);
   // 「能审批任意墙的进墙申请」= 在全局作用域下持有该墙级权限
-  const globalAdmin = req.can('wall.member.approve', 0);
-  const superAdmin = req.can('global.wall.approve');
+  const globalAdmin = canManage && req.can('wall.member.approve', 0);
+  const superAdmin = canManage && req.can('global.wall.approve');
 
   const friend = req.db.prepare(`
     SELECT f.id, f.created_at, u.id as user_id, u.username, u.nickname, u.avatar
@@ -305,7 +308,7 @@ router.get('/approvals', authRequired, (req, res) => {
 
   // 我能审批哪些墙的进墙申请。全局作用域下持有该权限的人（原全局管理员）覆盖所有墙；
   // 其余人按「我加入的墙 + 被单独授权过的墙」逐个判定。
-  const myWalls = globalAdmin
+  const myWalls = !canManage ? [] : globalAdmin
     ? req.db.prepare("SELECT id FROM walls WHERE status='active'").all().map(r => r.id).filter(w => req.can('wall.member.approve', w))
     : req.db.prepare(`
         SELECT wall_id AS id FROM wall_members WHERE user_id=? AND status='active'

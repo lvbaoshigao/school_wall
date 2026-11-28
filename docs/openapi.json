@@ -12145,6 +12145,181 @@
         }
       }
     },
+    "/admin/overview": {
+      "get": {
+        "operationId": "adminGetOverview",
+        "summary": "Get a permission-filtered management overview",
+        "tags": [
+          "admin"
+        ],
+        "description": "Bearer-authenticated aggregate snapshot, available at legacy GET /api/admin/overview and versioned GET /api/v1/admin/overview. The legacy route returns AdminOverview directly; v1 puts it in data. days accepts only 7, 30 or 90 (default 7). Without wall_id, global scope requires global.moderate OR global.dashboard; X-Wall-Id alone is ignored. Explicit wall_id requires a valid wall membership (including an expired wall ban) OR global.moderate, AND effective wall.stats.view. If an X-Wall-Id header is also supplied with wall_id, the values must agree. Every aggregated wall must pass its own effective wall.stats.view, honoring explicit grants and denies; global access does not override a wall deny. Deleted walls are excluded. Disabled walls are considered only in unfiltered global scope for global.moderate. Per-queue counts require their business permission; unauthorized/unavailable/not-applicable counts are null, not zero. Global account counts require no wall filter and global.moderate OR global.user.manage; runtime/system data independently requires global.dashboard. All aggregates cover the complete authorized scope; walls (100 rows) and todos (30 rows) are display-limited. More than 500 candidate walls, counted before per-wall permission filtering, returns 400 OVERVIEW_SCOPE_TOO_LARGE rather than partial totals. Use an explicit wall_id to narrow the scope. Daily counts are based on surviving records and server-local dates, not an immutable audit log; generated_at is UTC. 400 codes: INVALID_OVERVIEW_DAYS, INVALID_OVERVIEW_WALL, OVERVIEW_WALL_CONFLICT, OVERVIEW_SCOPE_TOO_LARGE. 401 may be OVERVIEW_ACCOUNT_MISSING; 403 may be OVERVIEW_FORBIDDEN, OVERVIEW_ACCOUNT_UNAVAILABLE or OVERVIEW_WALL_FORBIDDEN; 404 is OVERVIEW_WALL_UNAVAILABLE. Other methods return 405 OVERVIEW_METHOD_NOT_ALLOWED with Allow: GET, HEAD after authentication. Responses produced by this route, including errors, use Cache-Control: no-store. Database failures return 500 without internal details.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive server-local calendar days ending today. Only one scalar value is accepted.",
+            "schema": {
+              "type": "integer",
+              "enum": [
+                7,
+                30,
+                90
+              ],
+              "default": 7
+            }
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "required": false,
+            "description": "Select exactly one authorized wall. Omission selects global scope; X-Wall-Id alone never selects a wall. A supplied compatibility X-Wall-Id header must match an explicit wall_id.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success: permission-filtered overview in data. Null counts must remain distinct from zero.",
+            "headers": {
+              "X-API-Version": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "description": "Fresh server-generated correlation ID."
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AdminOverview"
+                    },
+                    "error": {
+                      "type": "object",
+                      "nullable": true,
+                      "enum": [
+                        null
+                      ]
+                    },
+                    "meta": {
+                      "$ref": "#/components/schemas/Meta"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "error",
+                    "meta"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "405": {
+            "description": "Authenticated requests using an unsupported method receive OVERVIEW_METHOD_NOT_ALLOWED; GET and implicit HEAD are read-only.",
+            "headers": {
+              "Allow": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "GET, HEAD"
+                  ]
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          }
+        },
+        "x-permission-rules": {
+          "global": {
+            "anyOf": [
+              "global.moderate",
+              "global.dashboard"
+            ],
+            "eachWall": "wall.stats.view"
+          },
+          "wall": {
+            "entryAnyOf": [
+              "effective-wall-membership",
+              "global.moderate"
+            ],
+            "allOf": [
+              "wall.stats.view"
+            ]
+          },
+          "globalAccountCounts": {
+            "unfiltered": true,
+            "anyOf": [
+              "global.moderate",
+              "global.user.manage"
+            ]
+          },
+          "system": {
+            "allOf": [
+              "global.dashboard"
+            ]
+          }
+        }
+      }
+    },
     "/admin/stats": {
       "get": {
         "operationId": "adminGetStats",
@@ -15620,6 +15795,481 @@
         "x-dangerous": true
       }
     },
+    "/dashboard/api/overview": {
+      "get": {
+        "operationId": "dashboardGetOverview",
+        "summary": "Get the same-origin dashboard overview",
+        "tags": [
+          "dashboard-internal"
+        ],
+        "security": [
+          {
+            "DashboardCookieAuth": []
+          }
+        ],
+        "servers": [
+          {
+            "url": "/"
+          }
+        ],
+        "x-internal": true,
+        "x-required-permissions": [
+          "global.dashboard"
+        ],
+        "x-cookie-only": true,
+        "description": "Internal read-only GET /dashboard/api/overview, on the deployment origin root, not below /api/v1. Requires a valid sw_dash cookie and live global.dashboard permission; Bearer-only requests return 401 even with an aud=dashboard ticket. When Origin is supplied it must be same-origin; supplied Sec-Fetch-Site must be same-origin or none, otherwise 403. GET needs no CSRF header. Returns raw AdminOverview JSON without the v1 data/error/meta envelope and uses the same query parsing and permission-filtered builder as adminGetOverview. days is 7, 30 or 90 (default 7); wall_id is optional, X-Wall-Id alone is ignored and a header accompanying explicit wall_id must agree. Each wall still requires effective wall.stats.view and valid management/membership entry. Global-account, pending-queue and system permissions, null meanings, server-local date grouping, 500-candidate-wall rejection and 100-wall/30-todo display limits match AdminOverview. Known overview errors may include an additional code string beside the raw error message. All responses are no-store.",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "enum": [
+                7,
+                30,
+                90
+              ],
+              "default": 7
+            }
+          },
+          {
+            "name": "wall_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "description": "Explicit wall selector; optional compatibility X-Wall-Id must agree."
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": false,
+            "description": "When supplied, its normalized origin must equal the protocol and host seen by the server. A missing Origin does not bypass cookie or Fetch Metadata checks.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Sec-Fetch-Site",
+            "in": "header",
+            "required": false,
+            "description": "When supplied, only same-origin or none is accepted. same-site and cross-site are rejected.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "same-origin",
+                "none"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw permission-filtered overview; no v1 envelope.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOverview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid overview days/wall selector, conflicting header, or more than 500 candidate walls. May include the same business code as adminGetOverview.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Required sw_dash cookie missing, invalid, expired or revoked; Bearer-only is rejected.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin/Fetch Metadata denied, account unavailable or required dashboard/wall permission missing.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Explicit wall does not exist or is disabled; may include OVERVIEW_WALL_UNAVAILABLE.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected database/server failure; raw JSON error without internal details.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard/api/export": {
+      "get": {
+        "operationId": "dashboardExportCsv",
+        "summary": "Export filtered dashboard records as CSV",
+        "tags": [
+          "dashboard-internal"
+        ],
+        "security": [
+          {
+            "DashboardCookieAuth": []
+          }
+        ],
+        "servers": [
+          {
+            "url": "/"
+          }
+        ],
+        "x-internal": true,
+        "x-required-permissions": [
+          "global.dashboard"
+        ],
+        "x-cookie-only": true,
+        "description": "Internal GET /dashboard/api/export, on the same deployment origin root only. Requires sw_dash cookie and live global.dashboard; Bearer-only requests, including aud=dashboard tickets, return 401. Supplied Origin must match the server origin and supplied Sec-Fetch-Site must be same-origin or none; these read-only GET requests need no CSRF header. type is required: users additionally requires global.user.manage, posts requires global.moderate, announcements requires global.announcement. No wall-header selector is used. The selected dataset uses the matching filters below; other dataset filters have no effect. Text filters are trimmed and truncated to 100 characters and use literal substring matching with SQL wildcard escaping. Non-string text filters and unsupported role/status values are ignored. No pagination parameters or caller-selected export limit exist. More than 10,000 matching rows returns 413 without a partial CSV. Success is an attachment named users.csv, posts.csv or announcements.csv, text/csv; charset=utf-8, with UTF-8 BOM and CRLF lines. CSV cells quote embedded quotes and protect spreadsheet formula prefixes. Users include ID, username, nickname, real_name only when show_real_name=1 (otherwise empty), role, status, ban_until and created_at. Posts include ID, content, category, display author, cached like/comment counts and created_at; anonymous authors remain anonymous and no author ID is exported. Announcements include global-scope ID, title, content, pin state, deletion time and created_at. Private messages, IP addresses and hidden real names are excluded. All responses use Cache-Control: no-store. This endpoint is excluded from the public mobile SDK.",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "users",
+                "posts",
+                "announcements"
+              ]
+            },
+            "description": "Select the dataset; missing, non-string or unsupported values return 400."
+          },
+          {
+            "name": "user_q",
+            "in": "query",
+            "required": false,
+            "description": "For users: literal substring in username or nickname; trimmed and truncated to 100 characters.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_role",
+            "in": "query",
+            "required": false,
+            "description": "For users: filter by user, admin or super_admin; an unsupported value is ignored.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "user",
+                "admin",
+                "super_admin"
+              ]
+            }
+          },
+          {
+            "name": "user_status",
+            "in": "query",
+            "required": false,
+            "description": "For users: filter by active or banned; an unsupported value is ignored.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "banned"
+              ]
+            }
+          },
+          {
+            "name": "post_q",
+            "in": "query",
+            "required": false,
+            "description": "For posts: literal substring in content or category; trimmed and truncated to 100 characters.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "announcement_q",
+            "in": "query",
+            "required": false,
+            "description": "For global announcements: literal title substring; trimmed and truncated to 100 characters.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": false,
+            "description": "When supplied, its normalized origin must equal the protocol and host seen by the server. A missing Origin does not bypass cookie or Fetch Metadata checks.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Sec-Fetch-Site",
+            "in": "header",
+            "required": false,
+            "description": "When supplied, only same-origin or none is accepted. same-site and cross-site are rejected.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "same-origin",
+                "none"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "UTF-8 CSV attachment with BOM; up to 10,000 complete matching rows. No v1 envelope.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "attachment; filename=\"users.csv\"",
+                    "attachment; filename=\"posts.csv\"",
+                    "attachment; filename=\"announcements.csv\""
+                  ]
+                }
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "nosniff"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid export type.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Required sw_dash cookie missing, invalid, expired or revoked; Bearer-only is rejected.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin/Fetch Metadata denied, account unavailable, global.dashboard missing or the dataset permission is missing.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "More than 10,000 records match the filter. Narrow the filter; no partial export is returned.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected database/server failure. Raw JSON error, not a CSV or v1 envelope.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRawError"
+                }
+              }
+            }
+          }
+        },
+        "x-permission-rules": {
+          "users": {
+            "allOf": [
+              "global.dashboard",
+              "global.user.manage"
+            ]
+          },
+          "posts": {
+            "allOf": [
+              "global.dashboard",
+              "global.moderate"
+            ]
+          },
+          "announcements": {
+            "allOf": [
+              "global.dashboard",
+              "global.announcement"
+            ]
+          }
+        },
+        "x-export-row-limit": 10000
+      }
+    },
     "/dashboard/api/db/status": {
       "get": {
         "operationId": "dashboardDbGetStatus",
@@ -17294,7 +17944,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT aud=dashboard",
-        "description": "Script-only alternative using the dashboard-audience ticket, not an ordinary API bearer token. Requires global.dashboard. When no sw_dash cookie is sent the dashboard CSRF header is not required."
+        "description": "Script-only alternative for the existing dashboard database and token endpoints, using a dashboard-audience ticket rather than an ordinary API bearer token. Requires global.dashboard. When no sw_dash cookie is sent the dashboard CSRF header is not required. Does not authenticate /dashboard/api/overview or /dashboard/api/export: those two endpoints require sw_dash cookies and same-origin checks, and reject Bearer-only requests."
       },
       "DashboardCsrf": {
         "type": "apiKey",
@@ -21144,6 +21794,718 @@
           "applied",
           "rejected"
         ]
+      },
+      "AdminOverviewNullableCount": {
+        "type": "integer",
+        "minimum": 0,
+        "nullable": true,
+        "description": "null means unavailable, unauthorized or not applicable. Zero means an authorized empty result; never coerce null to zero."
+      },
+      "AdminOverviewScope": {
+        "type": "object",
+        "description": "Scope is selected only by the wall_id query parameter, never by the current X-Wall-Id header.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "global",
+              "wall"
+            ]
+          },
+          "wall_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "nullable": true,
+            "description": "Explicit wall_id for wall scope; null for global scope."
+          },
+          "available_wall_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of authorized walls in the complete aggregation, before the 100-row display limit."
+          },
+          "global_stats": {
+            "type": "boolean",
+            "description": "Whether global account counts are available. Requires no wall filter and global.moderate or global.user.manage."
+          }
+        },
+        "required": [
+          "kind",
+          "wall_id",
+          "available_wall_count",
+          "global_stats"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewRange": {
+        "type": "object",
+        "description": "Inclusive local-calendar window ending today. Calendar arithmetic handles daylight-saving days; existing timezone-less SQLite timestamps are grouped as stored, not reinterpreted as UTC.",
+        "properties": {
+          "days": {
+            "type": "integer",
+            "enum": [
+              7,
+              30,
+              90
+            ]
+          },
+          "start_date": {
+            "type": "string",
+            "description": "First included server-local calendar date.",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "end_date": {
+            "type": "string",
+            "description": "Last included server-local calendar date, including today.",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Current server IANA time zone; historical server time-zone changes cannot be reconstructed."
+          },
+          "utc_offset_minutes": {
+            "type": "integer",
+            "minimum": -840,
+            "maximum": 840,
+            "description": "Current server UTC offset in minutes; not a historical offset for every stored record."
+          },
+          "date_basis": {
+            "type": "string",
+            "enum": [
+              "server-local"
+            ]
+          },
+          "includes_today": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "timestamp_storage": {
+            "type": "string",
+            "enum": [
+              "local-naive"
+            ]
+          }
+        },
+        "required": [
+          "days",
+          "start_date",
+          "end_date",
+          "timezone",
+          "utc_offset_minutes",
+          "date_basis",
+          "includes_today",
+          "timestamp_storage"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewTotals": {
+        "type": "object",
+        "description": "Lifetime counts across all authorized walls in scope, not just the daily window or the returned wall rows. Global account counts are nullable.",
+        "properties": {
+          "users": {
+            "$ref": "#/components/schemas/AdminOverviewNullableCount"
+          },
+          "active_users": {
+            "$ref": "#/components/schemas/AdminOverviewNullableCount"
+          },
+          "banned_users": {
+            "$ref": "#/components/schemas/AdminOverviewNullableCount"
+          },
+          "walls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "active_walls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "members": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active membership relations across authorized walls; a person in two walls counts twice."
+          },
+          "posts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "anonymous_posts": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Aggregate anonymous-post count only; no author identity or attribution is returned."
+          },
+          "comments": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "votes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "likes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Actual like rows, not denormalized post counters."
+          },
+          "announcements": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Wall-scoped announcements only."
+          },
+          "pending": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Sum of authorized pending categories; equals pending.total."
+          }
+        },
+        "required": [
+          "users",
+          "active_users",
+          "banned_users",
+          "walls",
+          "active_walls",
+          "members",
+          "posts",
+          "anonymous_posts",
+          "comments",
+          "votes",
+          "likes",
+          "announcements",
+          "pending"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewActivity": {
+        "type": "object",
+        "description": "Counts for today in the server-local calendar.",
+        "properties": {
+          "users": {
+            "$ref": "#/components/schemas/AdminOverviewNullableCount"
+          },
+          "posts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "comments": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "votes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "members": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active membership relations created on this date; not distinct people."
+          }
+        },
+        "required": [
+          "users",
+          "posts",
+          "comments",
+          "votes",
+          "members"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewDailyActivity": {
+        "type": "object",
+        "description": "Current surviving records grouped by their stored creation date; not a durable event or audit log.",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Server-local calendar date, in ascending order.",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "users": {
+            "$ref": "#/components/schemas/AdminOverviewNullableCount"
+          },
+          "posts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "comments": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "votes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "members": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active membership relations created on this date; not distinct people."
+          }
+        },
+        "required": [
+          "date",
+          "users",
+          "posts",
+          "comments",
+          "votes",
+          "members"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewWall": {
+        "type": "object",
+        "description": "A permitted wall. Each wall must pass effective wall.stats.view, including explicit grants and denies.",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "name": {
+            "type": "string",
+            "description": "Wall display name, limited to 200 characters.",
+            "maxLength": 200
+          },
+          "status": {
+            "type": "string",
+            "description": "Stored wall status, normally active or disabled; unknown legacy values are retained. Disabled walls are visible only in global scope with global.moderate."
+          },
+          "members": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active membership relations."
+          },
+          "pending_members": {
+            "$ref": "#/components/schemas/AdminOverviewNullableCount"
+          },
+          "posts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "comments": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "votes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "posts_in_range": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Posts created within the inclusive range."
+          },
+          "pending_post_reports": {
+            "$ref": "#/components/schemas/AdminOverviewNullableCount"
+          },
+          "pending_safety_reports": {
+            "$ref": "#/components/schemas/AdminOverviewNullableCount"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "members",
+          "pending_members",
+          "posts",
+          "comments",
+          "votes",
+          "posts_in_range",
+          "pending_post_reports",
+          "pending_safety_reports"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewWallsMeta": {
+        "type": "object",
+        "description": "At most 100 rows sorted by posts_in_range descending, posts descending, then id ascending. Not a pagination cursor.",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "enum": [
+              100
+            ]
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of authorized wall rows before the display limit."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when authorized wall rows are omitted; aggregate totals still cover the entire authorized scope."
+          }
+        },
+        "required": [
+          "limit",
+          "total",
+          "truncated"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewPending": {
+        "type": "object",
+        "description": "Per-wall queues also require that wall to pass statistics authorization. Safety and bug queues include pending and processing; other queues include pending only. user_reports covers all walls globally or the selected wall when filtered.",
+        "properties": {
+          "members": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminOverviewNullableCount"
+              }
+            ],
+            "description": "Requires wall.member.approve."
+          },
+          "wall_applications": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminOverviewNullableCount"
+              }
+            ],
+            "description": "Requires global.wall.approve. Available only without wall_id."
+          },
+          "post_reports": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminOverviewNullableCount"
+              }
+            ],
+            "description": "Requires wall.post.report."
+          },
+          "safety_reports": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminOverviewNullableCount"
+              }
+            ],
+            "description": "Requires global.safety.handle or wall.safety.report."
+          },
+          "user_reports": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminOverviewNullableCount"
+              }
+            ],
+            "description": "Requires global.report.handle."
+          },
+          "bug_reports": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminOverviewNullableCount"
+              }
+            ],
+            "description": "Requires global.bug.handle. Available only without wall_id."
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Sum of categories the caller may see; null categories do not reveal hidden queues."
+          }
+        },
+        "required": [
+          "members",
+          "wall_applications",
+          "post_reports",
+          "safety_reports",
+          "user_reports",
+          "bug_reports",
+          "total"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewTodo": {
+        "type": "object",
+        "description": "Only authorized positive queues become todos. No message bodies, report contents, personal names or IP addresses.",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "members",
+              "wall_applications",
+              "post_reports",
+              "safety_reports",
+              "user_reports",
+              "bug_reports"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "description": "Localized display label; use key and permission for program logic."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "wall_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "nullable": true,
+            "description": "For members, post_reports and safety_reports always the wall ID. user_reports uses the filter ID or null globally. wall_applications and bug_reports always use null."
+          },
+          "permission": {
+            "type": "string",
+            "description": "Business permission for the queue. Safety prefers global.safety.handle when granted; visibility does not grant unrelated actions.",
+            "enum": [
+              "wall.member.approve",
+              "global.wall.approve",
+              "wall.post.report",
+              "global.safety.handle",
+              "wall.safety.report",
+              "global.report.handle",
+              "global.bug.handle"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "count",
+          "wall_id",
+          "permission"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewTodosMeta": {
+        "type": "object",
+        "description": "At most 30 rows sorted by count descending, key, then wall_id ascending. pending aggregates remain complete.",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "enum": [
+              30
+            ]
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of authorized task rows before the display limit; not the sum of queue counts."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when authorized task rows were omitted from todos."
+          }
+        },
+        "required": [
+          "limit",
+          "total",
+          "truncated"
+        ],
+        "additionalProperties": false
+      },
+      "AdminOverviewSystem": {
+        "type": "object",
+        "description": "Requires global.dashboard; otherwise null. Visit counts cover a rolling 60-minute process-local window, reset on restart and retain at most 50,000 identities. No identities, IP addresses, filesystem paths or configuration secrets are returned.",
+        "properties": {
+          "uptime_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "memory": {
+            "type": "object",
+            "properties": {
+              "rss_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "heap_used_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "heap_total_bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "rss_bytes",
+              "heap_used_bytes",
+              "heap_total_bytes"
+            ],
+            "additionalProperties": false
+          },
+          "database": {
+            "type": "object",
+            "properties": {
+              "engine": {
+                "type": "string",
+                "enum": [
+                  "sql.js"
+                ]
+              },
+              "dirty": {
+                "type": "boolean"
+              },
+              "temporary": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "engine",
+              "dirty",
+              "temporary"
+            ],
+            "additionalProperties": false
+          },
+          "visits": {
+            "type": "object",
+            "properties": {
+              "visitors": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Approximate retained authenticated-user or guest-IP identities, not distinct people; may undercount at the identity cap."
+              },
+              "requests": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Requests retained in the process counter; not page views or a durable audit."
+              },
+              "window_minutes": {
+                "type": "integer",
+                "enum": [
+                  60
+                ]
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "process"
+                ]
+              },
+              "reset_on_restart": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              },
+              "visitor_definition": {
+                "type": "string",
+                "enum": [
+                  "authenticated-user-or-guest-ip"
+                ]
+              },
+              "identity_limit": {
+                "type": "integer",
+                "enum": [
+                  50000
+                ]
+              },
+              "bounded": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ]
+              },
+              "traffic": {
+                "type": "string",
+                "enum": [
+                  "tracked-api-requests"
+                ]
+              }
+            },
+            "required": [
+              "visitors",
+              "requests",
+              "window_minutes",
+              "scope",
+              "reset_on_restart",
+              "visitor_definition",
+              "identity_limit",
+              "bounded",
+              "traffic"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "uptime_seconds",
+          "memory",
+          "database",
+          "visits"
+        ],
+        "additionalProperties": false,
+        "nullable": true
+      },
+      "AdminOverview": {
+        "type": "object",
+        "description": "Permission-filtered aggregate snapshot. More than 500 candidate walls BEFORE per-wall permission filtering is rejected with OVERVIEW_SCOPE_TOO_LARGE; no partial aggregates are returned. Counts never expose anonymous identities, private message bodies, real names or IP addresses.",
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Snapshot generation time in UTC ISO 8601."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AdminOverviewScope"
+          },
+          "range": {
+            "$ref": "#/components/schemas/AdminOverviewRange"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/AdminOverviewTotals"
+          },
+          "today": {
+            "$ref": "#/components/schemas/AdminOverviewActivity"
+          },
+          "daily": {
+            "type": "array",
+            "minItems": 7,
+            "maxItems": 90,
+            "description": "Exactly range.days consecutive server-local dates in ascending order, including zero-activity dates. Account counts remain null when unavailable.",
+            "items": {
+              "$ref": "#/components/schemas/AdminOverviewDailyActivity"
+            }
+          },
+          "walls": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/AdminOverviewWall"
+            }
+          },
+          "walls_meta": {
+            "$ref": "#/components/schemas/AdminOverviewWallsMeta"
+          },
+          "pending": {
+            "$ref": "#/components/schemas/AdminOverviewPending"
+          },
+          "todos": {
+            "type": "array",
+            "maxItems": 30,
+            "items": {
+              "$ref": "#/components/schemas/AdminOverviewTodo"
+            }
+          },
+          "todos_meta": {
+            "$ref": "#/components/schemas/AdminOverviewTodosMeta"
+          },
+          "system": {
+            "$ref": "#/components/schemas/AdminOverviewSystem"
+          }
+        },
+        "required": [
+          "schema_version",
+          "generated_at",
+          "scope",
+          "range",
+          "totals",
+          "today",
+          "daily",
+          "walls",
+          "walls_meta",
+          "pending",
+          "todos",
+          "todos_meta",
+          "system"
+        ],
+        "additionalProperties": false
       },
       "AdminGlobalStats": {
         "type": "object",

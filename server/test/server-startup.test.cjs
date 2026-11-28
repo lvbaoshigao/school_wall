@@ -24,7 +24,7 @@ async function stopServer(child) {
   try { return (await exited)[0]; } finally { clearTimeout(force); }
 }
 
-async function startServer(t, directory) {
+async function startServer(t, directory, env = {}, { failFinalSave = false } = {}) {
   // Capture the OS-assigned port through IPC, without racing for a free port
   // or changing production startup behavior.
   const bootstrap = `
@@ -37,13 +37,14 @@ async function startServer(t, directory) {
     process.on('message', message => {
       if (message?.type === 'school-wall-test-shutdown') process.emit('SIGTERM');
     });
+    ${failFinalSave ? "process.prependOnceListener('SIGTERM', () => { require('./db').getWrapper().saveNow = () => { throw new Error('simulated final save failure'); }; });" : ''}
     require('./index.js');
   `;
   const child = spawn(process.execPath, ['-e', bootstrap], {
     cwd: serverDirectory,
     env: { ...process.env, DATA_DIR: directory, KEEP_DB: '1', HOST: '127.0.0.1', PORT: '0',
       NODE_ENV: 'production', TRUST_PROXY: '0', ADMIN_IP_WHITELIST: '', ALLOWED_ORIGINS: '',
-      JWT_SECRET: 'school-wall-isolated-startup-test-secret' },
+      JWT_SECRET: 'school-wall-isolated-startup-test-secret', ...env },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   let output = '';
@@ -174,6 +175,92 @@ test('formal setup and successful writes survive a clean server restart', { time
     assert.equal(detail.body.data.post.author_id, session.body.data.user.id);
   } finally {
     for (const server of servers) await stopServer(server.child);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('standalone backend exposes management APIs without serving the Vue application', { timeout: 20000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'school-wall-api-only-test-'));
+  let server;
+  try {
+    server = await startServer(t, directory, { SERVE_CLIENT: '0' });
+    const { url } = server;
+    const root = await fetch(url + '/', { signal: AbortSignal.timeout(5000) });
+    assert.equal(root.status, 200);
+    assert.match(await root.text(), /独立后端/);
+    for (const pathname of ['/login', '/assets/missing.js', '/uploads/missing.png', '/dashboard/missing']) {
+      const response = await fetch(url + pathname, { headers: { Accept: 'text/html' }, signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, 404, pathname);
+    }
+    const unauthorized = await json(url, '/api/admin/overview');
+    assert.equal(unauthorized.response.status, 401);
+    const session = await json(url, '/api/setup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'api-only-admin', password: 'isolated-management-test-password', nickname: '管理测试员', wall_name: '独立后端测试墙' }),
+    });
+    assert.equal(session.response.status, 200);
+    const headers = { Authorization: 'Bearer ' + session.body.token };
+    const overview = await json(url, '/api/admin/overview?days=7', { headers });
+    assert.equal(overview.response.status, 200);
+    assert.equal(overview.body.schema_version, 1);
+    assert.equal(overview.body.daily.length, 7);
+    const ticket = await fetch(url + '/api/dashboard/session', { method: 'POST', headers, signal: AbortSignal.timeout(5000) });
+    assert.equal(ticket.status, 200);
+    const cookie = ticket.headers.get('set-cookie').split(';')[0];
+    const dashboard = await fetch(url + '/dashboard', { headers: { Cookie: cookie }, signal: AbortSignal.timeout(5000) });
+    assert.equal(dashboard.status, 200);
+    assert.ok(dashboard.headers.get('content-type').startsWith('text/html'));
+    const snapshot = await json(url, '/dashboard/api/overview?days=7', { headers: { Cookie: cookie } });
+    assert.equal(snapshot.response.status, 200);
+    assert.equal(snapshot.body.schema_version, 1);
+    const csrf = await json(url, '/dashboard/api/token', { method: 'POST', headers: { Cookie: cookie } });
+    assert.equal(csrf.response.status, 403);
+    const blockedOrigin = await fetch(url + '/api/health', { headers: { Origin: 'https://untrusted.example' }, signal: AbortSignal.timeout(5000) });
+    assert.equal(blockedOrigin.headers.get('access-control-allow-origin'), null);
+  } finally {
+    if (server) await stopServer(server.child);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('combined hosting keeps browser routes separate from missing assets and malformed requests', {
+  timeout: 20000,
+  skip: !fs.existsSync(path.resolve(serverDirectory, '../client/dist/index.html')),
+}, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'school-wall-static-test-'));
+  let server;
+  try {
+    server = await startServer(t, directory, { SERVE_CLIENT: '1' });
+    const page = await fetch(server.url + '/login', { headers: { Accept: 'text/html' }, signal: AbortSignal.timeout(5000) });
+    assert.equal(page.status, 200);
+    assert.equal(page.headers.get('cache-control'), 'no-cache');
+    assert.match(await page.text(), /id="app"/);
+    for (const pathname of ['/assets/missing.js', '/missing.css', '/rele/missing.jpg', '/dashboard/missing']) {
+      const response = await fetch(server.url + pathname, { headers: { Accept: 'text/html' }, signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, 404, pathname);
+    }
+    const nonNavigation = await json(server.url, '/unknown-page', { headers: { Accept: 'application/json' } });
+    assert.equal(nonNavigation.response.status, 404);
+    const invalidPath = await json(server.url, '/%ZZ');
+    assert.equal(invalidPath.response.status, 400);
+    const invalidEncoding = await json(server.url, '/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json; charset=unknown' }, body: '{}',
+    });
+    assert.equal(invalidEncoding.response.status, 415);
+  } finally {
+    if (server) await stopServer(server.child);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('failed final database save exits unsuccessfully instead of reporting a clean stop', { timeout: 15000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'school-wall-shutdown-error-test-'));
+  let server;
+  try {
+    server = await startServer(t, directory, { SERVE_CLIENT: '0' }, { failFinalSave: true });
+    assert.equal(await stopServer(server.child), 1);
+  } finally {
+    if (server) await stopServer(server.child);
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });

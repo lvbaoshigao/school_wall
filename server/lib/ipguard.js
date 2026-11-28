@@ -1,7 +1,7 @@
 // ===== 访问 IP 白名单 =====
 //
 // 保护范围分两档（存 settings 表，管理员可在后台改）：
-//   mode = 'admin'  只保护 /api/admin/* 与 /dashboard（管理面）
+//   mode = 'admin'  保护管理命名空间及其它路由中的管理操作
 //   mode = 'all'    保护整个 /api（站点仅对白名单内 IP 开放，适合内网部署）
 //
 // 白名单来源取并集：
@@ -74,27 +74,56 @@ function deny(res, scope, path) {
   return res.status(403).json({ error: '当前 IP 不在访问白名单内' });
 }
 
+// Match the route shape, not numeric parameter syntax: Express decodes parameters,
+// and legacy handlers may accept parseInt forms. HEAD inherits each GET's guard.
+const ADMIN_ACTIONS = {
+  GET: [/^\/api\/reports\/?$/, /^\/api\/walls\/[^/]+\/(?:members|ban-logs)\/?$/],
+  PUT: [/^\/api\/(?:reports|bug-reports)\/[^/]+\/status\/?$/,
+    /^\/api\/walls\/[^/]+(?:\/(?:transfer-owner|members\/[^/]+\/role))?\/?$/],
+  POST: [/^\/api\/walls\/[^/]+\/members\/[^/]+\/(?:approve|reject|remove|ban|unban)\/?$/,
+    /^\/api\/dashboard\/session\/?$/],
+  DELETE: [/^\/api\/reports\/[^/]+\/?$/],
+};
+
+function isAdminAction(method, pathname) {
+  if (/^\/(?:api\/admin|dashboard)(?:\/|$)/.test(pathname) ||
+      /^\/api\/(?:walls\/admin|permissions\/user|bug-reports\/admin)(?:\/|$)/.test(pathname)) return true;
+  const verb = method === 'HEAD' ? 'GET' : method;
+  const patterns = Object.hasOwn(ADMIN_ACTIONS, verb) ? ADMIN_ACTIONS[verb] : [];
+  return patterns.some(pattern => pattern.test(pathname));
+}
+
 // 挂在 req.db 注入之后、全部路由之前。静态资源与 SPA 页面不拦（mode='all' 也只管 API）。
 function whitelistGuard(req, res, next) {
   const p = req.path.toLowerCase();
   if (p === '/api/health') return next();
-  if (/^\/(?:api\/admin|dashboard)(?:\/|$)/.test(p) || /^\/api\/(?:walls\/admin|permissions\/user|bug-reports\/admin)(?:\/|$)/.test(p)) return checkScope(req, res, next, 'admin', p);
+  if (isAdminAction(req.method, p)) return checkScope(req, res, next, 'admin', p);
   if (p === '/api' || p.startsWith('/api/')) return checkScope(req, res, next, 'all', p);
   return next();
 }
 
-function checkScope(req, res, next, scope, p) {
+function scopeAllowed(req, scope) {
   const { envList, cfgList, mode } = getWhitelistConfig(req.db);
   const needsGuard =
     mode === 'all' || (scope === 'admin' && (mode === 'admin' || envList.length > 0));
-  if (!needsGuard) return next();
+  if (!needsGuard) return true;
 
   const list = [...envList, ...cfgList];
   // 启用保护后名单为空时拒绝访问；配置接口应在保存前拒绝此状态。
-  if (!list.length) return deny(res, scope, p);
+  return list.length > 0 && ipMatches(clientIpOf(req), list);
+}
 
-  if (!ipMatches(clientIpOf(req), list)) return deny(res, scope, p);
+function checkScope(req, res, next, scope, p) {
+  if (!scopeAllowed(req, scope)) return deny(res, scope, p);
   return next();
 }
 
-module.exports = { clientIpOf, normalizeIp, ipMatches, parseList, getWhitelistConfig, whitelistGuard };
+// Mixed owner/moderator endpoints apply this only to their administrative branch.
+function adminIpAllowed(req) { return scopeAllowed(req, 'admin'); }
+function enforceAdminIp(req, res) {
+  if (adminIpAllowed(req)) return true;
+  deny(res, 'admin', req.path);
+  return false;
+}
+
+module.exports = { clientIpOf, normalizeIp, ipMatches, parseList, getWhitelistConfig, whitelistGuard, adminIpAllowed, enforceAdminIp };

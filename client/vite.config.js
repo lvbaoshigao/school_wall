@@ -3,7 +3,8 @@ import vue from '@vitejs/plugin-vue'
 import { fileURLToPath } from 'node:url'
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), 'VITE_')
+  // Proxy targets are development-server configuration, never browser API URLs.
+  const env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), ['VITE_', 'BACKEND_'])
   const readPort = (name, fallback) => {
     const value = env[name] ?? String(fallback)
     const port = Number(value)
@@ -14,8 +15,20 @@ export default defineConfig(({ mode }) => {
   }
   const backendPort = readPort('VITE_BACKEND_PORT', 3000)
   const clientPort = readPort('VITE_PORT', 5173)
-  if (backendPort === clientPort) throw new Error('VITE_PORT and VITE_BACKEND_PORT must use different ports')
-  const backendTarget = 'http://127.0.0.1:' + backendPort
+  const rawTarget = env.BACKEND_ORIGIN || env.VITE_BACKEND_ORIGIN || 'http://127.0.0.1:' + backendPort
+  let backendUrl
+  try { backendUrl = new URL(rawTarget) } catch {
+    throw new Error('BACKEND_ORIGIN must be an absolute http(s) origin')
+  }
+  if (!['http:', 'https:'].includes(backendUrl.protocol) || backendUrl.username || backendUrl.password ||
+      backendUrl.pathname !== '/' || backendUrl.search || backendUrl.hash) {
+    throw new Error('BACKEND_ORIGIN must be an http(s) origin without credentials, path, query or fragment')
+  }
+  const targetPort = Number(backendUrl.port || (backendUrl.protocol === 'https:' ? 443 : 80))
+  if (['127.0.0.1', 'localhost', '[::1]'].includes(backendUrl.hostname) && targetPort === clientPort) {
+    throw new Error('The backend proxy target cannot point to the Vite server itself')
+  }
+  const backendTarget = backendUrl.origin
   return {
     plugins: [vue()],
     server: {
@@ -25,19 +38,19 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': {
           target: backendTarget,
-          changeOrigin: true,
+          changeOrigin: false,
         },
         '/rele': {
           target: backendTarget,
-          changeOrigin: true,
+          changeOrigin: false,
         },
         '/uploads': {
           target: backendTarget,
-          changeOrigin: true,
+          changeOrigin: false,
         },
         '/dashboard': {
           target: backendTarget,
-          changeOrigin: true,
+          changeOrigin: false,
         }
       }
     },

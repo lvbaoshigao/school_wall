@@ -509,8 +509,13 @@ router.get('/user/:id', authRequired, (req, res) => {
     user.contact_bilibili = '';
   }
 
-  const postCount = req.db.prepare('SELECT COUNT(*) as c FROM posts WHERE author_id = ?').get(user.id).c;
-  const voteCount = req.db.prepare('SELECT COUNT(*) as c FROM votes WHERE author_id = ?').get(user.id).c;
+  // Public counts must not identify anonymous authors or reveal other walls' activity.
+  // The authenticated owner's existing private cross-wall totals remain unchanged.
+  const visibleContent = user.id === req.user.id ? '' :
+    " AND is_anonymous=0 AND wall_id IN (SELECT wm.wall_id FROM wall_members wm JOIN walls w ON w.id=wm.wall_id WHERE wm.user_id=? AND wm.status='active' AND w.status='active')";
+  const countParams = user.id === req.user.id ? [user.id] : [user.id, req.user.id];
+  const postCount = req.db.prepare('SELECT COUNT(*) as c FROM posts WHERE author_id = ?' + visibleContent).get(...countParams).c;
+  const voteCount = req.db.prepare('SELECT COUNT(*) as c FROM votes WHERE author_id = ?' + visibleContent).get(...countParams).c;
 
   res.json({ ...user, postCount, voteCount });
 });

@@ -4,19 +4,19 @@
 
 ## 运行要求与架构
 
-需要 Node.js >=22.12.0、npm、Nginx（含 http_realip 模块）、systemd、sudo、curl、ss 与 UFW。安全加固脚本还需要 OpenSSH 和 fail2ban。Node.js 路径可以来自 nvm；安装器会把检查通过的当前 Node 绝对路径写进服务 drop-in，升级或移动 Node 后要重新运行安装器。
+需要 Node.js >=22.13.0、npm、Nginx（含 http_realip 模块）、systemd、sudo、curl、ss 与 UFW。安全加固脚本还需要 OpenSSH 和 fail2ban。Node.js 路径可以来自 nvm；安装器会把检查通过的当前 Node 绝对路径写进服务 drop-in，升级或移动 Node 后要重新运行安装器。
 
 ~~~text
 浏览器 -> nginx :11451 -> node 127.0.0.1:3000
             |-- /api/       代理：限流、体积上限、超时
-            |-- /dashboard  代理：应用生成 nonce CSP 与看板会话票据
+            |-- /dashboard  代理：应用专用 CSP、独立资源与看板会话票据
             |-- /uploads/   代理：应用校验证据图片访问票据并返回缓存策略
             |-- /rele/      代理：本地壁纸与必应离线回退，保留应用图片缓存头
             |-- /assets/    直接读取前端产物，长缓存
             |-- /           SPA，index.html 要求重新验证缓存
 ~~~
 
-本地壁纸 /rele/ 由后端限定静态目录提供，经代理保留一天缓存和条件请求响应，不进入 SPA 回退。上传文件不能由 Nginx alias 直接公开。公开图片与私密证据统一由应用处理；私密响应的 private, no-store 和 no-referrer 会原样保留。前端 CSP 允许 data: / blob: 图片预览；看板使用应用生成的 nonce CSP，代理不向它叠加前端 CSP。
+本地壁纸 /rele/ 由后端限定静态目录提供，经代理保留一天缓存和条件请求响应，不进入 SPA 回退。上传文件不能由 Nginx alias 直接公开。公开图片与私密证据统一由应用处理；私密响应的 private, no-store 和 no-referrer 会原样保留。前端 CSP 允许 data: / blob: 图片预览；看板使用应用提供的专用 CSP，只执行同源外置脚本并禁止内联事件；代理不向它叠加前端 CSP。
 
 ## 首次安装与更新
 
@@ -51,9 +51,9 @@ DATA_DIR=/home/server/school-wall-data
 # JWT_SECRET=替换为独立生成且妥善保存的强随机值
 ~~~
 
-自定义数据目录需位于源码树外，使用不含空格/变量替换/系统说明符的绝对路径，且现有目录必须属于 server 用户并且不能经过符号链接。安装器校验这些约束，并把实际数据根写入 systemd ReadWritePaths；不能只修改 .env 后重启而不更新这个可写路径。HOST=127.0.0.1、PORT=3000、TRUST_PROXY=1、KEEP_DB=1、NODE_ENV=production 是这套模板的固定约束，.env 不应覆盖它们。
+自定义数据目录需位于源码树外，使用不含空格/变量替换/系统说明符的绝对路径，且现有目录必须属于 server 用户并且不能经过符号链接。安装器校验这些约束，并把实际数据根写入 systemd ReadWritePaths；不能只修改 .env 后重启而不更新这个可写路径。HOST=127.0.0.1、PORT=3000、TRUST_PROXY=1、KEEP_DB=1、NODE_ENV=production、SERVE_CLIENT=0 是这套模板的固定约束，.env 不应覆盖它们。前端由 Nginx 独立静态托管，后端不再重复读取前端构建。
 
-改变 DATA_DIR 不会自动迁移旧数据。停服务后把数据库、JWT 密钥、uploads 与 backups 作为一组迁移，确认路径与权限，再更新配置和重跑安装器；密钥丢失会使旧登录票据失效。不要在服务运行时用独立脚本写 data.db，sql.js 下一次落盘可能覆盖修改。备份与恢复请通过受权限保护的数据库管理接口或停服务维护。
+改变 DATA_DIR 不会自动迁移旧数据。停服务后把数据库、JWT 密钥、uploads 与 backups 作为一组迁移，确认路径与权限，再更新配置和重跑安装器；密钥丢失会使旧登录票据失效。一个数据目录只允许一个后端进程。应用使用 Node 内置 SQLite 在独立协调文件上持有内核排他锁，第二实例会在读库之前拒绝启动；退出或崩溃后由操作系统释放，不要删除或替换协调文件来绕过锁。该保护要求本地可信文件系统，不保证 NFS/CIFS 等网络文件系统语义。业务数据库仍由 sql.js 管理，不要在服务运行时用外部脚本直接写库；备份与恢复应通过受权限保护的接口或停服务维护。
 
 后端目录与数据根权限 700，数据库、JWT 密钥和 .env 为 600，uploads/backups 递归去除组和其他用户权限，systemd UMask=0077。只有 client/dist 及其必要父目录开放给 Nginx 读取，www-data 无需读取上传文件。外部 DATA_DIR 还能让 ProtectSystem=strict 下的应用代码保持只读。
 

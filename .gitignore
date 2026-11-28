@@ -26,6 +26,9 @@ dist-ssr/
 .jwt_secret
 .jwt_secret.*
 
+# OS-backed single-writer coordination state; never commit or remove while running
+.school-wall.lock/
+
 # SQLite 数据库、日志、临时落盘与备份副本
 *.db
 *.db-*

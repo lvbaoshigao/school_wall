@@ -40,7 +40,7 @@ SERVICE_DATA_DIR="$(node "$DEPLOY_DIR/service-data-dir.cjs")"
 NODE_BIN="$(node -p 'process.execPath')"
 [[ "$NODE_BIN" =~ ^/[a-zA-Z0-9_./-]+$ ]] || { echo "Unsupported node executable path: $NODE_BIN" >&2; exit 1; }
 if [ "$CHECK_ONLY" = 1 ]; then
-    node "$DEPLOY_DIR/check-runtime.cjs" --sharp
+    node "$DEPLOY_DIR/check-runtime.cjs" --server --sharp
     [ -f "$APP_ROOT/client/dist/index.html" ] || { echo "Frontend build is missing" >&2; exit 1; }
     echo "Preflight passed. No services, firewall rules, permissions or configuration were changed."
     exit 0

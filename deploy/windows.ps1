@@ -7,7 +7,9 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 3000,
     [ValidateRange(1, 65535)]
-    [int]$ClientPort = 5173
+    [int]$ClientPort = 5173,
+    [switch]$BackendOnly,
+    [switch]$SkipInstall
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -64,7 +66,7 @@ function Invoke-Npm([string]$Directory, [string[]]$NpmArguments) {
     } finally { Pop-Location }
 }
 function Assert-NativeRuntime {
-    & $script:NodePath (Join-Path $PSScriptRoot 'check-runtime.cjs') --sharp
+    & $script:NodePath (Join-Path $PSScriptRoot 'check-runtime.cjs') --server --sharp
     if ($LASTEXITCODE -ne 0) { throw 'sharp native encode/decode failed; deployment stopped.' }
 }
 function Wait-ForBackend([System.Diagnostics.Process]$BackendProcess, [int]$ListenPort) {
@@ -115,7 +117,7 @@ function Stop-StartedProcess([System.Diagnostics.Process]$StartedProcess) {
 $backend = $null
 $frontend = $null
 try {
-    if (($Mode -eq 'Dev' -or ($Mode -eq 'Stop' -and $PSBoundParameters.ContainsKey('ClientPort'))) -and $Port -eq $ClientPort) {
+    if ((($Mode -eq 'Dev' -and -not $BackendOnly) -or ($Mode -eq 'Stop' -and $PSBoundParameters.ContainsKey('ClientPort'))) -and $Port -eq $ClientPort) {
         throw 'Backend and frontend must use different ports. Choose --port and --client-port explicitly.'
     }
     if ($Mode -eq 'Stop') {
@@ -143,22 +145,29 @@ try {
     }
 
     $script:NodePath = (Get-Command node.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-    $script:NpmPath = (Get-Command npm.cmd -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    if (-not $SkipInstall -or ($Mode -eq 'Deploy' -and -not $BackendOnly)) { $script:NpmPath = (Get-Command npm.cmd -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source }
     & $script:NodePath (Join-Path $PSScriptRoot 'check-runtime.cjs')
-    if ($LASTEXITCODE -ne 0) { throw 'Node.js >=22.12.0 is required.' }
-    foreach ($directory in @($ServerDir, $ClientDir)) {
+    if ($LASTEXITCODE -ne 0) { throw 'Node.js >=22.13.0 is required.' }
+    $directories = @($ServerDir)
+    if (-not $BackendOnly) { $directories += $ClientDir }
+    foreach ($directory in $directories) {
         if (-not (Test-Path -LiteralPath (Join-Path $directory 'package-lock.json') -PathType Leaf)) {
             throw "Missing package-lock.json in $directory"
         }
     }
-    Assert-DependenciesAreIdle
     Assert-FreePort $Port
-    if ($Mode -eq 'Dev') { Assert-FreePort $ClientPort }
-    # Reinstall from both locks on every invocation, including existing node_modules.
-    Invoke-Npm $ServerDir @('ci', '--omit=dev', '--include=optional')
+    if ($Mode -eq 'Dev' -and -not $BackendOnly) { Assert-FreePort $ClientPort }
+    if (-not $SkipInstall) {
+        Assert-DependenciesAreIdle
+        Invoke-Npm $ServerDir @('ci', '--omit=dev', '--include=optional')
+        if (-not $BackendOnly) { Invoke-Npm $ClientDir @('ci', '--include=dev', '--include=optional') }
+    }
     Assert-NativeRuntime
-    Invoke-Npm $ClientDir @('ci', '--include=dev', '--include=optional')
-    if ($Mode -eq 'Deploy') {
+    if (-not $BackendOnly) {
+        & $script:NodePath (Join-Path $PSScriptRoot 'check-runtime.cjs') --client
+        if ($LASTEXITCODE -ne 0) { throw 'Client dependencies are missing. Retry without --skip-install.' }
+    }
+    if ($Mode -eq 'Deploy' -and -not $BackendOnly) {
         Invoke-Npm $ClientDir @('run', 'build')
         if (-not (Test-Path -LiteralPath (Join-Path $ClientDir 'dist\index.html') -PathType Leaf)) {
             throw 'Frontend build output is missing.'
@@ -167,28 +176,31 @@ try {
 
     # Installation/build can take time; check again before spawning any child.
     Assert-FreePort $Port
-    if ($Mode -eq 'Dev') { Assert-FreePort $ClientPort }
+    if ($Mode -eq 'Dev' -and -not $BackendOnly) { Assert-FreePort $ClientPort }
 
     # Child processes inherit these settings. Never trigger KEEP_DB=0's rebuild.
     $env:PORT = [string]$Port
     $env:KEEP_DB = '1'
+    $env:SERVE_CLIENT = if ($BackendOnly -or $Mode -eq 'Dev') { '0' } else { '1' }
     if (-not $env:HOST) { $env:HOST = '127.0.0.1' }
     if ($Mode -eq 'Dev') {
         $env:HOST = '127.0.0.1'
         $env:NODE_ENV = 'development'
         $env:VITE_BACKEND_PORT = [string]$Port
+        $env:BACKEND_ORIGIN = 'http://127.0.0.1:' + $Port
         $env:VITE_PORT = [string]$ClientPort
     }
     else { $env:NODE_ENV = 'production' }
     $backend = Start-Process -FilePath $script:NodePath -ArgumentList ('"' + $BackendEntry + '"') -WorkingDirectory $ServerDir -PassThru
     Wait-ForBackend $backend $Port
-    if ($Mode -eq 'Dev') {
+    if ($Mode -eq 'Dev' -and -not $BackendOnly) {
         $frontend = Start-Process -FilePath $script:NodePath -ArgumentList @(('"' + $FrontendEntry + '"'), '--host', '127.0.0.1', '--port', [string]$ClientPort, '--strictPort') -WorkingDirectory $ClientDir -PassThru
         Wait-ForFrontend $frontend $ClientPort
         Write-Host "Development frontend: http://127.0.0.1:$ClientPort"
         Write-Host "Use stop.bat --port $Port --client-port $ClientPort to stop both processes."
     } else {
-        Write-Host "Frontend: http://127.0.0.1:$Port"
+        if ($BackendOnly) { Write-Host "API: http://127.0.0.1:$Port/api/health" }
+        else { Write-Host "Frontend: http://127.0.0.1:$Port" }
         Write-Host "Use stop.bat --port $Port to stop this backend."
     }
     Write-Host "Dashboard: http://127.0.0.1:$Port/dashboard"

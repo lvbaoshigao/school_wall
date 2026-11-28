@@ -13,7 +13,7 @@
     "qs": "^6.16.2"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

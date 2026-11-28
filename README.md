@@ -93,6 +93,9 @@
 - 总用户数、活跃用户、封禁用户
 - 总帖子数、今日帖子、匿名帖子
 - 总评论数、总消息数、今日新用户
+- 独立“管理概览”：7 / 30 / 90 天趋势、按墙筛选、墙成员与内容分布、按权限列出的审核待办
+- 运行信息：进程时长、内存、数据库持久化状态、近一小时访问汇总；无权限指标不伪装为零
+- 后端独立看板与前端概览共享统计接口；详细口径见 [架构与指标说明](<docs/ARCHITECTURE.md>)
 
 **用户管理：**
 - 搜索用户（用户名、昵称、真实姓名）
@@ -139,12 +142,20 @@
 
 ## 🚀 运行、配置与验证
 
-需要 **Node.js >=22.12.0** 和 npm。安装使用已提交的两个 package-lock.json，每次都执行 npm ci 并重新构建前端，已有 node_modules 或 dist 不会跳过更新。后端使用 sharp 进行真实图片解码和重编码，必须在目标操作系统/CPU 上安装其原生依赖；不要跨平台复制 node_modules，也不要禁用 optional 依赖。
+需要 **Node.js >=22.13.0** 和 npm，推荐使用受支持的 Node LTS 最新补丁版。前后端分别管理依赖；正式部署使用锁定安装并重建，Linux 开发启动按锁文件指纹复用通过检查的依赖，避免每次启动重新安装。后端使用 sharp 进行真实图片解码和重编码，必须在目标操作系统/CPU 上安装其原生依赖，不要跨平台复制依赖目录或禁用 optional 依赖。数据目录单写保护还使用 Node 内置 SQLite 文件锁，仅作进程协调，业务数据库仍是 sql.js。
 
 ### Linux 本地运行
 
 ~~~bash
-# 安装锁定依赖、重建前端、前台启动；Ctrl+C 停止
+# 推荐开发模式：独立后端 + Vite，等待健康检查与代理就绪；Ctrl+C 同时停止
+bash start.sh
+bash start.sh --port 3001 --client-port 5174
+# 仅运行开发后端，不需要客户端目录或前端依赖
+bash start.sh --backend-only
+# 在另一终端安全停止脚本记录的本项目进程
+bash stop.sh
+
+# 安装锁定依赖、重建前端、前台启动生产模式；Ctrl+C 停止
 bash deploy.sh
 bash deploy.sh --port 8080
 
@@ -152,6 +163,11 @@ bash deploy.sh --port 8080
 bash deploy.sh --prepare-only
 # 只检查现有 Node、sharp 原生编码/解码与构建是否存在，不安装或启动
 bash deploy.sh --check
+
+# API-only 部署：只准备后端依赖，不安装/构建前端
+bash deploy.sh --api-only
+# 只检查后端环境，不要求前端构建
+bash deploy.sh --api-only --check
 ~~~
 
 默认只监听 127.0.0.1。首次启动后在本机完成初始化向导，系统没有默认管理员账号。需要局域网直连时，可在完成初始化后显式设置 HOST=0.0.0.0；公网运行应使用 HTTPS 与反向代理，生产模板及运维步骤见 [部署说明](deploy/README.md)。
@@ -164,6 +180,10 @@ deploy.bat
 deploy.bat --port 8080
 REM 开发模式：后端 3000 + 仅本机 Vite 5173
 start.bat
+REM 仅后端（不安装或启动前端）
+start.bat --backend-only
+REM 生产部署只准备并运行后端
+deploy.bat --api-only
 REM 默认端口被其他程序占用时，可明确指定新端口，代理自动保持一致
 start.bat --port 3001 --client-port 5174
 REM 停止指定端口上经验证属于本项目的后端和开发前端
@@ -174,6 +194,8 @@ stop.bat --port 8080
 
 Windows 入口使用随系统提供的 PowerShell、NetTCPIP 与 CIM。启动前检查两个端口，Vite 不会自动跳到其他端口；只有后端数据库健康、前端页面和 API 代理全部就绪才报告成功。启动失败会清理本次创建的进程。停止脚本先核对所有目标端口、Node 可执行程序和本项目绝对入口路径，再执行停止；遇到其他项目进程会拒绝操作。开发前端也可在自己的窗口按 Ctrl+C 停止。Windows 进程终止可能中断未落盘写入，维护前请备份数据。
 
+启动参数、依赖缓存和停止行为的完整说明见 [启动指南](<docs/STARTUP.md>)。生产分离推荐同一公开来源下由静态层托管前端，并反代 API、上传、壁纸与看板到独立后端，详见 [架构与指标说明](<docs/ARCHITECTURE.md>)。
+
 同一项目的旧进程若仍占用原生依赖，即使切换端口也不能重装。启动脚本会在执行 `npm ci` 前报告占用的进程和监听端口；请先在原终端按 Ctrl+C 关闭旧实例，再重试。
 
 ### 配置与持久化
@@ -183,7 +205,9 @@ Windows 入口使用随系统提供的 PowerShell、NetTCPIP 与 CIM。启动前
 | PORT | 3000；后端监听端口，范围 1–65535 |
 | VITE_BACKEND_PORT | 3000；直接运行 Vite 时的后端代理端口；start.bat 由 --port 自动设置 |
 | VITE_PORT | 5173；直接运行 Vite 时的前端端口；start.bat 由 --client-port 自动设置 |
-| HOST | 启动脚本默认 127.0.0.1；显式设置 0.0.0.0 才开放局域网直连 |
+| HOST | 后端与启动脚本均默认 127.0.0.1；显式设置 0.0.0.0 才开放局域网直连 |
+| SERVE_CLIENT | 默认 1；设为 0 后不访问/托管前端构建，仍提供 API、上传与独立看板；开发及 API-only 脚本自动设 0 |
+| BACKEND_ORIGIN | 可选，仅供 Vite 服务端代理连接远程开发后端，必须是 HTTP(S) 来源；不会编入浏览器包 |
 | DATA_DIR | server 目录；data.db、.jwt_secret、uploads、backups 与 wallpaper-cache 均位于该数据根 |
 | JWT_SECRET | 可选，至少 16 字符；不设置时自动生成并持久保存 .jwt_secret |
 | TRUST_PROXY | 默认不信任；随附 Nginx 模板只设置为 1，并由代理覆盖客户端转发头 |
@@ -191,7 +215,7 @@ Windows 入口使用随系统提供的 PowerShell、NetTCPIP 与 CIM。启动前
 | UPLOAD_MAX_TOTAL_MB | 默认 2048，上传总配额 |
 | UPLOAD_MAX_USER_MB_PER_HOUR | 默认 50，每用户每小时上传额度 |
 
-后端直接运行时通过 shell 设置环境变量；应用与本地启动脚本不会自动读取后端 .env。Vite 的 VITE_* 配置可通过环境变量或 client/.env.local 设置。systemd 模板会读取 server/.env，具体格式和 DATA_DIR 可写路径由部署安装器校验。相对 DATA_DIR 按后端工作目录解析，建议使用绝对路径。改变数据根不会自动搬迁旧数据；请停服务后一起迁移数据库、密钥、上传与备份，再更新配置。常规部署固定 KEEP_DB=1，避免误触发删库重建。
+后端直接运行时通过 shell 设置环境变量；应用与本地启动脚本不会自动读取后端 .env。Vite 的 VITE_* 配置可通过环境变量或 client/.env.local 设置。systemd 模板会读取 server/.env，具体格式和 DATA_DIR 可写路径由部署安装器校验。相对 DATA_DIR 按后端工作目录解析，建议使用绝对路径。改变数据根不会自动搬迁旧数据；请停服务后一起迁移数据库、密钥、上传与备份，再更新配置。一个数据根只允许一个后端进程：即使端口不同，也不能并发写同一目录。锁由操作系统随进程退出自动释放，不能通过删除协调锁文件来强行绕过。常规部署固定 KEEP_DB=1，避免误触发删库重建。
 
 ### 壁纸与外观
 

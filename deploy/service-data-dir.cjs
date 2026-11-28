@@ -13,7 +13,7 @@ try {
   // In particular, systemd does not treat trailing # text as an inline comment.
   const seen = new Set();
   for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(export\s+)?(DATA_DIR|HOST|PORT|TRUST_PROXY|KEEP_DB|NODE_ENV)\s*=(.*)$/.exec(line);
+    const match = /^\s*(export\s+)?(DATA_DIR|HOST|PORT|TRUST_PROXY|KEEP_DB|NODE_ENV|SERVE_CLIENT)\s*=(.*)$/.exec(line);
     if (!match) continue;
     const key = match[2];
     let value = match[3].trim();
@@ -23,7 +23,7 @@ try {
     }
     seen.add(key);
   }
-  const fixed = { HOST: '127.0.0.1', PORT: '3000', TRUST_PROXY: '1', KEEP_DB: '1', NODE_ENV: 'production' };
+  const fixed = { HOST: '127.0.0.1', PORT: '3000', TRUST_PROXY: '1', KEEP_DB: '1', NODE_ENV: 'production', SERVE_CLIENT: '0' };
   for (const [key, expected] of Object.entries(fixed)) {
     if (Object.hasOwn(env, key) && env[key] !== expected) {
       throw new Error('server/.env must not override ' + key + ' for this service template');

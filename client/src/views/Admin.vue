@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick, defineAsyncComponent } from 'vue'
 import { useRoute } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { useWallStore } from '../stores/wall'
@@ -10,6 +10,7 @@ import ConfirmModal from '../components/ConfirmModal.vue'
 import { useMarkdown } from '../composables/useMarkdown'
 import { useFocusTrap } from '../composables/useFocusTrap'
 
+const AdminOverview = defineAsyncComponent(() => import('../components/admin/AdminOverview.vue'))
 const userStore = useUserStore()
 const wallStore = useWallStore()
 const route = useRoute()
@@ -31,7 +32,7 @@ const canHere = (perm) => wallStore.canHere(perm)
 const currentWall = computed(() => wallStore.currentWall)
 // 社区管理区：持有任一全局管理能力即可进入
 const hasGlobalPanel = computed(() =>
-  can('global.moderate') || can('global.user.manage') || can('global.report.handle') ||
+  can('global.moderate') || can('global.dashboard') || can('global.user.manage') || can('global.report.handle') ||
   can('global.wall.approve') || can('global.wall.manage') || can('global.bug.handle') ||
   can('global.permission.manage') || can('global.db.manage'))
 // 本墙管理区：在当前墙持有任一管理能力即可
@@ -40,7 +41,14 @@ const hasWallContext = computed(() => !!wallStore.currentWallId && (
   canHere('wall.category') || canHere('wall.post.report') || canHere('wall.safety.report') ||
   canHere('wall.edit')))
 
-// 默认面板：有墙管理权限则墙后台，否则全局
+const hasGlobalOverview = computed(() => can('global.moderate') || can('global.dashboard'))
+const hasOverview = computed(() => hasGlobalOverview.value || (!!wallStore.currentWallId && canHere('wall.stats.view')))
+// 会话、权限或墙上下文变化时重建概览，取消旧请求并清除旧范围的数据。
+const overviewContextKey = computed(() => JSON.stringify([
+  userStore.sessionRevision, userStore.token, userStore.user?.id, userStore.perms, wallStore.currentWallId,
+]))
+
+// 优先概览；没有统计权限时仍进入原有业务面板。
 const activePanel = ref('wallStats')
 
 // ===== 墙后台数据 =====
@@ -778,6 +786,7 @@ const PANEL_LOADERS = {
 }
 
 const PANEL_PERMISSIONS = {
+  overview: [],
   wallStats: ['wall', 'wall.stats.view'], members: ['wall', 'wall.member.view'],
   announcements: ['wall', 'wall.announcement'], categories: ['wall', 'wall.category'],
   postReports: ['wall', 'wall.post.report'], safetyReports: ['wall', 'wall.safety.report'],
@@ -787,9 +796,29 @@ const PANEL_PERMISSIONS = {
   bugReports: ['global', 'global.bug.handle'], dbops: ['global', 'global.db.manage'],
 }
 function canOpenPanel(panel) {
+  if (panel === 'overview') return hasOverview.value
   if (panel === 'wallStats') return !!wallStore.currentWallId && (canHere('wall.stats.view') || canHere('wall.edit'))
   const rule = Object.prototype.hasOwnProperty.call(PANEL_PERMISSIONS, panel) ? PANEL_PERMISSIONS[panel] : null
   return !!rule && (rule[0] === 'wall' ? !!wallStore.currentWallId && canHere(rule[1]) : can(rule[1]))
+}
+function overviewTodoPanel(todo) {
+  const panels = { members: 'members', wall_applications: 'wallApps', post_reports: 'postReports', safety_reports: 'safetyReports', user_reports: 'userReports', bug_reports: 'bugReports' }
+  const panel = Object.prototype.hasOwnProperty.call(panels, todo?.key) ? panels[todo.key] : ''
+  const rule = PANEL_PERMISSIONS[panel]
+  if (!rule) return ''
+  if (rule[0] === 'global') return canOpenPanel(panel) ? panel : ''
+  const wallId = Number(todo.wall_id)
+  if (!Number.isSafeInteger(wallId) || wallId <= 0) return ''
+  const available = wallId === wallStore.currentWallId || wallStore.myWalls.some(wall => wall.id === wallId && (!wall.member_status || wall.member_status === 'active'))
+  return available && userStore.canInWall(rule[1], wallId) ? panel : ''
+}
+function openOverviewTodo(todo) {
+  const panel = overviewTodoPanel(todo)
+  if (!panel) return
+  if (PANEL_PERMISSIONS[panel][0] === 'wall' && Number(todo.wall_id) !== wallStore.currentWallId) {
+    if (!wallStore.setCurrentWall(Number(todo.wall_id))) return
+  }
+  switchPanel(panel)
 }
 function switchPanel(panel) {
   if (!canOpenPanel(panel)) return
@@ -804,6 +833,9 @@ function openDefaultPanel() {
   else activePanel.value = ''
 }
 watch(() => route.query.panel, openDefaultPanel)
+watch(overviewContextKey, () => {
+  if (activePanel.value === 'overview' && !hasOverview.value) openDefaultPanel()
+}, { flush: 'sync' })
 watch(() => wallStore.currentWallId, () => {
   wallStats.value = null
   wallMembers.value = []; pendingMembers.value = []; announcements.value = []
@@ -833,6 +865,10 @@ onBeforeUnmount(() => {
     <div v-if="hasWallContext || hasGlobalPanel" class="admin-layout">
       <!-- 左侧栏 -->
       <aside class="admin-sidebar glass">
+        <div v-if="hasOverview" class="side-group">
+          <div class="side-group-title">数据总览</div>
+          <button class="side-item" :class="{ active: activePanel === 'overview' }" :aria-current="activePanel === 'overview' ? 'page' : undefined" @click="switchPanel('overview')"><Icon name="chart" :size="16" />管理概览</button>
+        </div>
         <template v-if="hasWallContext">
           <div class="side-group">
             <div class="side-group-title">本墙管理</div>
@@ -863,6 +899,9 @@ onBeforeUnmount(() => {
 
       <!-- 右侧内容面板 -->
     <div class="admin-panel" style="flex:1;min-width:0">
+    <AdminOverview v-if="activePanel === 'overview' && hasOverview" :key="overviewContextKey"
+      :wall-id="hasGlobalOverview ? null : wallStore.currentWallId" :wall-name="currentWall?.name || ''"
+      :global-scope="hasGlobalOverview" :can-navigate="todo => !!overviewTodoPanel(todo)" @navigate="openOverviewTodo" />
     <!-- ============ 墙概况 ============ -->
     <div v-if="activePanel === 'wallStats'">
       <div v-if="wallStats && canHere('wall.stats.view')" class="stats-grid">
@@ -1120,7 +1159,7 @@ onBeforeUnmount(() => {
           <div class="stat-value">{{ gStats.users.total }}</div>
           <div class="stat-label">总用户</div>
           <div class="stat-chips">
-            <span class="chip chip-green">活跃 {{ gStats.users.active }}</span>
+            <span class="chip chip-green">正常状态 {{ gStats.users.active }}</span>
             <span class="chip chip-red">封禁 {{ gStats.users.banned }}</span>
           </div>
         </div>
@@ -1148,7 +1187,7 @@ onBeforeUnmount(() => {
           <div class="stat-head"><span class="stat-icon">🆕</span></div>
           <div class="stat-value">{{ gStats.todayNewUsers }}</div>
           <div class="stat-label">今日新用户</div>
-          <div class="stat-chips"><span class="chip chip-orange">注册趋势上升</span></div>
+          <div class="stat-chips"><span class="chip chip-orange">今日注册</span></div>
         </div>
       </div>
     </div>
@@ -1755,7 +1794,8 @@ body.light-theme .side-item.active {
 .badge { background: var(--danger); color: #fff; font-size: 0.6875rem; padding: 2px 6px; border-radius: var(--radius-md); }
 
 @media (max-width: 768px) {
-  .admin-layout { flex-direction: column; }
+  /* 纵向布局仍需拉伸面板，避免内容固有宽度把移动视口撑开。 */
+  .admin-layout { flex-direction: column; align-items: stretch; }
   .admin-sidebar {
     position: static;
     width: 100%;

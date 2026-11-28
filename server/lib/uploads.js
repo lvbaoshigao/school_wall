@@ -244,34 +244,76 @@ function imageSignature(payload) {
   return crypto.createHmac('sha256', SECRET).update(`private-upload:${payload}`).digest('base64url');
 }
 
-function signImageUrl(url, req) {
+const OPAQUE_IMAGE_PATH = '/uploads/bug-reports/private-image';
+const IMAGE_TICKET_AAD = Buffer.from('private-upload:opaque:v2');
+const isPrivateImagePath = pathname => typeof pathname === 'string' && pathname.length <= 256
+  && /^\/uploads\/(?:images|bug-reports)\/[\w.-]+$/.test(pathname) && !pathname.includes('..');
+
+function imageEncryptionKey() {
+  const { SECRET } = require('../middleware/auth');
+  return crypto.createHmac('sha256', SECRET).update('private-upload:encryption:v2').digest();
+}
+
+function opaqueImageTicket(data) {
+  // Legacy evidence filenames contain the reporter's ID. Encrypt the path and pad
+  // the payload so neither the URL nor ciphertext length reveals that identity.
+  const text = JSON.stringify(data);
+  if (Buffer.byteLength(text) > 512) return '';
+  const plain = Buffer.alloc(512, 0x20);
+  plain.write(text);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', imageEncryptionKey(), iv);
+  cipher.setAAD(IMAGE_TICKET_AAD);
+  const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+  return ['v2', iv.toString('base64url'), encrypted.toString('base64url'), cipher.getAuthTag().toString('base64url')].join('.');
+}
+
+function signImageUrl(url, req, { opaque = false } = {}) {
   const pathname = typeof url === 'string' ? url.split('?')[0] : '';
-  if (!/^\/uploads\/(?:images|bug-reports)\/[\w.-]+$/.test(pathname) || pathname.includes('..')) return '';
+  if (!isPrivateImagePath(pathname)) return '';
   const user = req.db.prepare('SELECT token_version FROM users WHERE id=?').get(req.user.id);
   if (!user) return '';
-  const payload = Buffer.from(JSON.stringify({ p: pathname, u: req.user.id, t: user.token_version || 0, e: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
-  return `${pathname}?ticket=${payload}.${imageSignature(payload)}`;
+  const data = { p: pathname, u: req.user.id, t: user.token_version || 0, e: Math.floor(Date.now() / 1000) + 300 };
+  if (opaque) return OPAQUE_IMAGE_PATH + '?ticket=' + opaqueImageTicket(data);
+  // Keep freshly uploaded owner URLs and previously issued HMAC tickets compatible.
+  const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
+  return pathname + '?ticket=' + payload + '.' + imageSignature(payload);
 }
 
 function signPrivateImages(images, req) {
   let values = images;
   try { if (typeof values === 'string') values = JSON.parse(values || '[]'); } catch { return ''; }
   if (!Array.isArray(values)) return '';
-  const urls = values.slice(0, MAX_IMAGES).map(url => signImageUrl(url, req)).filter(Boolean);
+  const urls = values.slice(0, MAX_IMAGES).map(url => signImageUrl(url, req, { opaque: true })).filter(Boolean);
   return urls.length ? JSON.stringify(urls) : '';
 }
 
-function verifyImageTicket(ticket, pathname, db) {
-  if (typeof ticket !== 'string' || ticket.length > 2048) return false;
+function readImageTicket(ticket) {
+  if (typeof ticket !== 'string' || ticket.length > 2048) return null;
   const parts = ticket.split('.');
-  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) return false;
-  const expected = Buffer.from(imageSignature(parts[0]));
-  const actual = Buffer.from(parts[1]);
-  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return false;
   try {
-    const data = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    if (parts[0] === 'v2') {
+      if (parts.length !== 4 || !/^[A-Za-z0-9_-]{16}$/.test(parts[1]) ||
+          !/^[A-Za-z0-9_-]{683}$/.test(parts[2]) || !/^[A-Za-z0-9_-]{22}$/.test(parts[3])) return null;
+      const decipher = crypto.createDecipheriv('aes-256-gcm', imageEncryptionKey(), Buffer.from(parts[1], 'base64url'));
+      decipher.setAAD(IMAGE_TICKET_AAD);
+      decipher.setAuthTag(Buffer.from(parts[3], 'base64url'));
+      const plain = Buffer.concat([decipher.update(Buffer.from(parts[2], 'base64url')), decipher.final()]);
+      return { data: JSON.parse(plain.toString('utf8')), opaque: true };
+    }
+    if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]{43}$/.test(parts[1])) return null;
+    const expected = Buffer.from(imageSignature(parts[0]));
+    const actual = Buffer.from(parts[1]);
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return null;
+    return { data: JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')), opaque: false };
+  } catch { return null; }
+}
+
+function imageTicketAllowed(data, pathname, db) {
+  try {
     const now = Math.floor(Date.now() / 1000);
-    if (data.p !== pathname || !Number.isSafeInteger(data.u) || !Number.isSafeInteger(data.e) || data.e <= now || data.e > now + 300) return false;
+    if (!data || !isPrivateImagePath(pathname) || data.p !== pathname || !Number.isSafeInteger(data.u) || data.u <= 0 ||
+        !Number.isSafeInteger(data.t) || data.t < 0 || !Number.isSafeInteger(data.e) || data.e <= now || data.e > now + 300) return false;
     const user = db.prepare('SELECT token_version, status FROM users WHERE id=?').get(data.u);
     if (!user || user.status !== 'active' || (user.token_version || 0) !== data.t) return false;
     if (pathname.startsWith(`/uploads/bug-reports/bug_${data.u}_`)) return true;
@@ -284,15 +326,33 @@ function verifyImageTicket(ticket, pathname, db) {
   } catch { return false; }
 }
 
+function verifyImageTicket(ticket, pathname, db) {
+  return imageTicketAllowed(readImageTicket(ticket)?.data, pathname, db);
+}
+
 function privateUploadGuard(req, res, next) {
   let relativePath;
   try { relativePath = path.posix.normalize(decodeURIComponent(req.path)); } catch { return res.status(400).json({ error: '无效图片路径' }); }
   if (relativePath.includes('\0') || !/^\/(?:avatars|images|bug-reports)\/[\w.-]+$/.test(relativePath) || relativePath.includes('..')) return res.status(404).json({ error: '图片不存在' });
   const pathname = `/uploads${relativePath}`;
   res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; sandbox");
+  if (pathname === OPAQUE_IMAGE_PATH) {
+    res.locals.privateUpload = true;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    const decoded = readImageTicket(req.query.ticket);
+    if (!decoded?.opaque || !imageTicketAllowed(decoded.data, decoded.data?.p, req.db)) {
+      return res.status(404).json({ error: '图片不存在或访问链接已过期，请刷新页面' });
+    }
+    // Resolve only after validating path, current audience permissions and expiry.
+    // No redirect or client-visible header may reveal the owner-bearing filename.
+    req.url = decoded.data.p.slice('/uploads'.length);
+    return next();
+  }
   let restricted = relativePath.startsWith('/bug-reports/');
   if (!restricted && relativePath.startsWith('/images/')) {
-    const rows = req.db.prepare('SELECT images FROM reports WHERE images LIKE ?').all(`%${pathname}%`);
+    const pattern = '%' + pathname + '%';
+    const rows = req.db.prepare('SELECT images FROM reports WHERE images LIKE ? UNION ALL SELECT images FROM bug_reports WHERE images LIKE ?').all(pattern, pattern);
     restricted = rows.some(row => { try { return JSON.parse(row.images).some(url => typeof url === 'string' && url.split('?')[0] === pathname); } catch { return false; } });
   }
   if (!restricted) return next();

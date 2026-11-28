@@ -6,6 +6,7 @@ const { authRequired, wallContext } = require('../middleware/auth');
 const { readPrefs } = require('../lib/prefs');
 const { deletePostImages } = require('../lib/uploads');
 const { userCan } = require('../lib/permissions');
+const { enforceAdminIp } = require('../lib/ipguard');
 
 const router = express.Router();
 
@@ -313,6 +314,7 @@ router.delete('/:id', authRequired, wallContext, (req, res) => {
   if (!isAuthor && !isMod) {
     return res.status(403).json({ error: '无权删除' });
   }
+  if (!isAuthor && !enforceAdminIp(req, res)) return;
 
   atomic(req.db, () => {
     req.db.prepare('DELETE FROM comments WHERE post_id = ?').run(postId);
@@ -390,6 +392,7 @@ router.delete('/:postId/comments/:commentId', authRequired, wallContext, (req, r
   if (!isAuthor && !isMod) {
     return res.status(403).json({ error: '无权删除' });
   }
+  if (!isAuthor && !enforceAdminIp(req, res)) return;
 
   atomic(req.db, () => {
     req.db.prepare('DELETE FROM comments WHERE id = ?').run(commentId);

@@ -11,7 +11,7 @@
     "audit:security": "npm audit --registry=https://registry.npmjs.org"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "@jridgewell/sourcemap-codec": "^1.5.5",

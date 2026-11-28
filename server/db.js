@@ -5,15 +5,18 @@ const { randomBytes } = require('crypto');
 
 const { DATA_DIR, DB_PATH } = require('./lib/paths');
 const { readOne, readAll } = require('./lib/dbOptimizations');
+const { acquireDataLock } = require('./lib/dataLock');
 
 class DatabaseWrapper {
   #deferInitialSave;
   #temporarySecret = null;
+  #dataLock;
 
-  constructor(sqlDb, deferInitialSave) {
+  constructor(sqlDb, deferInitialSave, dataLock) {
     this.db = sqlDb;
     this.dirty = false;
     this.#deferInitialSave = deferInitialSave;
+    this.#dataLock = dataLock;
   }
 
   get temporarySecret() { return this.#temporarySecret; }
@@ -72,6 +75,7 @@ class DatabaseWrapper {
   saveNow() {
     if (!this.db || this.#temporarySecret) return false;
     if (this.#deferInitialSave && getSetting(this, 'initialized', '0') !== '1') return false;
+    this.#dataLock.assertOwned();
     // 先写临时文件再 rename：rename 在同一文件系统上是原子的。
     // 原先直接覆盖 data.db，一旦在写入中途崩溃或磁盘写满，
     // 唯一的数据文件就会变成半截的损坏文件。
@@ -107,6 +111,8 @@ class DatabaseWrapper {
 
 let wrapper = null;
 let flushTimer = null;
+let initializing = null;
+let dataLock = null;
 
 // 合并落盘间隔。崩溃时的最大数据丢失窗口就是这个值。
 // 2 秒是个折中：持续写入时落盘开销占比约 1%（12.5MB 的库 25ms / 2000ms），
@@ -153,8 +159,27 @@ function setSetting(db, key, value) {
 // 旧版本升级导入时无需手工删库，重启即自动适配；确需重建时设置 KEEP_DB=0。
 const REBUILD = process.env.KEEP_DB === '0';
 
-async function initDB({ deferInitialSave = false } = {}) {
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+async function initDB(options = {}) {
+  // Repeated/concurrent calls in one process share one in-memory snapshot and
+  // one autosave timer. Reopening while a previous wrapper is writable would
+  // reproduce the same lost-update bug inside this process.
+  if (initializing) return initializing;
+  if (wrapper) return wrapper;
+  initializing = initializeDB(options);
+  try { return await initializing; }
+  catch (error) {
+    if (wrapper) { try { wrapper.db.close(); } catch {} }
+    wrapper = null;
+    if (dataLock) { dataLock.release(); dataLock = null; }
+    throw error;
+  } finally { initializing = null; }
+}
+
+async function initializeDB({ deferInitialSave = false } = {}) {
+  // Acquire before reading, rebuilding or migrating any application database.
+  // Hold through final shutdown flush; normal exit and SIGKILL both release
+  // the underlying OS lock without a PID file or stale-lock deletion.
+  dataLock = acquireDataLock(DATA_DIR);
   const SQL = await initSqlJs();
   const exists = fs.existsSync(DB_PATH);
   let sqlDb;
@@ -172,7 +197,7 @@ async function initDB({ deferInitialSave = false } = {}) {
     }
     sqlDb = new SQL.Database();
   }
-  wrapper = new DatabaseWrapper(sqlDb, deferInitialSave && !exists);
+  wrapper = new DatabaseWrapper(sqlDb, deferInitialSave && !exists, dataLock);
   wrapper.pragma('foreign_keys = ON');
 
   wrapper.exec(`

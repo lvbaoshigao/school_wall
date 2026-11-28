@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="dashboard-csrf" content="{{CSRF}}">
+  <meta name="referrer" content="no-referrer">
+  <title>管理后台 - 校园墙</title>
+  <link rel="icon" type="image/svg+xml" href="/dashboard/assets/favicon.svg">
+  <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
+  <script src="/dashboard/assets/dashboard.js" defer></script>
+</head>
+<body data-can-db="{{CAN_DB}}">
+<a class="skip-link" href="#main">跳到管理内容</a>
+<div id="toasts" role="status" aria-live="polite"></div>
+<header class="header">
+  <h1>校园墙 · 管理后台</h1>
+  <div class="who"><span><b>{{USERNAME}}</b> ({{ROLE_LABEL}})</span><a class="back" href="/">← 返回首页</a></div>
+</header>
+<main class="container" id="main">
+  <section class="section" aria-labelledby="overview-title" aria-busy="false">
+    <div class="overview-head"><h2 id="overview-title">数据、趋势与运行概览</h2><div class="controls"><label for="overview-days">趋势范围</label><select id="overview-days"><option value="7" selected>近 7 天</option><option value="30">近 30 天</option><option value="90">近 90 天</option></select><button id="overview-refresh" type="button" class="btn btn-ghost btn-sm">刷新</button></div></div>
+    <p id="overview-status" class="overview-status" role="status" aria-live="polite">正在加载概览…</p>
+    <div id="overview-totals" class="overview-kpis"><p class="overview-empty">等待概览数据…</p></div>
+    <div class="overview-layout">
+      <div class="overview-card"><h3>每日趋势</h3><div id="overview-trend" class="trend-list"><p class="overview-empty">正在加载…</p></div></div>
+      <div class="overview-card"><h3>墙分布</h3><div id="overview-walls" class="wall-list"><p class="overview-empty">正在加载…</p></div></div>
+      <div class="overview-card"><h3>待处理事项</h3><div id="overview-todos" class="todo-list"><p class="overview-empty">正在加载…</p></div></div>
+      <div class="overview-card"><h3>运行信息</h3><div id="overview-system" class="system-list"><p class="overview-empty">正在加载…</p></div></div>
+    </div>
+  </section>
+
+  <section id="announcements" class="section" {{ANNOUNCEMENT_HIDDEN}}>
+    <h2>全站公告管理</h2>
+    <div class="form-inline">
+      <input id="ann-title" aria-label="公告标题" maxlength="200" placeholder="公告标题" style="flex:1;min-width:180px">
+      <select id="ann-pinned" aria-label="公告置顶方式"><option value="0">普通</option><option value="1">置顶</option></select>
+    </div>
+    <div class="form-inline"><textarea id="ann-content" aria-label="公告内容" maxlength="20000" placeholder="公告内容…" style="flex:1"></textarea></div>
+    <div class="form-inline">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">定时删除: <input id="ann-delete-at" type="datetime-local" style="width:auto"></label>
+      <button class="btn btn-primary" data-action="publishAnn">发布公告</button>
+      <a class="btn btn-ghost btn-sm export-link" href="/dashboard/api/export?type=announcements{{ANNOUNCEMENT_EXPORT_QUERY}}">导出 CSV</a>
+    </div>
+    <form class="filter-form" method="get" action="/dashboard#announcements">
+      {{ANNOUNCEMENT_HIDDEN_FIELDS}}
+      <input name="announcement_q" value="{{ANNOUNCEMENT_QUERY}}" aria-label="按公告标题筛选" placeholder="筛选公告标题">
+      <button class="btn btn-ghost btn-sm" type="submit">筛选</button><a class="btn btn-ghost btn-sm" href="/dashboard#announcements">清除</a>
+    </form>
+    <p class="hint">公告仅展示全站公告；按权限仅管理员可管理和导出。</p>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>标题</th><th>置顶</th><th>定时删除</th><th>发布时间</th><th>操作</th></tr></thead><tbody>{{ANNOUNCEMENT_ROWS}}</tbody></table></div>
+    <div class="pagination">{{ANNOUNCEMENT_PAGINATION}}</div>
+  </section>
+
+  <section id="users" class="section" {{USERS_HIDDEN}}>
+    <div class="overview-head"><h2>用户管理</h2><a class="btn btn-ghost btn-sm" href="/dashboard/api/export?type=users{{USER_EXPORT_QUERY}}">导出筛选结果 CSV</a></div>
+    <p class="hint">展示筛选范围内的注册用户；未公开的真实姓名保持隐藏。列表分页显示，每页 50 条。</p>
+    <form class="filter-form" method="get" action="/dashboard#users">
+      {{USER_HIDDEN_FIELDS}}
+      <input name="user_q" value="{{USER_QUERY}}" aria-label="筛选用户名或昵称" placeholder="用户名或昵称">
+      <select name="user_role" aria-label="按角色筛选"><option value="">全部角色</option>{{USER_ROLE_OPTIONS}}</select>
+      <select name="user_status" aria-label="按状态筛选"><option value="">全部状态</option>{{USER_STATUS_OPTIONS}}</select>
+      <button class="btn btn-ghost btn-sm" type="submit">筛选</button><a class="btn btn-ghost btn-sm" href="/dashboard#users">清除</a>
+    </form>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>用户名</th><th>昵称</th><th>公开真实姓名</th><th>角色</th><th>状态</th><th>封禁截止</th><th>操作</th></tr></thead><tbody>{{USER_ROWS}}</tbody></table></div>
+    <div class="pagination">{{USER_PAGINATION}}</div>
+  </section>
+
+  <section id="posts" class="section" {{POSTS_HIDDEN}}>
+    <div class="overview-head"><h2>最近帖子</h2><a class="btn btn-ghost btn-sm" href="/dashboard/api/export?type=posts{{POST_EXPORT_QUERY}}">导出筛选结果 CSV</a></div>
+    <p class="hint">只展示获准审核的帖子；匿名身份不会被还原。列表分页显示，每页 25 条。</p>
+    <form class="filter-form" method="get" action="/dashboard#posts">
+      {{POST_HIDDEN_FIELDS}}
+      <input name="post_q" value="{{POST_QUERY}}" aria-label="按帖子内容或分类筛选" placeholder="帖子内容或分类">
+      <button class="btn btn-ghost btn-sm" type="submit">筛选</button><a class="btn btn-ghost btn-sm" href="/dashboard#posts">清除</a>
+    </form>
+    <div class="table-wrap"><table><thead><tr><th>ID</th><th>内容</th><th>分类</th><th>作者</th><th>赞</th><th>评</th><th>时间</th><th>操作</th></tr></thead><tbody>{{POST_ROWS}}</tbody></table></div>
+    <div class="pagination">{{POST_PAGINATION}}</div>
+  </section>
+
+  <section class="section" {{CAN_DB_HIDDEN}}>
+    <h2>数据库管理</h2>
+    <div class="hint">备份、白名单和清空操作需要数据库管理权限。备份包含敏感数据，请妥善保管。</div>
+    <div id="db-meta" class="db-meta"><div class="item"><div class="v">…</div><div class="k">加载中</div></div></div>
+    <div class="form-inline"><button class="btn btn-primary" data-action="makeBackup">立即备份</button><button class="btn btn-ghost" data-action="loadBackups">刷新备份列表</button></div>
+    <div class="table-wrap"><table><thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead><tbody id="backup-rows"><tr><td colspan="4" style="color:var(--faint)">加载中…</td></tr></tbody></table></div>
+  </section>
+
+  <section class="section" {{CAN_DB_HIDDEN}}>
+    <h2>访问 IP 白名单</h2>
+    <div class="hint">控制谁能访问管理后台，或整个 API。环境变量 ADMIN_IP_WHITELIST 配置的条目始终生效（数据库被清空后的引导保护）。</div>
+    <div class="form-inline"><label for="wl-mode" style="font-size:13px;color:var(--muted)">保护范围</label><select id="wl-mode" style="min-width:200px"><option value="off">关闭（不限制）</option><option value="admin">仅管理后台 / Dashboard</option><option value="all">整个 API（内网部署模式）</option></select><span style="font-size:12px;color:var(--faint)">你的 IP：<code id="wl-myip"></code></span></div>
+    <div class="wl-tags" id="wl-tags"></div>
+    <div class="form-inline"><input id="wl-input" aria-label="添加 IP 白名单条目" placeholder="如 10.8.0.5、192.168.*、::1" style="flex:1;min-width:200px;font-family:monospace" data-enter-action="addWlEntry"><button class="btn btn-ghost" data-action="addWlEntry">添加</button><button class="btn btn-primary" data-action="saveWhitelist">保存白名单</button></div>
+    <div id="wl-env" style="font-size:12px;color:var(--faint)"></div>
+  </section>
+
+  <section class="section danger-zone" {{CAN_DB_HIDDEN}}>
+    <h2>危险区 · 一键删库</h2>
+    <div class="hint">清空全部数据（保留表结构），settings 一并清除，重启前端将重新出现初始化向导。执行前会自动生成一份 pre-wipe 备份。</div>
+    <div class="steps">
+      <div class="step"><div class="step-num">1</div><div><button class="btn btn-danger" id="wipe-prep-btn" data-action="wipePrepare">生成 6 位删库验证码</button> <span style="font-size:12px;color:var(--faint)">验证码 5 分钟内有效</span></div></div>
+      <div class="step" id="wipe-step2" style="display:none"><div class="step-num">2</div><div style="flex:1"><div class="code-display" id="wipe-code"></div><div class="form-inline" style="margin-top:6px"><input id="wipe-input" aria-label="删库验证码" autocomplete="off" placeholder="输入上方 6 位验证码" maxlength="6" style="width:200px;font-family:monospace;letter-spacing:4px;text-transform:uppercase"><button class="btn btn-danger" id="wipe-exec-btn" data-action="wipeExecute" disabled>请等待 10 秒…</button></div></div></div>
+    </div>
+  </section>
+</main>
+<div id="settingsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
+  <div class="modal-content"><h3 id="settings-title">用户设置 · <span id="modal-username"></span></h3><input type="hidden" id="modal-user-id"><label for="modal-role">全局角色</label><select id="modal-role" {{ROLE_DISABLED}}><option value="user">普通用户</option><option value="admin">全局管理员</option></select><label for="modal-ban-duration">封禁时长 (分钟, 0=永久)</label><input type="number" id="modal-ban-duration" value="0" min="0"><div class="modal-actions"><button class="btn btn-success" data-action="saveSettings" {{ROLE_HIDDEN}}>保存设置</button><button class="btn btn-danger" data-action="banFromModal" {{BAN_HIDDEN}}>封禁</button><button class="btn btn-ghost" data-action="closeModal">取消</button></div></div>
+</div>
+</body>
+</html>

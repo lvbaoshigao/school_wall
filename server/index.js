@@ -8,6 +8,7 @@ const { authRequired, getRateUserId } = require('./middleware/auth');
 const { readPrefs } = require('./lib/prefs');
 const visits = require('./lib/visits');
 const { countAccessibleTreeUnread } = require('./lib/treeAccess');
+const { loadConfig } = require('./config');
 
 const { UPLOADS_DIR } = require('./lib/paths');
 const { privateUploadGuard } = require('./lib/uploads');
@@ -93,33 +94,25 @@ function createRateLimiter(windowMs, maxRequests, name = '', keyOf = rateKey) {
 }
 
 async function main() {
+  const config = loadConfig();
   const db = await initDB({ deferInitialSave: true });
   const app = express();
   // 默认会在每个响应上发 `X-Powered-By: Express`，白送框架指纹给扫描器。
   app.disable('x-powered-by');
-  const PORT = process.env.PORT || 3000;
-  // 监听地址。本机开发保持 0.0.0.0（局域网内其它设备可直接连）；
-  // 部署在反向代理之后必须设成 127.0.0.1 —— 否则外部可以绕开代理直连本端口，
-  // 代理层做的连接数限制、请求体上限、超时收紧就全都形同虚设。
-  const HOST = process.env.HOST || '0.0.0.0';
+  // Explicitly opt into LAN access with HOST=0.0.0.0; the default stays local.
+  const { port: PORT, host: HOST, allowedOrigins } = config;
 
   // 前端构建产物是否就位。这个判断必须在注册 `/` 之前做：
   // 服务状态页和 SPA 首页抢的是同一条路径，先注册的永远赢，
   // 而 express.static 在文件末尾才挂 —— 结果部署后打开站点根路径
   // 看到的是「后端服务运行中」占位页，页面上的「打开校园墙」又指回 `/`，原地打转。
   const distPath = path.join(__dirname, '../client/dist');
-  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
+  const hasDist = config.serveClient && fs.existsSync(path.join(distPath, 'index.html'));
 
   // CORS。原先是无参数的 cors()，等于 Access-Control-Allow-Origin: *，
   // 任意站点都能让访客的浏览器代为调用本站 API —— 配合免登录端点可以借校内
   // 访客的浏览器把数据捞出去。前端与后端同源（都经 nginx 出去），正常使用
   // 根本不需要 CORS，所以默认一条都不放行，只在显式配置或开发模式下开口子。
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  if (process.env.NODE_ENV !== 'production') {
-    // vite dev server 与本机联调
-    allowedOrigins.push('http://localhost:5173', 'http://127.0.0.1:5173');
-  }
   app.use(cors({
     origin(origin, cb) {
       // 同源请求不带 Origin 头；这类请求直接放行，且不会回 CORS 头
@@ -248,8 +241,8 @@ a:hover{text-decoration:underline}
 <div class="card">
   <h1>校园墙</h1>
   <p>后端服务运行中</p>
-  <p>API地址: <code>http://localhost:${PORT}/api</code></p>
-  <a class="btn" href="/">打开校园墙</a>
+  <p>API地址: <code>/api</code> · 健康检查: <a href="/api/health">/api/health</a></p>
+  <p>当前为独立后端；请从前端服务地址打开校园墙。</p>
   <a class="btn" href="/dashboard">管理后台</a>
 </div>
 </body></html>`);
@@ -264,7 +257,7 @@ a:hover{text-decoration:underline}
     // 访问统计。复用限流那套 key（登录后按用户 ID，未登录才按 IP），
     // 校园网整栋楼共用出口 IP，只按 IP 会把一群人算成一个。
     // 统计接口自身不计入，否则前端每分钟轮询一次会把自己刷进去。
-    if (req.path !== '/stats/visits') {
+    if (!['/stats/visits', '/admin/overview'].includes(req.path)) {
       try { visits.track(rateKey(req)); } catch {}
     }
     next();
@@ -290,6 +283,8 @@ a:hover{text-decoration:underline}
   // admin.js 的 globalRouter 是 router.use('/', ...) 兜住所有剩余路径，
   // 挂在后面会被它先截胡。
   app.use('/api/admin/db', require('./routes/dbops').apiRouter);
+  // The overview applies its own global/wall permission checks, before admin's catch-all.
+  app.use('/api/admin/overview', require('./routes/overview'));
   app.use('/api/admin', require('./routes/admin'));
   app.use('/api/votes', require('./routes/votes'));
   app.use('/api/friends', require('./routes/friends'));
@@ -365,35 +360,37 @@ a:hover{text-decoration:underline}
         }
       }
     }));
-    app.get('*', (req, res) => {
-      if (!req.path.startsWith('/api') && !req.path.startsWith('/dashboard') && !req.path.startsWith('/uploads')) {
-        return res.sendFile(path.join(distPath, 'index.html'));
-      }
-      // 走到这里说明是没有任何路由匹配的 /api、/dashboard、/uploads 路径。
-      // 原先这里既不响应也不 next()，连接就一直挂着直到客户端自己超时 ——
-      // 请求方看到的是「卡住」而不是 404，而且任何人都能靠批量打不存在的
-      // /api/xxx 把连接数占满。必须显式收尾。
-      res.status(404).json({ error: '接口不存在' });
+    // Only browser page navigations receive the SPA shell. Missing scripts/images
+    // and backend paths must keep their 404, instead of returning HTML with 200.
+    app.get('*', (req, res, next) => {
+      if (/^\/(?:api|dashboard|uploads|rele|assets)(?:\/|$)/i.test(req.path) || path.extname(req.path) || !req.accepts('html')) return next();
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+  app.use((req, res) => res.status(404).json({ error: '资源不存在' }));
 
   // 全局错误处理
   app.use((err, req, res, next) => {
     console.error('[Error]', err.message || err);
     if (res.headersSent) return next(err);
+    if (err instanceof URIError) return res.status(400).json({ error: '请求路径编码无效' });
+    if (['charset.unsupported', 'encoding.unsupported'].includes(err.type)) return res.status(415).json({ error: '不支持的请求编码' });
     if (err.code === 'IMAGE_BUSY') return res.status(503).json({ error: '图片处理繁忙，请稍后重试' });
     res.status(500).json({ error: '服务器内部错误' });
   });
 
   const server = app.listen(PORT, HOST, () => {
     const initialized = getSetting(db, 'initialized', '0') === '1';
+    const boundPort = server.address().port;
     console.log('');
     console.log('========================================');
     console.log('   School Wall Server Started');
     console.log('========================================');
-    console.log('  Listen:     ' + HOST + ':' + PORT + (HOST === '127.0.0.1' ? '（仅回环，经反向代理对外）' : ''));
-    console.log('  Backend:    http://localhost:' + PORT);
-    console.log('  Dashboard:  http://localhost:' + PORT + '/dashboard');
+    console.log('  Listen:     ' + HOST + ':' + boundPort + (HOST === '127.0.0.1' ? '（仅回环，经反向代理对外）' : ''));
+    console.log('  Backend:    http://localhost:' + boundPort);
+    console.log('  Dashboard:  http://localhost:' + boundPort + '/dashboard');
+    console.log('  Frontend:   ' + (hasDist ? 'serving client/dist' : 'separate frontend service'));
     console.log('  Status:     ' + (initialized ? '已初始化' : '未初始化（请通过前端完成首次设置）'));
     console.log('========================================');
     console.log('');
@@ -413,15 +410,22 @@ a:hover{text-decoration:underline}
   // 优雅关闭
   // 退出路径一律用 saveNow()：wrapper.save() 的语义是 markDirty()（延后 2 秒由定时器落盘），
   // 在马上要 process.exit 的地方调它等于什么都没做，改动会随进程一起消失。
+  let shuttingDown = false;
   function gracefulShutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`\n[${signal}] 正在关闭服务...`);
     server.close(() => {
+      let exitCode = 0;
       try {
         if (db.saveNow()) console.log('[DB] 数据库已保存');
         else if (db.temporarySecret) console.log('[DB] 一次性测试数据已丢弃');
-      } catch (e) { console.error('[DB] 退出落盘失败:', e.message); }
+      } catch (e) {
+        exitCode = 1;
+        console.error('[DB] 退出落盘失败:', e.message);
+      }
       console.log('[Server] 已关闭');
-      process.exit(0);
+      process.exit(exitCode);
     });
     // 在途请求迟迟不结束时的兜底，同样要真的落盘再退
     setTimeout(() => {

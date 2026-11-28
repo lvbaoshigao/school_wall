@@ -59,7 +59,7 @@ const canSeeTreeHole = computed(() => wallStore.canHere('wall.tree_hole'))
 
 // 管理后台：只要在全局或当前墙里有任何一项管理能力就显示
 const canOpenAdmin = computed(() =>
-  userStore.can('global.moderate') || userStore.can('global.user.manage') ||
+  userStore.can('global.moderate') || userStore.can('global.dashboard') || userStore.can('global.user.manage') ||
   wallStore.canHere('wall.stats.view') || wallStore.canHere('wall.member.view'))
 
 function selectWall(id) {

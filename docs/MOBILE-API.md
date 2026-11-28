@@ -52,15 +52,15 @@ DELETE /messages/{id} 和 DELETE /messages/chat/{userId} 都是**单侧隐藏**�
 
 ## 全量覆盖与调用边界
 
-本规范覆盖真实 Express 注册的 **164 个显式方法/路径组合、149 个路径模板**：154 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 10 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 112 个操作包含新增的公开壁纸图片及本人账户统计接口，既有鉴权与内部操作排除策略保持一致。
+本规范覆盖真实 Express 注册的 **167 个显式方法/路径组合、152 个路径模板**：155 个 /api 注册（包括仅在 /api/v1 暴露的三个发现入口）和 12 个 /dashboard/api 内部注册。按参数名 :id → {id} 正规化后，与隔离真实 index 实例枚举的双向差集均为空，双方均无重复。旧 52 个 operationId 保持原名；其余 115 个操作包含新增的公开壁纸图片、本人账户统计、管理概览及看板内部读取/导出接口，既有鉴权与内部操作排除策略保持一致。
 
 | 范围 | 操作数 | 鉴权与用途 |
 | --- | ---: | --- |
 | 普通族及有权限的墙内操作 | 118 | 对应公开入口、Bearer、有效墙成员身份及各操作权限；详细字段见规范 |
-| 管理族、建墙审核及看板票据入口 | 36 | 管理操作仍要求对应 global 或 wall 权限；票据入口要求 global.dashboard |
-| /dashboard/api 内部操作 | 10 | 看板票据或 Cookie；Cookie 写操作另需 CSRF；不由公共移动客户端调用 |
+| 管理族、建墙审核及看板票据入口 | 37 | 管理操作仍要求对应 global 或 wall 权限；票据入口要求 global.dashboard |
+| /dashboard/api 内部操作 | 12 | 原有端点接受看板票据或 Cookie，新增概览/导出仅 Cookie 同源；Cookie 写操作另需 CSRF；不由公共移动客户端调用 |
 
-公共 SDK 操作目录覆盖 **153 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 10 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
+公共 SDK 操作目录覆盖 **154 个**标准 API 操作，使用 callOperation(operationId, {path, query, body, wallId}, requestOptions)；已有易用方法继续保留。网页 Cookie 票据入口 /dashboard/session（实际 /api/v1/dashboard/session）和 12 个看板内部操作有明确排除策略；目录化调用没有任意路径或 opt-in 开关。低层 request<T>() 保持既有兼容能力，不是服务端授权边界；不要用它替代网页的 Cookie/CSRF 流程。目录完整也不表示账号有相应权限，服务器仍实时裁定。
 
 OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabilities、/openapi.json 外，标准 /api 路径可通过旧 /api 前缀使用。旧 /api 本身不是能力发现入口。内部操作逐项 servers: [{url:"/"}]，最终路径严格为同一部署源上的 /dashboard/api/...，不能把它们拼到 /api/v1 下，也不能把根服务器地址当作任意外域授权。
 
@@ -70,7 +70,18 @@ OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabil
 
 取得看板票据：携带普通 Bearer 调 POST /api/v1/dashboard/session，要求 global.dashboard。服务器种入 sw_dash HttpOnly、SameSite=Strict、Path=/dashboard、有效期一小时的 Cookie；HTTPS 请求另带 Secure。此响应仍为 v1 JSON 包络，不返回 Cookie 中的票据值。禁止把票据放进 query 或公开日志。
 
-/dashboard/api/... 是已有内部原始 JSON/二进制 API，成功和错误均不使用 v1 包络。Cookie 认证的写操作要求 X-Dashboard-Csrf 与票据内 CSRF 值匹配；若请求带 Origin，还必须精确匹配服务器所见 protocol://host。只接受既有 aud=dashboard 票据的 Bearer 作为脚本认证替代；普通账号 JWT 不能直接冒充看板票据。所有内部操作要求 global.dashboard；数据库管理还要求 global.db.manage，并经过既有管理面 IP 守卫。
+/dashboard/api/... 是内部原始 JSON/二进制 API，成功和错误均不使用 v1 包络。Cookie 认证的写操作要求 X-Dashboard-Csrf 与票据内 CSRF 值匹配；若请求带 Origin，还必须匹配服务器所见 protocol://host 的同源 origin。既有数据库管理与 /dashboard/api/token 端点继续接受 aud=dashboard 票据的 Bearer 作为脚本认证替代；普通账号 JWT 不能直接冒充看板票据。新增 /dashboard/api/overview 与 /dashboard/api/export 是 Cookie-only 例外，不能使用 Bearer-only 替代。所有内部操作要求 global.dashboard；数据库管理还要求 global.db.manage，并经过既有管理面 IP 守卫。
+
+这两个新增 GET 必须携带有效 sw_dash Cookie；仅带普通 JWT 或 aud=dashboard Bearer 票据均返回401。Origin 存在时必须同源；Sec-Fetch-Site 存在时仅允许 same-origin 或 none，same-site/cross-site 返回403。它们是只读 GET，无需 CSRF 请求头，响应（包括错误）均为 no-store，路径在部署源根目录，不在 /api/v1 下，也不进入公共 SDK。
+
+| 内部方法与路径 | 参数、响应和额外权限 |
+| --- | --- |
+| GET /dashboard/api/overview | days=7/30/90（默认7）、wall_id 可选；复用 AdminOverview 字段、逐墙权限、null、时间与500墙限制，直接返回原始对象，不加 data/error/meta 包络；错误为 {error,code?} |
+| GET /dashboard/api/export | 必传 type=users/posts/announcements；成功返回 text/csv; charset=utf-8 附件；users 另需 global.user.manage，posts 另需 global.moderate，announcements 另需 global.announcement；未知/缺失 type 为400，匹配超过10000行为413，不返回部分导出 |
+
+CSV 导出支持与看板相同的当前筛选：users 使用 user_q（用户名/昵称）、user_role（user/admin/super_admin）、user_status（active/banned）；posts 使用 post_q（正文/分类）；全局 announcements 使用 announcement_q（标题）。文本筛选去首尾空白后截到100字符，以字面子串匹配，SQL 通配符不会扩大匹配；非字符串文本筛选及未知角色/状态值被忽略。其他数据集的筛选无效，不支持分页参数或调用方自定上限。users/posts 按创建时间降序，全局公告按置顶、创建时间降序。
+
+CSV 使用 UTF-8 BOM、CRLF、单元格引号转义及公式前缀防护，文件名固定为 users.csv、posts.csv 或 announcements.csv。用户导出仅在 show_real_name=1 时写入已公开真实姓名，否则该列为空；帖子作者只给显示名，匿名作者仍为“匿名”，不导出作者ID。导出不包含私信、IP、未公开姓名或匿名身份归属；下载结果应按管理数据妥善保管。
 
 公共移动 SDK 始终拒绝内部端点和看板票据代理，不提供绕过开关。确需维护看板的受控客户端必须先确认选定 HTTPS 部署 origin，以该 origin 解析根路径，单独管理看板 Cookie/票据与 CSRF，核对 operation.security、x-required-permissions 和响应类型；不得沿用公共调用的普通 Bearer、X-Wall-Id 或跨源目标。本文仅记录既有接口，不新增权限、公开票据或放宽 Origin/CORS。
 
@@ -91,6 +102,7 @@ OpenAPI 顶层 servers 是 /api/v1；除 x-versioned-only 标记的 /、/capabil
 | 投票 | GET/POST /votes；GET/DELETE /votes/{id}；POST /votes/{id}/vote |
 | 上传 | POST /upload/image、/upload/bug-image；PUT /avatar/upload |
 | 壁纸 | GET /wallpaper?source=bing&idx=0；GET /wallpaper/image/{file} 返回缓存 JPEG |
+| 管理概览 | GET /admin/overview；days 为7、30或90，wall_id 可选；按有效权限汇总，见下节 |
 
 普通 JSON 请求体上限 128 KiB；图片上传 JSON 上限 5 MiB。消息最多 2000 字符，标题 100；表白信和 Markdown 帖子保留开头缩进，仅去除末尾空白；普通文本帖子和私聊仍去除首尾空白。帖子正文 2000；评论 500；投票标题 100、描述 500，2–10 个非空且去空格后不同的选项，每项 50 字符。密码上限是 1024 **UTF-8 字节**，新密码至少 6 字符；用户名 3–20 字符且不能带首尾空白/控制字符。资料字段具体上限见 OpenAPI，不传字段表示保留，不要将本地整份陈旧 profile 覆盖回服务器。
 
@@ -116,6 +128,53 @@ registered_at 原样来自 users.created_at，历史缺失为 null；通常是�
 | votes_participated | 本人参与且投票仍存在的不同 vote_id 数；历史重复记录只计一次 |
 
 除加入墙数的有效成员条件外，活动计数是本人跨墙汇总，不随当前墙或成员退出改变查询范围；删除的资源及对应无效收藏/投票参与不计。接口只返回注册时间和上述计数，不返回内容、匿名归属、对端身份或其他账号数据。SDK 提供 getAccountStatistics(options)，并支持 operations.getAccountStatistics() / callOperation('getAccountStatistics')；三种入口都省略当前墙头，不读取 getWallId()，不接受 user_id 查询。
+
+## 管理概览
+
+GET /admin/overview（操作名 adminGetOverview）使用普通 Bearer；完整路径是 GET /api/v1/admin/overview，旧 GET /api/admin/overview 返回同一业务对象，v1 将其放入 data。接口只读，支持隐式 HEAD；其他方法在认证后返回405 OVERVIEW_METHOD_NOT_ALLOWED，并带 Allow: GET, HEAD。本路由响应（包括错误）使用 Cache-Control: no-store；不接受看板 Cookie 代替账号 Bearer，也不返回看板票据。
+
+查询参数 days 仅接受7、30、90，默认7；wall_id 可选，必须是严格正安全整数。重复/数组/对象、小数或非法范围返回400。省略 wall_id 表示全局概览，**X-Wall-Id 单独出现会被忽略**，不会按当前所选墙缩小范围；显式 wall_id 与同时提供的 X-Wall-Id 必须一致，否则400 OVERVIEW_WALL_CONFLICT。公共 SDK 只通过 query.wall_id 选择范围，不读取或发送当前墙头。
+
+全局入口要求 global.moderate 或 global.dashboard；单墙入口要求该墙为 active，且拥有有效成员身份（含已到期墙内封禁）或 global.moderate，同时必须具有该墙的有效 wall.stats.view。每个汇总候选墙仍独立检查 wall.stats.view，显式 deny 不因全局入口权限而失效；单有 global.dashboard 不能看无成员身份的其他墙。已删除的墙不计；disabled 墙只可能由 global.moderate 在未筛墙的全局概览中统计，显式筛选停用/不存在墙返回404。权限在每次请求重新计算，不以角色名称或客户端界面代替授权。
+
+响应 schema_version 固定为1，顶层字段如下；精确结构见 OpenAPI 的 AdminOverview 及其组件：
+
+| 字段 | 语义与边界 |
+| --- | --- |
+| generated_at | 生成快照的 UTC ISO 时间；其余日期分桶按下面的服务器本地日历口径 |
+| scope | kind=global/wall、wall_id=null/显式ID、available_wall_count=完整授权墙数；global_stats 表示是否可看全局账号计数 |
+| range | days、start_date/end_date（含两端）、timezone（当前 IANA 时区）、utc_offset_minutes（当前偏移）、date_basis=server-local、includes_today=true、timestamp_storage=local-naive |
+| totals | 当前仍存记录的全量计数：users、active_users、banned_users、walls、active_walls、members、posts、anonymous_posts、comments、votes、likes、announcements、pending；不受 daily 窗口或列表截断影响 |
+| today / daily | users、posts、comments、votes、members；daily 另有 date，按日期正序且补齐无活动日，恰有 range.days 行；today 对应最后一天 |
+| walls / walls_meta | 墙行含 id/name/status、members、pending_members、posts/comments/votes、posts_in_range、pending_post_reports、pending_safety_reports；name 最多200字符；按窗口帖子数降序、全部帖子数降序、ID升序，最多100行；元数据含 limit=100、完整 total 与 truncated |
+| pending | members、wall_applications、post_reports、safety_reports、user_reports、bug_reports 及 total；total 只加总已授权类别，等于 totals.pending |
+| todos / todos_meta | 仅为已授权且 count>0 的队列生成 {key,title,count,wall_id,permission}；按 count 降序、key、wall_id 升序，最多30行；元数据含 limit=30、完整行数 total 与 truncated，total 不是事项数之和 |
+| system | 无 global.dashboard 时为 null；有权限时返回 uptime_seconds、memory 的 rss_bytes/heap_used_bytes/heap_total_bytes、database 的 engine=sql.js/dirty/temporary、visits 摘要；筛单墙也不改变此权限要求 |
+
+**null 表示无权限、不可用或不适用，0 才表示有权查看但为空。** 全局账号计数仅在未传 wall_id 且有 global.moderate 或 global.user.manage 时可用（入口权限仍须满足），否则 totals 的三个账号字段与 today/daily.users 都为 null。members 统计 active 成员关系行，不是跨墙去重人数；daily.members 使用这些当前仍 active 的关系原创建日期。likes 数实际点赞关系，announcements 只计墙公告。匿名字段仅有总数，不返回作者归属；响应不包含私信正文、举报详情、真实姓名、用户/IP标识或配置秘密。
+
+| pending / todo.key | 额外所需权限与统计口径 |
+| --- | --- |
+| members | wall.member.approve；只计可统计墙的 pending 成员 |
+| wall_applications | global.wall.approve；仅全局模式可用，只计 pending 建墙申请 |
+| post_reports | wall.post.report；只计可统计墙的 pending 帖子举报 |
+| safety_reports | global.safety.handle 或该墙 wall.safety.report；只计可统计墙的 pending、processing 安全举报 |
+| user_reports | global.report.handle；全局模式为全部 pending 用户举报，单墙模式仅指定墙 |
+| bug_reports | global.bug.handle；仅全局模式可用，计 pending、processing 反馈 |
+
+以上权限独立于 wall.stats.view。某墙待办必须先满足该墙统计可见性；没有任何可授权墙的墙类别为 null。members、post_reports、safety_reports 待办逐墙给出 wall_id，安全队列 permission 优先使用已授予的 global.safety.handle；user_reports 为筛选墙ID或全局 null；建墙与 Bug 待办 wall_id 恒为 null。title 是展示文案，业务判断使用 key 与 permission，执行处理仍须调用原业务端点并重新鉴权。
+
+窗口包含今天，按服务器本地日历做日期运算，夏令时日不假定恒为24小时。SQLite 历史 created_at 没有时区后缀，按原样分组，不能追加 Z 改成 UTC。timezone/utc_offset_minutes 只描述当前运行环境，不能重建历史服务器时区变更。计数是现存记录快照，删除资源、成员状态变更会改变过去日的值，不能当作不可变审计事件或严格新增人数。
+
+候选墙在**逐墙权限筛选前**最多500个，超过即400 OVERVIEW_SCOPE_TOO_LARGE，不返回部分合计；客户端应显式传 wall_id 缩小范围。100行 walls 和30行 todos 只是展示截断，totals、pending 与 daily 仍覆盖完整授权范围，不能只把返回行相加当合计。visits 是滚动60分钟、当前进程内的近似计数（scope=process、reset_on_restart=true、visitor_definition=authenticated-user-or-guest-ip、identity_limit=50000、bounded=true、traffic=tracked-api-requests），重启清空、达到容量可能少计，不代表独立自然人、页面浏览量或全站持久访问审计。
+
+校验错误 code 包含 INVALID_OVERVIEW_DAYS、INVALID_OVERVIEW_WALL、OVERVIEW_WALL_CONFLICT、OVERVIEW_SCOPE_TOO_LARGE；无登录/失效账号为401，权限/不可用账号为403（OVERVIEW_FORBIDDEN、OVERVIEW_ACCOUNT_UNAVAILABLE、OVERVIEW_WALL_FORBIDDEN），墙不存在或停用为404 OVERVIEW_WALL_UNAVAILABLE。数据库异常返回500且不暴露内部细节。SDK 按原样保留业务 code 与 requestId；days 枚举和 wall_id 范围最终由服务器验证，不把 SDK 参数检查当成授权。
+
+~~~js
+const all = await api.operations.adminGetOverview({ query: { days: 30 } });
+const wall = await api.callOperation('adminGetOverview', { query: { days: 7, wall_id: selectedWallId } });
+// 展示时保留 null 与 0 的区别，并检查 walls_meta/todos_meta.truncated。
+~~~
 
 ## 表白信、线程与身份申请
 
@@ -277,6 +336,6 @@ TypeScript 的 NodeNext/Bundler 消费 .mjs 时，会通过 [mobile-client.d.mts
 
 ## 契约维护与当前限制
 
-完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 164 个操作，其中 153 个提供公共 SDK 目录入口，11 个看板票据或内部操作明确排除。SDK 回归测试保留在 sdk/test，可运行 node --test sdk/test/*.mjs；生成一致性检查不写文件。服务端测试使用隔离临时 DATA_DIR，运行 npm test --prefix server；网页回归运行 npm test --prefix client，构建检查运行 npm run build --prefix client。不要用真实生产数据库启动服务来代替隔离验收。
+完整 SDK 操作目录由 `node sdk/generate-v1-operations.cjs` 从规范生成；`--check` 只检查版本一致性，不写入文件。当前规范覆盖 167 个操作，其中 154 个提供公共 SDK 目录入口，13 个看板票据或内部操作明确排除。SDK 回归测试保留在 sdk/test，可运行 node --test sdk/test/*.mjs；生成一致性检查不写文件。服务端测试使用隔离临时 DATA_DIR，运行 npm test --prefix server；网页回归运行 npm test --prefix client，构建检查运行 npm run build --prefix client。不要用真实生产数据库启动服务来代替隔离验收。
 
 当前限制：无 token refresh、离线冲突合并、后台推送、WebSocket 或设备管理；历史本地时间缺少 offset；after 不包含既有消息的变更事件；朋友列表及墙列表仍是原有数组而不是统一分页；帖子搜索 total 是截断数量。调用方应按 capabilities/真实端点工作，不将文档或 SDK 视为未来功能承诺。

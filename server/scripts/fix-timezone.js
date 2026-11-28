@@ -20,9 +20,8 @@
 
 const initSqlJs = require('sql.js');
 const fs = require('fs');
-const path = require('path');
-
-const DB_PATH = path.join(__dirname, '..', 'data.db');
+const { DATA_DIR, DB_PATH } = require('../lib/paths');
+const { acquireDataLock } = require('../lib/dataLock');
 const MARKER = 'tz_shift_v1';
 const HOURS = 12;
 
@@ -52,62 +51,76 @@ const TARGETS = {
 
 const DRY_RUN = !process.argv.includes('--apply');
 
-(async () => {
+async function run(dataLock) {
   if (!fs.existsSync(DB_PATH)) {
-    console.error('找不到数据库:', DB_PATH);
-    process.exit(1);
+    throw new Error('找不到数据库: ' + DB_PATH);
   }
 
   const SQL = await initSqlJs();
   const db = new SQL.Database(fs.readFileSync(DB_PATH));
+  try {
+    if (DRY_RUN) console.log('只读快照：试运行不加写锁，在线服务可能继续更新数据库；正式执行会先独占 DATA_DIR。');
 
-  const one = (sql) => { try { const r = db.exec(sql); return r.length ? r[0].values[0][0] : null; } catch { return null; } };
-  const has = (t) => !!one(`SELECT name FROM sqlite_master WHERE type='table' AND name='${t}'`);
-  const cols = (t) => { try { return db.exec(`PRAGMA table_info(${t})`)[0].values.map(v => v[1]); } catch { return []; } };
+    const one = (sql) => { try { const r = db.exec(sql); return r.length ? r[0].values[0][0] : null; } catch { return null; } };
+    const has = (t) => !!one(`SELECT name FROM sqlite_master WHERE type='table' AND name='${t}'`);
+    const cols = (t) => { try { return db.exec(`PRAGMA table_info(${t})`)[0].values.map(v => v[1]); } catch { return []; } };
 
-  if (has('settings') && one(`SELECT value FROM settings WHERE key='${MARKER}'`)) {
-    console.log(`已经执行过（settings.${MARKER} 存在），不再重复平移。`);
-    process.exit(0);
-  }
-
-  console.log(DRY_RUN ? '=== 试运行（不写盘）===' : '=== 正式执行 ===');
-  console.log(`平移量: +${HOURS} 小时\n`);
-
-  let total = 0;
-  for (const [table, columns] of Object.entries(TARGETS)) {
-    if (!has(table)) { console.log(`  跳过 ${table}（表不存在）`); continue; }
-    const existing = cols(table);
-    for (const col of columns) {
-      if (!existing.includes(col)) { console.log(`  跳过 ${table}.${col}（列不存在）`); continue; }
-      const where = `${col} IS NOT NULL AND ${col} != ''`;
-      const n = one(`SELECT COUNT(*) FROM ${table} WHERE ${where}`) || 0;
-      if (!n) continue;
-      const before = one(`SELECT MIN(${col}) FROM ${table} WHERE ${where}`);
-      if (!DRY_RUN) {
-        db.run(`UPDATE ${table} SET ${col} = datetime(${col}, '+${HOURS} hours') WHERE ${where}`);
-      }
-      const after = DRY_RUN
-        ? one(`SELECT datetime(MIN(${col}), '+${HOURS} hours') FROM ${table} WHERE ${where}`)
-        : one(`SELECT MIN(${col}) FROM ${table} WHERE ${where}`);
-      console.log(`  ${(table + '.' + col).padEnd(34)} ${String(n).padStart(4)} 行   ${before} → ${after}`);
-      total += n;
+    if (has('settings') && one(`SELECT value FROM settings WHERE key='${MARKER}'`)) {
+      console.log(`已经执行过（settings.${MARKER} 存在），不再重复平移。`);
+      return;
     }
-  }
 
-  console.log(`\n合计 ${total} 行`);
+    console.log(DRY_RUN ? '=== 试运行（不写盘）===' : '=== 正式执行 ===');
+    console.log(`平移量: +${HOURS} 小时\n`);
 
-  if (DRY_RUN) {
-    console.log('\n这是试运行。确认无误后加 --apply 正式执行：');
-    console.log('  node scripts/fix-timezone.js --apply');
-    process.exit(0);
-  }
+    let total = 0;
+    for (const [table, columns] of Object.entries(TARGETS)) {
+      if (!has(table)) { console.log(`  跳过 ${table}（表不存在）`); continue; }
+      const existing = cols(table);
+      for (const col of columns) {
+        if (!existing.includes(col)) { console.log(`  跳过 ${table}.${col}（列不存在）`); continue; }
+        const where = `${col} IS NOT NULL AND ${col} != ''`;
+        const n = one(`SELECT COUNT(*) FROM ${table} WHERE ${where}`) || 0;
+        if (!n) continue;
+        const before = one(`SELECT MIN(${col}) FROM ${table} WHERE ${where}`);
+        if (!DRY_RUN) {
+          db.run(`UPDATE ${table} SET ${col} = datetime(${col}, '+${HOURS} hours') WHERE ${where}`);
+        }
+        const after = DRY_RUN
+          ? one(`SELECT datetime(MIN(${col}), '+${HOURS} hours') FROM ${table} WHERE ${where}`)
+          : one(`SELECT MIN(${col}) FROM ${table} WHERE ${where}`);
+        console.log(`  ${(table + '.' + col).padEnd(34)} ${String(n).padStart(4)} 行   ${before} → ${after}`);
+        total += n;
+      }
+    }
 
-  db.run(`INSERT OR REPLACE INTO settings (key, value) VALUES ('${MARKER}', datetime('now','localtime'))`);
+    console.log(`\n合计 ${total} 行`);
 
-  // 先写临时文件再 rename，与 db.js 的落盘策略保持一致，避免中途崩溃留下半截文件
-  const tmp = DB_PATH + '.tzfix';
-  fs.writeFileSync(tmp, Buffer.from(db.export()), { mode: 0o600 });
-  fs.chmodSync(tmp, 0o600);
-  fs.renameSync(tmp, DB_PATH);
-  console.log('已写入数据库。');
-})();
+    if (DRY_RUN) {
+      console.log('\n这是试运行。确认无误后加 --apply 正式执行：');
+      console.log('  node scripts/fix-timezone.js --apply');
+      return;
+    }
+
+    db.run(`INSERT OR REPLACE INTO settings (key, value) VALUES ('${MARKER}', datetime('now','localtime'))`);
+
+    // 先写临时文件再 rename，与 db.js 的落盘策略保持一致，避免中途崩溃留下半截文件
+    const tmp = DB_PATH + '.tzfix';
+    dataLock.assertOwned();
+    fs.writeFileSync(tmp, Buffer.from(db.export()), { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, DB_PATH);
+    console.log('已写入数据库。');
+  } finally { db.close(); }
+}
+
+(async () => {
+  // Dry-run is a read-only snapshot and never creates lock state. --apply
+  // participates in the same lifetime lock as the backend before any DB read.
+  const dataLock = DRY_RUN ? null : acquireDataLock(DATA_DIR);
+  try { await run(dataLock); }
+  finally { if (dataLock) dataLock.release(); }
+})().catch(error => {
+  console.error('[时区修正]', error.code ? `${error.code}: ${error.message}` : error.message);
+  process.exitCode = 1;
+});

@@ -1,5 +1,6 @@
 const express = require('express');
 const { authRequired, wallContext } = require('../middleware/auth');
+const { enforceAdminIp } = require('../lib/ipguard');
 
 const router = express.Router();
 
@@ -224,6 +225,7 @@ router.delete('/:id', authRequired, wallContext, (req, res) => {
   const isAuthor = vote.author_id === req.user.id;
   const isMod = req.can('wall.post.delete');
   if (!isAuthor && !isMod) return res.status(403).json({ error: '无权删除' });
+  if (!isAuthor && !enforceAdminIp(req, res)) return;
 
   atomic(req.db, () => {
     req.db.prepare('DELETE FROM vote_records WHERE vote_id = ?').run(voteId);
